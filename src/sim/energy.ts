@@ -1,26 +1,20 @@
 import { clamp } from './math';
-import type { BoostMode, EnergyState, PowerMode, SimEvent, Vec3 } from './types';
+import type { BoostMode, EnergyState, SimEvent, Vec3 } from './types';
 
 export const ENERGY_RULES = {
-  minBoostEngageCharge: 22,
-  minDriftEngageCharge: 18,
-  boostDrainPerSecond: 32,
-  driftDrainPerSecond: 26,
-  maxDriftSeconds: 2.2,
-  boostRecoverySeconds: 0.75,
-  driftRecoverySeconds: 0.95,
-  primaryShotCost: 5.5,
-  weaponDrawWhileBoosting: 10,
+  minBoostEngageCharge: 20,
+  minDriftEngageCharge: 16,
+  boostDrainPerSecond: 30,
+  driftDrainPerSecond: 24,
+  maxDriftSeconds: 2.0,
+  boostRecoverySeconds: 0.65,
+  driftRecoverySeconds: 0.75,
+  engineRechargePerSecond: 18,
+  weaponRechargePerSecond: 22,
+  shieldRechargePerSecond: 10,
+  primaryShotCost: 4.5,
+  weaponDrawWhileBoosting: 8,
 } as const;
-
-const RECHARGE_RATES: Record<
-  PowerMode,
-  { readonly engines: number; readonly weapons: number; readonly shields: number }
-> = {
-  engines: { engines: 24, weapons: 9, shields: 5 },
-  balanced: { engines: 15, weapons: 17, shields: 9 },
-  weapons: { engines: 9, weapons: 27, shields: 7 },
-};
 
 export interface EnergyStepResult {
   readonly energy: EnergyState;
@@ -29,7 +23,6 @@ export interface EnergyStepResult {
 
 export function createInitialEnergy(): EnergyState {
   return {
-    powerMode: 'balanced',
     boostMode: { kind: 'ready' },
     engineCharge: 100,
     weaponCharge: 100,
@@ -39,20 +32,21 @@ export function createInitialEnergy(): EnergyState {
 
 export function stepEnergy(
   current: EnergyState,
-  requestedPower: PowerMode | null,
   wantBoost: boolean,
   wantDrift: boolean,
   currentVelocity: Vec3,
   dt: number,
 ): EnergyStepResult {
-  const powerMode = requestedPower ?? current.powerMode;
-  const rates = RECHARGE_RATES[powerMode];
   const events: SimEvent[] = [];
 
   let boostMode: BoostMode = current.boostMode;
   let engineCharge = current.engineCharge;
   let weaponCharge = current.weaponCharge;
-  const shieldCharge = clamp(current.shieldCharge + rates.shields * dt, 0, 100);
+  const shieldCharge = clamp(
+    current.shieldCharge + ENERGY_RULES.shieldRechargePerSecond * dt,
+    0,
+    100,
+  );
 
   switch (boostMode.kind) {
     case 'ready': {
@@ -70,8 +64,8 @@ export function stepEnergy(
         weaponCharge = clamp(weaponCharge - ENERGY_RULES.weaponDrawWhileBoosting * dt, 0, 100);
         events.push({ kind: 'boost_engaged' });
       } else {
-        engineCharge = clamp(engineCharge + rates.engines * dt, 0, 100);
-        weaponCharge = clamp(weaponCharge + rates.weapons * dt, 0, 100);
+        engineCharge = clamp(engineCharge + ENERGY_RULES.engineRechargePerSecond * dt, 0, 100);
+        weaponCharge = clamp(weaponCharge + ENERGY_RULES.weaponRechargePerSecond * dt, 0, 100);
       }
       break;
     }
@@ -100,7 +94,11 @@ export function stepEnergy(
     case 'drifting': {
       const elapsedSeconds = boostMode.elapsedSeconds + dt;
       engineCharge = clamp(engineCharge - ENERGY_RULES.driftDrainPerSecond * dt, 0, 100);
-      weaponCharge = clamp(weaponCharge + rates.weapons * 0.6 * dt, 0, 100);
+      weaponCharge = clamp(
+        weaponCharge + ENERGY_RULES.weaponRechargePerSecond * 0.7 * dt,
+        0,
+        100,
+      );
       if (!wantDrift || engineCharge <= 0 || elapsedSeconds >= ENERGY_RULES.maxDriftSeconds) {
         boostMode = { kind: 'recovering', remainingSeconds: ENERGY_RULES.driftRecoverySeconds };
       } else {
@@ -115,8 +113,12 @@ export function stepEnergy(
 
     case 'recovering': {
       const remainingSeconds = boostMode.remainingSeconds - dt;
-      engineCharge = clamp(engineCharge + rates.engines * 0.5 * dt, 0, 100);
-      weaponCharge = clamp(weaponCharge + rates.weapons * dt, 0, 100);
+      engineCharge = clamp(
+        engineCharge + ENERGY_RULES.engineRechargePerSecond * 0.6 * dt,
+        0,
+        100,
+      );
+      weaponCharge = clamp(weaponCharge + ENERGY_RULES.weaponRechargePerSecond * dt, 0, 100);
       boostMode =
         remainingSeconds <= 0
           ? { kind: 'ready' }
@@ -127,7 +129,6 @@ export function stepEnergy(
 
   return {
     energy: {
-      powerMode,
       boostMode,
       engineCharge,
       weaponCharge,

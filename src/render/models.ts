@@ -1,14 +1,35 @@
 import * as THREE from 'three';
-import type { EnemyKind } from '../sim/types';
+import type { AsteroidState, EnemyKind } from '../sim/types';
 
-function flatMat(color: number, emissive = 0x000000, emissiveIntensity = 0): THREE.MeshStandardMaterial {
-  return new THREE.MeshStandardMaterial({
+function createToonGradientRamp(): THREE.DataTexture {
+  // 4-band stepped luminance ramp gives graphic cel-shaded tone breaks with zero smooth plastic shading.
+  const bands = new Uint8Array([
+    52, 52, 52, 255,
+    118, 118, 118, 255,
+    194, 194, 194, 255,
+    255, 255, 255, 255,
+  ]);
+  const tex = new THREE.DataTexture(bands, 4, 1, THREE.RGBAFormat);
+  tex.minFilter = THREE.NearestFilter;
+  tex.magFilter = THREE.NearestFilter;
+  tex.generateMipmaps = false;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+const TOON_RAMP = createToonGradientRamp();
+const INK_LINE_MAT = new THREE.LineBasicMaterial({ color: 0x0b0a14 });
+const INK_SHELL_MAT = new THREE.MeshBasicMaterial({
+  color: 0x0a0914,
+  side: THREE.BackSide,
+});
+
+function toonMat(color: number, emissive = 0x000000, emissiveIntensity = 0): THREE.MeshToonMaterial {
+  return new THREE.MeshToonMaterial({
     color,
     emissive,
     emissiveIntensity,
-    roughness: 0.56,
-    metalness: 0.32,
-    flatShading: true,
+    gradientMap: TOON_RAMP,
   });
 }
 
@@ -18,6 +39,45 @@ function glowMat(color: number, opacity = 1): THREE.MeshBasicMaterial {
     transparent: opacity < 1,
     opacity,
   });
+}
+
+function addInkedPart(
+  parent: THREE.Object3D,
+  geometry: THREE.BufferGeometry,
+  material: THREE.Material,
+  options?: {
+    readonly position?: readonly [number, number, number];
+    readonly rotation?: readonly [number, number, number];
+    readonly scale?: readonly [number, number, number];
+    readonly edgeAngle?: number;
+    readonly hullOutline?: number;
+  },
+): THREE.Mesh {
+  const mesh = new THREE.Mesh(geometry, material);
+  if (options?.position !== undefined) {
+    mesh.position.set(options.position[0], options.position[1], options.position[2]);
+  }
+  if (options?.rotation !== undefined) {
+    mesh.rotation.set(options.rotation[0], options.rotation[1], options.rotation[2]);
+  }
+  if (options?.scale !== undefined) {
+    mesh.scale.set(options.scale[0], options.scale[1], options.scale[2]);
+  }
+
+  const edges = new THREE.LineSegments(
+    new THREE.EdgesGeometry(geometry, options?.edgeAngle ?? 24),
+    INK_LINE_MAT,
+  );
+  mesh.add(edges);
+
+  if (options?.hullOutline !== undefined && options.hullOutline > 1) {
+    const shell = new THREE.Mesh(geometry, INK_SHELL_MAT);
+    shell.scale.setScalar(options.hullOutline);
+    mesh.add(shell);
+  }
+
+  parent.add(mesh);
+  return mesh;
 }
 
 export function createSoftDotTexture(): THREE.CanvasTexture {
@@ -39,6 +99,76 @@ export function createSoftDotTexture(): THREE.CanvasTexture {
   return tex;
 }
 
+function createSweptWingGeometry(): THREE.ExtrudeGeometry {
+  const shape = new THREE.Shape();
+  shape.moveTo(0, -1.6);
+  shape.lineTo(6.6, -0.35);
+  shape.lineTo(6.9, 1.05);
+  shape.lineTo(0.8, 1.85);
+  shape.lineTo(0, 1.5);
+  shape.closePath();
+
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: 0.24,
+    bevelEnabled: true,
+    bevelThickness: 0.08,
+    bevelSize: 0.08,
+    bevelSegments: 1,
+  });
+  geo.rotateX(Math.PI / 2);
+  geo.translate(0, 0.12, 0);
+  return geo;
+}
+
+function createFuselageGeometry(): THREE.ExtrudeGeometry {
+  const shape = new THREE.Shape();
+  shape.moveTo(0, -11.2);
+  shape.lineTo(0.85, -5.5);
+  shape.lineTo(1.55, -0.6);
+  shape.lineTo(1.65, 4.4);
+  shape.lineTo(1.0, 5.2);
+  shape.lineTo(-1.0, 5.2);
+  shape.lineTo(-1.65, 4.4);
+  shape.lineTo(-1.55, -0.6);
+  shape.lineTo(-0.85, -5.5);
+  shape.closePath();
+
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: 1.05,
+    bevelEnabled: true,
+    bevelThickness: 0.34,
+    bevelSize: 0.28,
+    bevelSegments: 1,
+  });
+  geo.rotateX(Math.PI / 2);
+  geo.translate(0, 0.52, 0);
+  return geo;
+}
+
+function createHexSolarVaneGeometry(): THREE.ExtrudeGeometry {
+  const shape = new THREE.Shape();
+  shape.moveTo(-2.1, -5.4);
+  shape.lineTo(2.1, -5.4);
+  shape.lineTo(4.0, -1.5);
+  shape.lineTo(4.0, 1.5);
+  shape.lineTo(2.1, 5.4);
+  shape.lineTo(-2.1, 5.4);
+  shape.lineTo(-4.0, 1.5);
+  shape.lineTo(-4.0, -1.5);
+  shape.closePath();
+
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: 0.32,
+    bevelEnabled: true,
+    bevelThickness: 0.14,
+    bevelSize: 0.14,
+    bevelSegments: 1,
+  });
+  geo.rotateY(Math.PI / 2);
+  geo.translate(-0.16, 0, 0);
+  return geo;
+}
+
 export interface FighterMeshRig {
   readonly root: THREE.Group;
   readonly plumes: readonly THREE.Group[];
@@ -46,109 +176,96 @@ export interface FighterMeshRig {
 
 export function buildPlayerFighterMesh(stripeColor: number): FighterMeshRig {
   const root = new THREE.Group();
-  const hullMat = flatMat(0xdad6cc);
-  const slateMat = flatMat(0x4b5163);
-  const darkMat = flatMat(0x2d303d);
-  const stripeMat = flatMat(stripeColor);
-  const canopyMat = flatMat(0xffb852, 0x8a480a, 0.55);
-  const canopyRimMat = flatMat(0xf4d299, 0x52340f, 0.25);
-  const outerPlumeMat = glowMat(0x5ad8ff, 0.72);
-  const innerPlumeMat = glowMat(0xf5fdff, 0.95);
+  const hullMat = toonMat(0xe5dfd3);
+  const slateMat = toonMat(0x525a70);
+  const darkMat = toonMat(0x282c3a);
+  const stripeMat = toonMat(stripeColor);
+  const canopyMat = toonMat(0xffbe59, 0x8a480a, 0.55);
+  const outerPlumeMat = glowMat(0x56d8ff, 0.78);
+  const innerPlumeMat = glowMat(0xffffff, 0.98);
   const navLightMat = glowMat(stripeColor);
 
-  const fuselage = new THREE.Mesh(new THREE.BoxGeometry(2.5, 1.45, 9.4), hullMat);
-  root.add(fuselage);
+  addInkedPart(root, createFuselageGeometry(), hullMat, { hullOutline: 1.045, edgeAngle: 35 });
 
-  const upperDeck = new THREE.Mesh(new THREE.BoxGeometry(1.75, 0.42, 7.6), slateMat);
-  upperDeck.position.set(0, 0.85, 0.3);
-  root.add(upperDeck);
+  const dorsalDeck = new THREE.BoxGeometry(1.72, 0.34, 7.2);
+  addInkedPart(root, dorsalDeck, toonMat(0xf4eee0), {
+    position: [0, 0.78, 0.6],
+    edgeAngle: 38,
+  });
 
-  const nose = new THREE.Mesh(new THREE.ConeGeometry(1.38, 5.4, 4), hullMat);
-  nose.rotation.x = -Math.PI / 2;
-  nose.rotation.y = Math.PI / 4;
-  nose.position.set(0, -0.05, -7.2);
-  root.add(nose);
+  const dorsalFin = new THREE.ConeGeometry(0.9, 4.8, 4);
+  dorsalFin.rotateX(Math.PI / 2);
+  addInkedPart(root, dorsalFin, stripeMat, {
+    position: [0, 1.15, 2.3],
+    scale: [0.55, 0.7, 1],
+  });
 
-  const canopy = new THREE.Mesh(new THREE.BoxGeometry(1.42, 0.82, 3.1), canopyMat);
-  canopy.position.set(0, 1.12, -1.2);
-  root.add(canopy);
+  const canopyGeo = new THREE.OctahedronGeometry(1.18, 1);
+  canopyGeo.scale(0.86, 0.62, 1.95);
+  addInkedPart(root, canopyGeo, canopyMat, {
+    position: [0, 1.1, -1.35],
+    edgeAngle: 42,
+  });
 
-  const canopyRim = new THREE.Mesh(new THREE.BoxGeometry(1.58, 0.16, 3.35), canopyRimMat);
-  canopyRim.position.set(0, 0.78, -1.2);
-  root.add(canopyRim);
-
-  const spine = new THREE.Mesh(new THREE.BoxGeometry(0.92, 0.62, 4.1), stripeMat);
-  spine.position.set(0, 1.15, 2.5);
-  root.add(spine);
-
-  const wingGeo = new THREE.BoxGeometry(6.9, 0.24, 2.45);
-  const leadingGeo = new THREE.BoxGeometry(6.8, 0.16, 0.42);
-  const tipGeo = new THREE.BoxGeometry(1.25, 0.34, 2.7);
-  const gunGeo = new THREE.CylinderGeometry(0.11, 0.17, 4.1, 6);
+  const wingGeo = createSweptWingGeometry();
+  const tipPodGeo = new THREE.CylinderGeometry(0.18, 0.26, 3.9, 6);
+  tipPodGeo.rotateX(Math.PI / 2);
 
   const wingConfigs: readonly { side: number; angle: number }[] = [
-    { side: 1, angle: 0.24 },
-    { side: 1, angle: -0.24 },
-    { side: -1, angle: -0.24 },
-    { side: -1, angle: 0.24 },
+    { side: 1, angle: 0.25 },
+    { side: 1, angle: -0.25 },
+    { side: -1, angle: -0.25 },
+    { side: -1, angle: 0.25 },
   ];
 
   for (const cfg of wingConfigs) {
     const pivot = new THREE.Group();
-    pivot.position.set(cfg.side * 1.15, 0, 1.4);
+    pivot.position.set(cfg.side * 1.15, 0, 1.6);
     pivot.rotation.z = cfg.angle;
+    if (cfg.side < 0) {
+      pivot.scale.x = -1;
+    }
 
-    const blade = new THREE.Mesh(wingGeo, hullMat);
-    blade.position.set(cfg.side * 3.35, 0, 0);
-    pivot.add(blade);
+    addInkedPart(pivot, wingGeo, hullMat, { hullOutline: 1.05, edgeAngle: 48 });
 
-    const leadEdge = new THREE.Mesh(leadingGeo, slateMat);
-    leadEdge.position.set(cfg.side * 3.35, 0.04, -1.22);
-    pivot.add(leadEdge);
+    const stripeGeo = new THREE.BoxGeometry(1.4, 0.34, 1.75);
+    addInkedPart(pivot, stripeGeo, stripeMat, { position: [5.4, 0, 0.35], edgeAngle: 48 });
 
-    const tip = new THREE.Mesh(tipGeo, stripeMat);
-    tip.position.set(cfg.side * 6.55, 0, 0);
-    pivot.add(tip);
+    addInkedPart(pivot, tipPodGeo, darkMat, { position: [6.75, 0, -1.2], edgeAngle: 42 });
 
-    const gun = new THREE.Mesh(gunGeo, darkMat);
-    gun.rotation.x = Math.PI / 2;
-    gun.position.set(cfg.side * 6.65, 0, -2.15);
-    pivot.add(gun);
-
-    const nav = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.26, 0.45), navLightMat);
-    nav.position.set(cfg.side * 7.22, 0, 0.2);
-    pivot.add(nav);
+    const muzzleRing = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.35, 6), navLightMat);
+    muzzleRing.rotation.x = Math.PI / 2;
+    muzzleRing.position.set(6.75, 0, -3.25);
+    pivot.add(muzzleRing);
 
     root.add(pivot);
   }
 
   const plumes: THREE.Group[] = [];
+  const nacelleGeo = new THREE.CylinderGeometry(0.72, 0.88, 3.2, 8);
+  nacelleGeo.rotateX(Math.PI / 2);
+  const nozzleGeo = new THREE.CylinderGeometry(0.56, 0.72, 1.35, 8);
+  nozzleGeo.rotateX(Math.PI / 2);
+
   for (const side of [-1, 1] as const) {
-    const cowling = new THREE.Mesh(new THREE.CylinderGeometry(0.76, 0.86, 2.4, 8), slateMat);
-    cowling.rotation.x = Math.PI / 2;
-    cowling.position.set(side * 1.18, -0.05, 4.5);
-    root.add(cowling);
+    addInkedPart(root, nacelleGeo, slateMat, { position: [side * 1.32, 0.05, 3.8], hullOutline: 1.05 });
+    addInkedPart(root, nozzleGeo, darkMat, { position: [side * 1.32, 0.05, 5.7] });
 
-    const bell = new THREE.Mesh(new THREE.CylinderGeometry(0.56, 0.72, 1.4, 8), darkMat);
-    bell.rotation.x = Math.PI / 2;
-    bell.position.set(side * 1.18, -0.05, 5.75);
-    root.add(bell);
-
-    const bellGlow = new THREE.Mesh(new THREE.CircleGeometry(0.54, 8), innerPlumeMat);
-    bellGlow.position.set(side * 1.18, -0.05, 6.48);
+    const bellGlow = new THREE.Mesh(new THREE.CircleGeometry(0.55, 8), innerPlumeMat);
+    bellGlow.position.set(side * 1.32, 0.05, 6.4);
     root.add(bellGlow);
 
     const plumeGroup = new THREE.Group();
-    plumeGroup.position.set(side * 1.18, -0.05, 6.5);
+    plumeGroup.position.set(side * 1.32, 0.05, 6.45);
 
-    const outerCone = new THREE.Mesh(new THREE.ConeGeometry(0.62, 5.0, 7), outerPlumeMat);
+    const outerCone = new THREE.Mesh(new THREE.ConeGeometry(0.64, 5.4, 7), outerPlumeMat);
     outerCone.rotation.x = Math.PI / 2;
-    outerCone.position.set(0, 0, 2.5);
+    outerCone.position.set(0, 0, 2.7);
     plumeGroup.add(outerCone);
 
-    const innerCone = new THREE.Mesh(new THREE.ConeGeometry(0.32, 3.1, 6), innerPlumeMat);
+    const innerCone = new THREE.Mesh(new THREE.ConeGeometry(0.32, 3.4, 6), innerPlumeMat);
     innerCone.rotation.x = Math.PI / 2;
-    innerCone.position.set(0, 0, 1.55);
+    innerCone.position.set(0, 0, 1.7);
     plumeGroup.add(innerCone);
 
     root.add(plumeGroup);
@@ -160,6 +277,7 @@ export function buildPlayerFighterMesh(stripeColor: number): FighterMeshRig {
 
 export interface CockpitRig {
   readonly root: THREE.Group;
+  readonly throttleHandle: THREE.Group;
   readonly muzzleLeft: THREE.Group;
   readonly muzzleRight: THREE.Group;
   readonly flashLight: THREE.PointLight;
@@ -167,22 +285,19 @@ export interface CockpitRig {
 
 function buildMuzzleBurst(): THREE.Group {
   const burst = new THREE.Group();
-  const coreMat = glowMat(0xfff6d6, 0.96);
-  const haloMat = glowMat(0xffa63d, 0.65);
+  const coreMat = glowMat(0xfff9e0, 0.98);
+  const haloMat = glowMat(0xffa436, 0.7);
 
-  const core = new THREE.Mesh(new THREE.OctahedronGeometry(0.06, 0), coreMat);
-  core.scale.set(1, 1, 2.4);
+  const core = new THREE.Mesh(new THREE.OctahedronGeometry(0.055, 0), coreMat);
+  core.scale.set(1, 1, 2.2);
   burst.add(core);
 
-  const spikeH = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.025, 0.04), haloMat);
-  burst.add(spikeH);
+  burst.add(new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.022, 0.03), haloMat));
+  burst.add(new THREE.Mesh(new THREE.BoxGeometry(0.022, 0.18, 0.03), haloMat));
 
-  const spikeV = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.2, 0.04), haloMat);
-  burst.add(spikeV);
-
-  const streak = new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.36, 5), haloMat);
+  const streak = new THREE.Mesh(new THREE.ConeGeometry(0.04, 0.34, 5), haloMat);
   streak.rotation.x = -Math.PI / 2;
-  streak.position.z = -0.18;
+  streak.position.z = -0.17;
   burst.add(streak);
 
   burst.visible = false;
@@ -191,148 +306,187 @@ function buildMuzzleBurst(): THREE.Group {
 
 export function buildCockpitRig(): CockpitRig {
   const root = new THREE.Group();
-  const frameMat = flatMat(0x2a2e3e);
-  const bevelMat = flatMat(0x4b536b);
-  const barrelMat = flatMat(0x3a4052);
+  const frameMat = toonMat(0x32374a);
+  const bevelMat = toonMat(0x636c88);
+  const accentMat = toonMat(0xd98332, 0x5c2c06, 0.3);
   const ledAmber = glowMat(0xf4b459);
   const ledCyan = glowMat(0x6be5ff);
 
-  const cockpitFill = new THREE.PointLight(0xffb76b, 0.55, 3.8);
-  cockpitFill.position.set(0, -0.35, -0.55);
+  const cockpitFill = new THREE.PointLight(0xffb76b, 0.9, 4.5);
+  cockpitFill.position.set(0, -0.25, -0.45);
   root.add(cockpitFill);
 
-  const flashLight = new THREE.PointLight(0xffbb55, 0, 5);
+  const flashLight = new THREE.PointLight(0xffbb55, 0, 5.5);
   flashLight.position.set(0, -0.2, -1.9);
   root.add(flashLight);
 
+  const strutProfile = new THREE.BoxGeometry(0.055, 1.76, 0.11);
   for (const side of [-1, 1] as const) {
-    const strut = new THREE.Mesh(new THREE.BoxGeometry(0.048, 1.72, 0.1), frameMat);
-    strut.position.set(side * 1.18, 0.1, -1.12);
-    strut.rotation.z = side * 0.22;
-    strut.rotation.y = side * -0.18;
-    root.add(strut);
+    addInkedPart(root, strutProfile, frameMat, {
+      position: [side * 1.22, 0.1, -1.1],
+      rotation: [0, side * -0.18, side * 0.2],
+    });
 
-    const innerTrim = new THREE.Mesh(new THREE.BoxGeometry(0.014, 1.66, 0.024), bevelMat);
-    innerTrim.position.set(side * 1.152, 0.1, -1.07);
-    innerTrim.rotation.z = side * 0.22;
-    innerTrim.rotation.y = side * -0.18;
-    root.add(innerTrim);
+    const highlight = new THREE.Mesh(new THREE.BoxGeometry(0.015, 1.68, 0.02), bevelMat);
+    highlight.position.set(side * 1.186, 0.1, -1.045);
+    highlight.rotation.set(0, side * -0.18, side * 0.2);
+    root.add(highlight);
 
-    const sideSill = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.14, 1.05), frameMat);
-    sideSill.position.set(side * 1.06, -0.68, -0.92);
-    sideSill.rotation.z = side * -0.18;
-    root.add(sideSill);
-
-    const gunShroud = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.048, 1.08, 6), barrelMat);
-    gunShroud.rotation.x = Math.PI / 2;
-    gunShroud.position.set(side * 0.96, -0.52, -1.56);
-    root.add(gunShroud);
-
-    const gunTip = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.022, 0.18, 6), bevelMat);
-    gunTip.rotation.x = Math.PI / 2;
-    gunTip.position.set(side * 0.96, -0.52, -2.18);
-    root.add(gunTip);
+    addInkedPart(root, new THREE.BoxGeometry(0.24, 0.14, 1.08), frameMat, {
+      position: [side * 1.1, -0.7, -0.92],
+      rotation: [0, 0, side * -0.16],
+    });
   }
 
-  const topBow = new THREE.Mesh(new THREE.BoxGeometry(2.12, 0.055, 0.12), frameMat);
-  topBow.position.set(0, 0.89, -1.14);
-  root.add(topBow);
+  addInkedPart(root, new THREE.BoxGeometry(2.24, 0.055, 0.12), frameMat, {
+    position: [0, 0.92, -1.12],
+  });
 
-  const topTrim = new THREE.Mesh(new THREE.BoxGeometry(1.92, 0.014, 0.025), bevelMat);
-  topTrim.position.set(0, 0.86, -1.08);
-  root.add(topTrim);
+  const hoodShape = new THREE.Shape();
+  hoodShape.moveTo(-1.12, -0.16);
+  hoodShape.lineTo(-0.78, 0.12);
+  hoodShape.lineTo(0.78, 0.12);
+  hoodShape.lineTo(1.12, -0.16);
+  hoodShape.closePath();
+  const hoodGeo = new THREE.ExtrudeGeometry(hoodShape, {
+    depth: 0.72,
+    bevelEnabled: true,
+    bevelThickness: 0.025,
+    bevelSize: 0.025,
+    bevelSegments: 1,
+  });
+  addInkedPart(root, hoodGeo, frameMat, {
+    position: [0, -0.76, -1.48],
+    rotation: [0.1, 0, 0],
+  });
 
-  const dashHood = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.28, 0.84), frameMat);
-  dashHood.position.set(0, -0.78, -1.16);
-  dashHood.rotation.x = 0.12;
-  root.add(dashHood);
-
-  const dashBevel = new THREE.Mesh(new THREE.BoxGeometry(1.56, 0.028, 0.06), bevelMat);
-  dashBevel.position.set(0, -0.635, -0.79);
-  root.add(dashBevel);
+  addInkedPart(root, new THREE.BoxGeometry(1.48, 0.026, 0.05), bevelMat, {
+    position: [0, -0.635, -0.78],
+  });
 
   for (let i = -2; i <= 2; i += 1) {
-    const led = new THREE.Mesh(new THREE.BoxGeometry(0.024, 0.012, 0.012), i === 0 ? ledCyan : ledAmber);
-    led.position.set(i * 0.18, -0.62, -0.76);
+    const led = new THREE.Mesh(
+      new THREE.BoxGeometry(0.032, 0.014, 0.014),
+      i === 0 ? ledCyan : ledAmber,
+    );
+    led.position.set(i * 0.16, -0.618, -0.76);
     root.add(led);
   }
 
+  const barrelMat = toonMat(0x4a526a);
+  for (const side of [-1, 1] as const) {
+    const gunShroud = new THREE.CylinderGeometry(0.022, 0.048, 1.05, 6);
+    gunShroud.rotateX(Math.PI / 2);
+    addInkedPart(root, gunShroud, barrelMat, {
+      position: [side * 0.98, -0.52, -1.56],
+      edgeAngle: 40,
+    });
+
+    const gunTip = new THREE.CylinderGeometry(0.015, 0.022, 0.2, 6);
+    gunTip.rotateX(Math.PI / 2);
+    addInkedPart(root, gunTip, bevelMat, {
+      position: [side * 0.98, -0.52, -2.18],
+      edgeAngle: 40,
+    });
+  }
+
+  const throttleHandle = new THREE.Group();
+  throttleHandle.position.set(-1.02, -0.66, -0.84);
+  throttleHandle.rotation.z = 0.24;
+  addInkedPart(throttleHandle, new THREE.BoxGeometry(0.026, 0.09, 0.028), bevelMat, {
+    position: [0, 0.035, 0],
+  });
+  addInkedPart(throttleHandle, new THREE.BoxGeometry(0.085, 0.03, 0.044), accentMat, {
+    position: [0.01, 0.082, 0],
+  });
+  root.add(throttleHandle);
+
   const muzzleLeft = buildMuzzleBurst();
-  muzzleLeft.position.set(-0.96, -0.52, -2.32);
+  muzzleLeft.position.set(-0.98, -0.52, -2.32);
   root.add(muzzleLeft);
 
   const muzzleRight = buildMuzzleBurst();
-  muzzleRight.position.set(0.96, -0.52, -2.32);
+  muzzleRight.position.set(0.98, -0.52, -2.32);
   root.add(muzzleRight);
 
-  return { root, muzzleLeft, muzzleRight, flashLight };
+  return { root, throttleHandle, muzzleLeft, muzzleRight, flashLight };
 }
 
 export function buildEnemyMesh(kind: EnemyKind): THREE.Group {
   const root = new THREE.Group();
-  const hullMat = flatMat(0x474e63);
-  const plateMat = flatMat(0x252a38);
-  const leadEdgeMat = flatMat(0xaeb7cc);
-  const crimsonMat = flatMat(0xe04349, 0x5c1116, 0.4);
+  const hullMat = toonMat(0x525a72);
+  const plateMat = toonMat(0x272c3c);
+  const rimMat = toonMat(0xc4cde0);
+  const crimsonMat = toonMat(0xe6454f, 0x6b1218, 0.45);
   const coreMat = glowMat(0x5dffb3);
 
   if (kind === 'raider') {
-    const pod = new THREE.Mesh(new THREE.OctahedronGeometry(2.7, 0), hullMat);
-    root.add(pod);
+    addInkedPart(root, new THREE.IcosahedronGeometry(2.6, 0), hullMat, { hullOutline: 1.06 });
 
-    const visor = new THREE.Mesh(new THREE.BoxGeometry(1.75, 1.15, 0.65), crimsonMat);
-    visor.position.set(0, 0.15, -2.35);
-    root.add(visor);
+    addInkedPart(root, new THREE.BoxGeometry(1.9, 1.15, 0.7), crimsonMat, {
+      position: [0, 0.1, -2.35],
+    });
 
-    const spar = new THREE.Mesh(new THREE.BoxGeometry(12.2, 0.78, 1.25), leadEdgeMat);
-    root.add(spar);
+    const sparGeo = new THREE.CylinderGeometry(0.52, 0.64, 12.6, 6);
+    sparGeo.rotateZ(Math.PI / 2);
+    addInkedPart(root, sparGeo, rimMat, { hullOutline: 1.05 });
 
-    const vaneGeo = new THREE.BoxGeometry(0.46, 9.6, 6.8);
-    const frontEdgeGeo = new THREE.BoxGeometry(0.62, 9.7, 0.72);
-    const trimGeo = new THREE.BoxGeometry(0.6, 1.2, 6.9);
+    const vaneGeo = createHexSolarVaneGeometry();
     for (const side of [-1, 1] as const) {
-      const vane = new THREE.Mesh(vaneGeo, plateMat);
-      vane.position.set(side * 6.1, 0, 0.2);
-      vane.rotation.z = side * 0.16;
-      root.add(vane);
+      const vaneGroup = new THREE.Group();
+      vaneGroup.position.set(side * 6.3, 0, 0.15);
+      vaneGroup.rotation.z = side * 0.15;
 
-      const frontEdge = new THREE.Mesh(frontEdgeGeo, leadEdgeMat);
-      frontEdge.position.set(side * 6.1, 0, -3.15);
-      frontEdge.rotation.z = side * 0.16;
-      root.add(frontEdge);
+      addInkedPart(vaneGroup, vaneGeo, plateMat, { hullOutline: 1.055 });
 
-      const stripe = new THREE.Mesh(trimGeo, crimsonMat);
-      stripe.position.set(side * 6.16, 0, 0.2);
-      stripe.rotation.z = side * 0.16;
-      root.add(stripe);
+      addInkedPart(vaneGroup, new THREE.BoxGeometry(0.68, 1.1, 7.6), crimsonMat, {
+        position: [0, 0, 0],
+      });
+      addInkedPart(vaneGroup, new THREE.BoxGeometry(0.62, 6.2, 0.65), rimMat, {
+        position: [0, 0, -3.55],
+      });
+      root.add(vaneGroup);
     }
 
-    const core = new THREE.Mesh(new THREE.OctahedronGeometry(1.35, 0), coreMat);
+    const core = new THREE.Mesh(new THREE.OctahedronGeometry(1.5, 0), coreMat);
     core.position.set(0, 0, 2.75);
     root.add(core);
   } else {
-    const body = new THREE.Mesh(new THREE.BoxGeometry(5.8, 2.6, 10.6), hullMat);
-    root.add(body);
+    const prowShape = new THREE.Shape();
+    prowShape.moveTo(0, -10.5);
+    prowShape.lineTo(4.2, -3.0);
+    prowShape.lineTo(3.2, 5.2);
+    prowShape.lineTo(-3.2, 5.2);
+    prowShape.lineTo(-4.2, -3.0);
+    prowShape.closePath();
+    const hullGeo = new THREE.ExtrudeGeometry(prowShape, {
+      depth: 2.1,
+      bevelEnabled: true,
+      bevelThickness: 0.55,
+      bevelSize: 0.45,
+      bevelSegments: 1,
+    });
+    hullGeo.rotateX(Math.PI / 2);
+    hullGeo.translate(0, 1.05, 0);
+    addInkedPart(root, hullGeo, hullMat, { hullOutline: 1.05 });
 
-    const prow = new THREE.Mesh(new THREE.ConeGeometry(3.5, 5.4, 4), crimsonMat);
-    prow.rotation.x = -Math.PI / 2;
-    prow.rotation.y = Math.PI / 4;
-    prow.position.set(0, 0, -7.9);
-    root.add(prow);
+    addInkedPart(root, new THREE.OctahedronGeometry(2.1, 0), crimsonMat, {
+      position: [0, 1.8, -1.5],
+      scale: [1, 0.65, 1.4],
+    });
 
+    const boomGeo = new THREE.CylinderGeometry(1.1, 1.45, 9.5, 6);
+    boomGeo.rotateX(Math.PI / 2);
     for (const side of [-1, 1] as const) {
-      const pod = new THREE.Mesh(new THREE.BoxGeometry(2.7, 4.3, 8.4), plateMat);
-      pod.position.set(side * 5.4, -0.5, 0.8);
-      pod.rotation.z = side * 0.22;
-      root.add(pod);
-
-      const edge = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.65, 8.5), leadEdgeMat);
-      edge.position.set(side * 5.4, 1.45, 0.8);
-      edge.rotation.z = side * 0.22;
-      root.add(edge);
-
-      const engine = new THREE.Mesh(new THREE.BoxGeometry(1.65, 1.65, 1.2), coreMat);
-      engine.position.set(side * 2.0, 0, 5.7);
+      addInkedPart(root, boomGeo, plateMat, {
+        position: [side * 5.2, -0.35, 0.4],
+        hullOutline: 1.05,
+      });
+      addInkedPart(root, new THREE.BoxGeometry(2.6, 0.35, 3.2), rimMat, {
+        position: [side * 3.8, 0.2, 0.6],
+      });
+      const engine = new THREE.Mesh(new THREE.OctahedronGeometry(1.45, 0), coreMat);
+      engine.position.set(side * 5.2, -0.35, 5.4);
       root.add(engine);
     }
   }
@@ -342,81 +496,90 @@ export function buildEnemyMesh(kind: EnemyKind): THREE.Group {
 
 export function buildFriendlyCarrierMesh(): THREE.Group {
   const root = new THREE.Group();
-  const hullMat = flatMat(0x7c8596);
-  const darkMat = flatMat(0x3a4152);
-  const accentMat = flatMat(0xd98a36);
-  const bayLight = glowMat(0x88ebff);
-  const bridgeLight = glowMat(0xffcc70);
+  const hullMat = toonMat(0x8893a8);
+  const deckMat = toonMat(0x475066);
+  const accentMat = toonMat(0xe59238);
+  const bayLight = glowMat(0x8cf0ff);
+  const bridgeLight = glowMat(0xffd278);
   const engineGlow = glowMat(0x6cd8ff);
-  const plumeGlow = glowMat(0x52c7ff, 0.45);
+  const plumeGlow = glowMat(0x52c7ff, 0.48);
 
-  const mainHull = new THREE.Mesh(new THREE.BoxGeometry(74, 34, 290), hullMat);
-  root.add(mainHull);
+  const hullProfile = new THREE.Shape();
+  hullProfile.moveTo(0, -172);
+  hullProfile.lineTo(32, -138);
+  hullProfile.lineTo(38, 128);
+  hullProfile.lineTo(26, 152);
+  hullProfile.lineTo(-26, 152);
+  hullProfile.lineTo(-38, 128);
+  hullProfile.lineTo(-32, -138);
+  hullProfile.closePath();
 
-  const prow = new THREE.Mesh(new THREE.ConeGeometry(44, 52, 4), darkMat);
-  prow.rotation.x = -Math.PI / 2;
-  prow.rotation.y = Math.PI / 4;
-  prow.scale.set(1.1, 0.52, 1);
-  prow.position.set(0, 0, -170);
-  root.add(prow);
+  const mainHullGeo = new THREE.ExtrudeGeometry(hullProfile, {
+    depth: 30,
+    bevelEnabled: true,
+    bevelThickness: 5,
+    bevelSize: 4,
+    bevelSegments: 1,
+  });
+  mainHullGeo.rotateX(Math.PI / 2);
+  mainHullGeo.translate(0, 15, 0);
+  addInkedPart(root, mainHullGeo, hullMat, { edgeAngle: 22 });
 
-  const deckSpine = new THREE.Mesh(new THREE.BoxGeometry(44, 14, 230), darkMat);
-  deckSpine.position.set(0, 22, -10);
-  root.add(deckSpine);
+  addInkedPart(root, new THREE.BoxGeometry(44, 12, 232), deckMat, { position: [0, 24, -8] });
 
-  const bridgeBase = new THREE.Mesh(new THREE.BoxGeometry(28, 26, 46), hullMat);
-  bridgeBase.position.set(16, 36, 68);
-  root.add(bridgeBase);
+  for (let i = -3; i <= 2; i += 1) {
+    const marker = new THREE.Mesh(new THREE.BoxGeometry(10, 1.2, 3.5), accentMat);
+    marker.position.set(0, 30.6, i * 32 - 12);
+    root.add(marker);
+  }
 
-  const bridgeCrown = new THREE.Mesh(new THREE.BoxGeometry(34, 12, 34), darkMat);
-  bridgeCrown.position.set(16, 53, 66);
-  root.add(bridgeCrown);
-
-  const bridgeGlass = new THREE.Mesh(new THREE.BoxGeometry(28, 5, 3), bridgeLight);
-  bridgeGlass.position.set(16, 53, 48.5);
+  addInkedPart(root, new THREE.BoxGeometry(28, 24, 48), hullMat, { position: [18, 38, 66] });
+  addInkedPart(root, new THREE.BoxGeometry(36, 12, 34), deckMat, { position: [18, 55, 64] });
+  const bridgeGlass = new THREE.Mesh(new THREE.BoxGeometry(29, 4.8, 3), bridgeLight);
+  bridgeGlass.position.set(18, 55, 46.5);
   root.add(bridgeGlass);
 
-  const mast = new THREE.Mesh(new THREE.BoxGeometry(3.2, 32, 3.2), accentMat);
-  mast.position.set(16, 74, 72);
-  root.add(mast);
+  addInkedPart(root, new THREE.CylinderGeometry(1.4, 2.2, 34, 6), accentMat, {
+    position: [18, 76, 70],
+  });
+  addInkedPart(root, new THREE.BoxGeometry(22, 3.6, 2.4), hullMat, {
+    position: [18, 88, 70],
+  });
 
-  const dish = new THREE.Mesh(new THREE.BoxGeometry(16, 3.5, 2.5), hullMat);
-  dish.position.set(16, 86, 72);
-  root.add(dish);
-
-  for (let i = -3; i <= 3; i += 1) {
-    const rib = new THREE.Mesh(new THREE.BoxGeometry(82, 38, 9), darkMat);
-    rib.position.set(0, 0, i * 38);
-    root.add(rib);
-  }
-
+  const tankGeo = new THREE.CylinderGeometry(7, 7, 56, 8);
+  tankGeo.rotateX(Math.PI / 2);
   for (const side of [-1, 1] as const) {
-    const stripe = new THREE.Mesh(new THREE.BoxGeometry(2.6, 5, 240), accentMat);
-    stripe.position.set(side * 38.2, 12, 0);
-    root.add(stripe);
+    addInkedPart(root, new THREE.BoxGeometry(3, 5.5, 224), accentMat, {
+      position: [side * 42, 11, -6],
+    });
 
-    const bayFrame = new THREE.Mesh(new THREE.BoxGeometry(3.5, 16, 102), darkMat);
-    bayFrame.position.set(side * 37.5, -3, -30);
-    root.add(bayFrame);
-
-    const bay = new THREE.Mesh(new THREE.BoxGeometry(1.5, 10.5, 92), bayLight);
-    bay.position.set(side * 39.2, -3, -30);
+    addInkedPart(root, new THREE.BoxGeometry(5, 16, 104), deckMat, {
+      position: [side * 41, -3, -28],
+    });
+    const bay = new THREE.Mesh(new THREE.BoxGeometry(1.6, 10.5, 92), bayLight);
+    bay.position.set(side * 43.6, -3, -28);
     root.add(bay);
+
+    for (let t = -2; t <= 2; t += 1) {
+      addInkedPart(root, new THREE.BoxGeometry(2.2, 16, 3.2), deckMat, {
+        position: [side * 44.2, -3, -28 + t * 20],
+      });
+    }
+
+    addInkedPart(root, tankGeo, deckMat, { position: [side * 42, -5, 74] });
   }
 
-  for (const x of [-22, -8, 8, 22]) {
-    const nozzle = new THREE.Mesh(new THREE.CylinderGeometry(5.5, 7, 16, 6), darkMat);
-    nozzle.rotation.x = Math.PI / 2;
-    nozzle.position.set(x, 0, 152);
-    root.add(nozzle);
-
-    const glow = new THREE.Mesh(new THREE.CircleGeometry(5.2, 6), engineGlow);
-    glow.position.set(x, 0, 160.5);
+  const nozzleGeo = new THREE.CylinderGeometry(5.8, 7.6, 16, 8);
+  nozzleGeo.rotateX(Math.PI / 2);
+  for (const x of [-20, -7, 7, 20]) {
+    addInkedPart(root, nozzleGeo, deckMat, { position: [x, 0, 160] });
+    const glow = new THREE.Mesh(new THREE.CircleGeometry(5.5, 8), engineGlow);
+    glow.position.set(x, 0, 168.5);
     root.add(glow);
 
-    const plume = new THREE.Mesh(new THREE.ConeGeometry(5.2, 26, 6), plumeGlow);
+    const plume = new THREE.Mesh(new THREE.ConeGeometry(5.4, 28, 7), plumeGlow);
     plume.rotation.x = Math.PI / 2;
-    plume.position.set(x, 0, 173);
+    plume.position.set(x, 0, 182);
     root.add(plume);
   }
 
@@ -426,63 +589,118 @@ export function buildFriendlyCarrierMesh(): THREE.Group {
 export interface HostileFrigateRig {
   readonly root: THREE.Group;
   readonly subsystemMeshes: ReadonlyMap<string, THREE.Mesh>;
+  readonly shieldRing: THREE.Mesh;
 }
 
 export function buildHostileFrigateMesh(): HostileFrigateRig {
   const root = new THREE.Group();
-  const hullMat = flatMat(0x3a3448);
-  const armorMat = flatMat(0x5a4254);
-  const crimsonAccent = flatMat(0xcf3845);
-  const driveGlow = glowMat(0xff4c65);
+  const hullMat = toonMat(0x6b5f82, 0x161124, 0.35);
+  const armorMat = toonMat(0x8d6c86, 0x1e1320, 0.3);
+  const crimsonAccent = toonMat(0xf04d5c, 0x731420, 0.5);
+  const trenchGlow = glowMat(0xff6b7a);
+  const driveGlow = glowMat(0xff526b);
 
-  const wedge = new THREE.Mesh(new THREE.ConeGeometry(46, 250, 4), hullMat);
-  wedge.rotation.x = -Math.PI / 2;
-  wedge.rotation.y = Math.PI / 4;
-  wedge.scale.set(1.05, 0.56, 1);
-  root.add(wedge);
+  const daggerShape = new THREE.Shape();
+  daggerShape.moveTo(0, -135);
+  daggerShape.lineTo(42, 48);
+  daggerShape.lineTo(36, 126);
+  daggerShape.lineTo(-36, 126);
+  daggerShape.lineTo(-42, 48);
+  daggerShape.closePath();
 
-  const spine = new THREE.Mesh(new THREE.BoxGeometry(24, 18, 170), armorMat);
-  spine.position.set(0, 14, 18);
-  root.add(spine);
+  const mainGeo = new THREE.ExtrudeGeometry(daggerShape, {
+    depth: 22,
+    bevelEnabled: true,
+    bevelThickness: 6,
+    bevelSize: 4,
+    bevelSegments: 1,
+  });
+  mainGeo.rotateX(Math.PI / 2);
+  mainGeo.translate(0, 11, 0);
+  addInkedPart(root, mainGeo, hullMat, { edgeAngle: 20 });
 
-  const tower = new THREE.Mesh(new THREE.BoxGeometry(34, 24, 26), armorMat);
-  tower.position.set(0, 30, 68);
-  root.add(tower);
+  addInkedPart(root, new THREE.BoxGeometry(24, 15, 148), armorMat, { position: [0, 17, 28] });
+  addInkedPart(root, new THREE.BoxGeometry(36, 20, 28), armorMat, { position: [0, 32, 76] });
+  addInkedPart(root, new THREE.BoxGeometry(4, 4.5, 165), crimsonAccent, { position: [-26, 7, 26] });
+  addInkedPart(root, new THREE.BoxGeometry(4, 4.5, 165), crimsonAccent, { position: [26, 7, 26] });
 
-  const stripeLeft = new THREE.Mesh(new THREE.BoxGeometry(4, 5, 190), crimsonAccent);
-  stripeLeft.position.set(-22, 6, 12);
-  root.add(stripeLeft);
+  const bridgeSlit = new THREE.Mesh(new THREE.BoxGeometry(26, 3.6, 3), trenchGlow);
+  bridgeSlit.position.set(0, 34, 60.5);
+  root.add(bridgeSlit);
 
-  const stripeRight = new THREE.Mesh(new THREE.BoxGeometry(4, 5, 190), crimsonAccent);
-  stripeRight.position.set(22, 6, 12);
-  root.add(stripeRight);
+  for (const side of [-1, 1] as const) {
+    const flankVent = new THREE.Mesh(new THREE.BoxGeometry(2.2, 4.5, 118), trenchGlow);
+    flankVent.position.set(side * 37.5, 0, 52);
+    root.add(flankVent);
+  }
 
   for (const x of [-16, 0, 16]) {
     const drive = new THREE.Mesh(new THREE.BoxGeometry(11, 11, 4), driveGlow);
-    drive.position.set(x, 0, 126);
+    drive.position.set(x, 0, 132);
     root.add(drive);
   }
 
-  const shieldDome = new THREE.Mesh(
+  const shieldDome = addInkedPart(
+    root,
     new THREE.IcosahedronGeometry(15, 1),
-    flatMat(0xff52b8, 0xc7207e, 0.9),
+    toonMat(0xff5ec0, 0xd42288, 0.95),
+    { position: [0, 28, -32], edgeAngle: 18 },
   );
-  shieldDome.position.set(0, 28, -32);
-  root.add(shieldDome);
 
-  const clampCore = new THREE.Mesh(
-    new THREE.OctahedronGeometry(15, 0),
-    flatMat(0xff8038, 0xc73d0c, 0.9),
+  const shieldRing = new THREE.Mesh(
+    new THREE.TorusGeometry(20, 1.2, 6, 18),
+    glowMat(0xff8ad8, 0.72),
   );
-  clampCore.position.set(0, -20, 62);
-  root.add(clampCore);
+  shieldRing.position.set(0, 28, -32);
+  shieldRing.rotation.x = Math.PI * 0.42;
+  root.add(shieldRing);
+
+  const clampCore = addInkedPart(
+    root,
+    new THREE.OctahedronGeometry(15, 0),
+    toonMat(0xff843b, 0xd6400e, 0.95),
+    { position: [0, -20, 62], edgeAngle: 15 },
+  );
+
+  for (const side of [-1, 1] as const) {
+    addInkedPart(root, new THREE.BoxGeometry(6, 18, 12), armorMat, {
+      position: [side * 20, -18, 62],
+      rotation: [0, 0, side * 0.25],
+    });
+  }
 
   const subsystemMeshes = new Map<string, THREE.Mesh>([
     ['sub-shield-dome', shieldDome],
     ['sub-clamp-core', clampCore],
   ]);
 
-  return { root, subsystemMeshes };
+  return { root, subsystemMeshes, shieldRing };
+}
+
+export function buildAsteroidMesh(asteroid: AsteroidState): THREE.Group {
+  const group = new THREE.Group();
+  const color =
+    asteroid.tint === 'ice' ? 0xc2b2d4 : asteroid.tint === 'ochre' ? 0xb87456 : 0x5d6278;
+
+  const geo = new THREE.IcosahedronGeometry(asteroid.radius, 1);
+  const posAttr = geo.getAttribute('position') as THREE.BufferAttribute;
+  for (let i = 0; i < posAttr.count; i += 1) {
+    const vx = posAttr.getX(i);
+    const vy = posAttr.getY(i);
+    const vz = posAttr.getZ(i);
+    const warp =
+      1 +
+      0.18 * Math.sin(vx * 0.17 + asteroid.rotation.x * 4) *
+        Math.cos(vy * 0.19 + asteroid.rotation.y * 4) +
+      0.1 * Math.sin(vz * 0.23);
+    posAttr.setXYZ(i, vx * warp, vy * warp * 0.76, vz * warp);
+  }
+  geo.computeVertexNormals();
+
+  addInkedPart(group, geo, toonMat(color), { edgeAngle: 20, hullOutline: 1.035 });
+  group.position.set(asteroid.position.x, asteroid.position.y, asteroid.position.z);
+  group.rotation.set(asteroid.rotation.x, asteroid.rotation.y, asteroid.rotation.z);
+  return group;
 }
 
 export function buildOrbitalBackdrop(dotTexture: THREE.CanvasTexture): THREE.Group {
@@ -508,18 +726,18 @@ export function buildOrbitalBackdrop(dotTexture: THREE.CanvasTexture): THREE.Gro
       varying vec3 vDir;
       void main() {
         float y = clamp(vDir.y, -1.0, 1.0);
-        vec3 zenith = vec3(0.035, 0.045, 0.12);
-        vec3 horizon = vec3(0.22, 0.10, 0.20);
-        vec3 nadir = vec3(0.05, 0.035, 0.10);
+        vec3 zenith = vec3(0.035, 0.045, 0.13);
+        vec3 horizon = vec3(0.24, 0.11, 0.23);
+        vec3 nadir = vec3(0.05, 0.035, 0.11);
         vec3 base = y >= 0.0
           ? mix(horizon, zenith, pow(y, 0.55))
           : mix(horizon, nadir, pow(-y, 0.65));
 
         float sunAlign = max(dot(normalize(vDir), uSunDir), 0.0);
-        vec3 duskGlow = vec3(0.95, 0.42, 0.18) * pow(sunAlign, 4.5) * 0.62;
-        vec3 sunCore = vec3(1.0, 0.92, 0.74) * smoothstep(0.9968, 0.9992, sunAlign);
+        vec3 duskGlow = vec3(0.98, 0.44, 0.18) * pow(sunAlign, 4.2) * 0.66;
+        vec3 sunCore = vec3(1.0, 0.94, 0.78) * smoothstep(0.9968, 0.9992, sunAlign);
         float belt = exp(-abs(vDir.y + vDir.x * 0.18) * 7.5);
-        vec3 nebulaBand = vec3(0.48, 0.19, 0.25) * belt * 0.24;
+        vec3 nebulaBand = vec3(0.52, 0.20, 0.27) * belt * 0.26;
 
         vec3 color = base + duskGlow + nebulaBand + sunCore;
         gl_FragColor = vec4(color, 1.0);
@@ -550,17 +768,18 @@ export function buildOrbitalBackdrop(dotTexture: THREE.CanvasTexture): THREE.Gro
       varying vec3 vWorldNormal;
       void main() {
         float lat = vLocal.y;
-        float band = sin(lat * 22.0 + sin(vLocal.x * 6.0) * 0.45) * 0.5 + 0.5;
-        float fine = sin(lat * 52.0) * 0.5 + 0.5;
-        vec3 c1 = vec3(0.32, 0.12, 0.22);
-        vec3 c2 = vec3(0.76, 0.36, 0.22);
-        vec3 c3 = vec3(0.93, 0.66, 0.46);
+        float band = floor((sin(lat * 20.0 + sin(vLocal.x * 6.0) * 0.4) * 0.5 + 0.5) * 4.0) / 4.0;
+        vec3 c1 = vec3(0.32, 0.12, 0.24);
+        vec3 c2 = vec3(0.78, 0.36, 0.22);
+        vec3 c3 = vec3(0.96, 0.68, 0.46);
         vec3 albedo = mix(c1, c2, band);
-        albedo = mix(albedo, c3, fine * 0.35);
+        albedo = mix(albedo, c3, step(0.62, band) * 0.45);
 
-        float lit = smoothstep(-0.18, 0.38, dot(vWorldNormal, uSunDir));
-        vec3 night = vec3(0.045, 0.03, 0.085);
-        vec3 rim = vec3(0.98, 0.56, 0.31) * pow(1.0 - max(dot(vWorldNormal, vec3(0.0, 0.0, 1.0)), 0.0), 3.0) * lit * 0.38;
+        float litRaw = dot(vWorldNormal, uSunDir);
+        float lit = smoothstep(-0.14, 0.32, litRaw);
+        lit = floor(lit * 4.0 + 0.5) / 4.0;
+        vec3 night = vec3(0.045, 0.03, 0.09);
+        vec3 rim = vec3(0.99, 0.58, 0.32) * pow(1.0 - max(dot(vWorldNormal, vec3(0.0, 0.0, 1.0)), 0.0), 3.0) * lit * 0.44;
         gl_FragColor = vec4(mix(night, albedo, lit) + rim, 1.0);
       }
     `,
@@ -604,9 +823,9 @@ export function buildOrbitalBackdrop(dotTexture: THREE.CanvasTexture): THREE.Gro
         vec3 perp = vOffsetFromPlanet - uSunDir * proj;
         float inShadow = (proj < 0.0) ? (1.0 - smoothstep(uPlanetRadius * 0.94, uPlanetRadius * 1.05, length(perp))) : 0.0;
 
-        vec3 litColor = mix(vec3(0.68, 0.42, 0.44), vec3(0.95, 0.69, 0.48), bands);
+        vec3 litColor = mix(vec3(0.68, 0.42, 0.46), vec3(0.96, 0.70, 0.48), bands);
         vec3 color = mix(litColor, vec3(0.08, 0.06, 0.14), inShadow * 0.85);
-        float alpha = edgeFade * cassiniGap * (0.45 + 0.55 * innerGap) * (0.28 + 0.18 * bands);
+        float alpha = edgeFade * cassiniGap * (0.45 + 0.55 * innerGap) * (0.3 + 0.18 * bands);
         gl_FragColor = vec4(color, alpha);
       }
     `,

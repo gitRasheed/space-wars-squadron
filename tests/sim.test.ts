@@ -1,43 +1,43 @@
 import { describe, expect, it } from 'vitest';
 import { createInitialEnergy, ENERGY_RULES, stepEnergy } from '../src/sim/energy';
-import { nextRandom, vec3 } from '../src/sim/math';
+import { distance, nextRandom, vec3 } from '../src/sim/math';
 import { DEFAULT_SORTIE_SEED, FIXED_DT, NEUTRAL_INPUT } from '../src/sim/types';
 import { createInitialWorld, stepWorld } from '../src/sim/world';
 
-describe('energy and AOA drift kernel', () => {
+describe('energy and snap-turn drift kernel', () => {
   it('enforces recovery cooldown after boost release and blocks immediate boost-gasping', () => {
     let energy = createInitialEnergy();
     const vel = vec3(0, 0, -90);
 
-    energy = stepEnergy(energy, null, true, false, vel, FIXED_DT).energy;
+    energy = stepEnergy(energy, true, false, vel, FIXED_DT).energy;
     expect(energy.boostMode.kind).toBe('boosting');
 
-    energy = stepEnergy(energy, null, false, false, vel, FIXED_DT).energy;
+    energy = stepEnergy(energy, false, false, vel, FIXED_DT).energy;
     expect(energy.boostMode.kind).toBe('recovering');
 
-    energy = stepEnergy(energy, 'engines', true, false, vel, FIXED_DT).energy;
+    energy = stepEnergy(energy, true, false, vel, FIXED_DT).energy;
     expect(energy.boostMode.kind).toBe('recovering');
 
-    energy = stepEnergy(energy, 'engines', false, true, vel, FIXED_DT).energy;
+    energy = stepEnergy(energy, false, true, vel, FIXED_DT).energy;
     expect(energy.boostMode.kind).toBe('recovering');
 
     const recoveryTicks = Math.ceil(ENERGY_RULES.boostRecoverySeconds / FIXED_DT) + 2;
     for (let i = 0; i < recoveryTicks; i += 1) {
-      energy = stepEnergy(energy, null, false, false, vel, FIXED_DT).energy;
+      energy = stepEnergy(energy, false, false, vel, FIXED_DT).energy;
     }
     expect(energy.boostMode.kind).toBe('ready');
   });
 
-  it('caps AOA drift duration and forces transition into recovery', () => {
+  it('caps snap-turn drift duration and forces transition into recovery', () => {
     let energy = createInitialEnergy();
     const vel = vec3(0, 0, -110);
 
-    energy = stepEnergy(energy, null, false, true, vel, FIXED_DT).energy;
+    energy = stepEnergy(energy, false, true, vel, FIXED_DT).energy;
     expect(energy.boostMode.kind).toBe('drifting');
 
     const maxTicks = Math.ceil(ENERGY_RULES.maxDriftSeconds / FIXED_DT) + 2;
     for (let i = 0; i < maxTicks; i += 1) {
-      energy = stepEnergy(energy, null, false, true, vel, FIXED_DT).energy;
+      energy = stepEnergy(energy, false, true, vel, FIXED_DT).energy;
     }
     expect(energy.boostMode.kind).toBe('recovering');
   });
@@ -63,16 +63,29 @@ describe('sortie simulation contracts', () => {
     expect(world.phase.kind).toBe('active');
   });
 
-  it('toggles camera, fires cannons, and orders wingmate', () => {
+  it('breaks enemy raiders away after close passes instead of gluing them behind the player', () => {
     let world = createInitialWorld(DEFAULT_SORTIE_SEED, true);
-    world = stepWorld(
-      world,
-      { ...NEUTRAL_INPUT, toggleCamera: true, firePrimary: true, orderWingmate: true },
-      FIXED_DT,
-    );
+    let sawBreakAway = false;
+    for (let i = 0; i < 420; i += 1) {
+      world = stepWorld(world, NEUTRAL_INPUT, FIXED_DT);
+      if (world.enemies.some((e) => e.maneuver.kind === 'break_away')) {
+        sawBreakAway = true;
+      }
+      for (const e of world.enemies) {
+        if (e.maneuver.kind === 'break_away') {
+          expect(distance(e.position, world.player.position)).toBeGreaterThan(20);
+        }
+      }
+    }
+    expect(sawBreakAway).toBe(true);
+  });
+
+  it('toggles camera, fires cannons, and maintains autonomous wingmate target', () => {
+    let world = createInitialWorld(DEFAULT_SORTIE_SEED, true);
+    world = stepWorld(world, { ...NEUTRAL_INPUT, toggleCamera: true, firePrimary: true }, FIXED_DT);
     expect(world.cameraMode).toBe('chase');
     expect(world.projectiles.length).toBeGreaterThanOrEqual(2);
-    expect(world.wingmate.assignedTargetId).toBe(world.player.selectedTargetId);
+    expect(world.wingmate.targetId).not.toBeNull();
   });
 
   it('clears lock and rearms missiles after firing', () => {
@@ -81,7 +94,7 @@ describe('sortie simulation contracts', () => {
     expect(world.player.missilesReady).toBe(3);
     expect(world.player.lockState.kind).toBe('none');
 
-    for (let i = 0; i < 300; i += 1) {
+    for (let i = 0; i < 270; i += 1) {
       world = stepWorld(world, NEUTRAL_INPUT, FIXED_DT);
     }
     expect(world.player.missilesReady).toBe(4);
@@ -109,7 +122,6 @@ describe('sortie simulation contracts', () => {
           firePrimary: r3.value > 0.5,
           fireMissile: tick % 90 === 0,
           cycleTarget: tick % 180 === 0,
-          orderWingmate: tick % 240 === 0,
         },
         FIXED_DT,
       );

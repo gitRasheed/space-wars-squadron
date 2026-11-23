@@ -19,7 +19,7 @@ interface ReadOnlyTelemetry {
     readonly subsystemsRemaining: number;
     readonly projectilesCount: number;
     readonly selectedTargetId: string | null;
-    readonly wingmateAssignedTargetId: string | null;
+    readonly wingmateTargetId: string | null;
   };
 }
 
@@ -80,7 +80,7 @@ function boot(): void {
       subsystemsRemaining: world.hostileFrigate.subsystems.filter((s) => s.hull > 0).length,
       projectilesCount: world.projectiles.length,
       selectedTargetId: world.player.selectedTargetId,
-      wingmateAssignedTargetId: world.wingmate.assignedTargetId,
+      wingmateTargetId: world.wingmate.targetId,
     }),
   };
 

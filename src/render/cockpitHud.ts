@@ -22,8 +22,8 @@ const CYAN = '#6be5ff';
 const CRIMSON = '#ff4d63';
 const EMERALD = '#5dffb0';
 const PANEL_BG = 'rgba(11, 13, 22, 0.84)';
-const LABEL_BG = 'rgba(10, 11, 19, 0.78)';
-const DASH_HEIGHT = 122;
+const LABEL_BG = 'rgba(10, 11, 19, 0.82)';
+const DASH_HEIGHT = 114;
 const DASH_BOTTOM_MARGIN = 10;
 
 export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
@@ -169,7 +169,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     const isDrifting = world.player.energy.boostMode.kind === 'drifting';
 
     ctx.strokeStyle = isDrifting ? CYAN : AMBER;
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = 1.6;
 
     const gap = 10;
     const arm = 12;
@@ -198,7 +198,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       projectedVel.y <= bounds.bottom;
 
     if (inCanopy) {
-      ctx.strokeStyle = isDrifting ? CYAN : 'rgba(107, 229, 255, 0.6)';
+      ctx.strokeStyle = isDrifting ? CYAN : 'rgba(107, 229, 255, 0.58)';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.arc(projectedVel.x, projectedVel.y, 7, 0, Math.PI * 2);
@@ -208,7 +208,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       ctx.lineTo(projectedVel.x + 11, projectedVel.y);
       ctx.stroke();
     } else if (isDrifting) {
-      drawEdgeChevron(projectedVel, CYAN, 'VEL');
+      drawEdgeChevron(projectedVel, CYAN, null);
     }
   }
 
@@ -255,72 +255,85 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
         projected.y <= bounds.bottom;
 
       if (inCanopy) {
-        const size = isSelected ? 16 : 10;
-        ctx.strokeStyle = isSelected ? CRIMSON : 'rgba(255, 110, 96, 0.58)';
-        ctx.lineWidth = isSelected ? 2 : 1.2;
+        if (!isSelected) {
+          const size = 9;
+          ctx.strokeStyle = 'rgba(255, 110, 96, 0.42)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(projected.x, projected.y - size);
+          ctx.lineTo(projected.x + size, projected.y);
+          ctx.lineTo(projected.x, projected.y + size);
+          ctx.lineTo(projected.x - size, projected.y);
+          ctx.closePath();
+          ctx.stroke();
+          continue;
+        }
 
-        ctx.beginPath();
-        ctx.moveTo(projected.x, projected.y - size);
-        ctx.lineTo(projected.x + size, projected.y);
-        ctx.lineTo(projected.x, projected.y + size);
-        ctx.lineTo(projected.x - size, projected.y);
-        ctx.closePath();
-        ctx.stroke();
+        const lock = world.player.lockState;
+        const bracketHalf =
+          lock.kind === 'acquiring' && lock.targetId === contact.id
+            ? 32 - lock.progress * 10
+            : lock.kind === 'locked' && lock.targetId === contact.id
+              ? 20
+              : 23;
+        const bracketColor =
+          lock.kind === 'acquiring' && lock.targetId === contact.id ? AMBER : CRIMSON;
+        const bracketWidth =
+          lock.kind === 'locked' && lock.targetId === contact.id ? 2.4 : 1.8;
+        drawLockCorners(projected.x, projected.y, bracketHalf, bracketColor, bracketWidth);
 
-        if (isSelected) {
-          const lock = world.player.lockState;
-          if (lock.kind === 'acquiring' && lock.targetId === contact.id) {
-            const half = 34 - lock.progress * 13;
-            drawLockCorners(projected.x, projected.y, half, AMBER, 1.8);
-          } else if (lock.kind === 'locked' && lock.targetId === contact.id) {
-            drawLockCorners(projected.x, projected.y, 21, CRIMSON, 2.2);
-          }
+        const labelAlign = projected.x > cssWidth * 0.55 ? 'right' : 'left';
+        const labelX =
+          labelAlign === 'right' ? projected.x - bracketHalf - 8 : projected.x + bracketHalf + 8;
+        const lockSuffix = lock.kind === 'locked' && lock.targetId === contact.id ? ' [LOCK]' : '';
+        drawPillLabel(
+          `${contact.label} ${distMeters}M${lockSuffix}`,
+          labelX,
+          projected.y - 6,
+          CRIMSON,
+          labelAlign,
+        );
 
-          const labelAlign = projected.x > cssWidth * 0.55 ? 'right' : 'left';
-          const labelX = labelAlign === 'right' ? projected.x - size - 8 : projected.x + size + 8;
-          const lockSuffix = lock.kind === 'locked' && lock.targetId === contact.id ? ' [LOCK]' : '';
-          drawPillLabel(`${contact.label} ${distMeters}M${lockSuffix}`, labelX, projected.y - 4, CRIMSON, labelAlign);
+        const lead = computeLeadPoint(
+          world.player.position,
+          world.player.velocity,
+          contact.position,
+          contact.velocity,
+          COMBAT_TUNING.boltSpeed,
+        );
+        const projLead = project(lead, cssWidth, cssHeight);
+        const leadDist = Math.hypot(projLead.x - projected.x, projLead.y - projected.y);
+        const leadInCanopy =
+          projLead.inFront &&
+          projLead.x >= bounds.left &&
+          projLead.x <= bounds.right &&
+          projLead.y >= bounds.top &&
+          projLead.y <= bounds.bottom;
 
-          const lead = computeLeadPoint(
-            world.player.position,
-            world.player.velocity,
-            contact.position,
-            contact.velocity,
-            COMBAT_TUNING.boltSpeed,
-          );
-          const projLead = project(lead, cssWidth, cssHeight);
-          const leadInCanopy =
-            projLead.inFront &&
-            projLead.x >= bounds.left &&
-            projLead.x <= bounds.right &&
-            projLead.y >= bounds.top &&
-            projLead.y <= bounds.bottom;
+        if (leadInCanopy && leadDist > 12) {
+          ctx.strokeStyle = 'rgba(244, 180, 89, 0.42)';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          ctx.moveTo(projected.x, projected.y);
+          ctx.lineTo(projLead.x, projLead.y);
+          ctx.stroke();
+          ctx.setLineDash([]);
 
-          if (leadInCanopy) {
-            ctx.strokeStyle = 'rgba(244, 180, 89, 0.45)';
-            ctx.lineWidth = 1;
-            ctx.setLineDash([4, 4]);
-            ctx.beginPath();
-            ctx.moveTo(projected.x, projected.y);
-            ctx.lineTo(projLead.x, projLead.y);
-            ctx.stroke();
-            ctx.setLineDash([]);
+          ctx.strokeStyle = '#090a12';
+          ctx.lineWidth = 3.5;
+          ctx.beginPath();
+          ctx.arc(projLead.x, projLead.y, 8, 0, Math.PI * 2);
+          ctx.stroke();
 
-            ctx.strokeStyle = '#090a12';
-            ctx.lineWidth = 4;
-            ctx.beginPath();
-            ctx.arc(projLead.x, projLead.y, 9, 0, Math.PI * 2);
-            ctx.stroke();
+          ctx.strokeStyle = EMERALD;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(projLead.x, projLead.y, 8, 0, Math.PI * 2);
+          ctx.stroke();
 
-            ctx.strokeStyle = EMERALD;
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.arc(projLead.x, projLead.y, 9, 0, Math.PI * 2);
-            ctx.stroke();
-
-            ctx.fillStyle = EMERALD;
-            ctx.fillRect(projLead.x - 1.5, projLead.y - 1.5, 3, 3);
-          }
+          ctx.fillStyle = EMERALD;
+          ctx.fillRect(projLead.x - 1.5, projLead.y - 1.5, 3, 3);
         }
       } else if (isSelected) {
         drawEdgeChevron(projected, CRIMSON, `${contact.label} ${distMeters}M`);
@@ -440,7 +453,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
   }
 
   function drawLowerDash(world: WorldState, audioMuted: boolean): void {
-    const dashW = Math.min(760, cssWidth - 28);
+    const dashW = Math.min(720, cssWidth - 28);
     const dashX = (cssWidth - dashW) * 0.5;
     const dashY = cssHeight - DASH_HEIGHT - DASH_BOTTOM_MARGIN;
 
@@ -452,15 +465,15 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
 
     const p = world.player;
     const leftX = dashX + 18;
-    const colW = Math.min(220, dashW * 0.3);
+    const colW = Math.min(210, dashW * 0.3);
 
     const boostLabel =
       p.energy.boostMode.kind === 'boosting'
-        ? 'BOOST'
+        ? 'AFTERBURNER'
         : p.energy.boostMode.kind === 'drifting'
-          ? 'AOA DRIFT'
+          ? 'SNAP TURN'
           : p.energy.boostMode.kind === 'recovering'
-            ? 'RECOVER'
+            ? 'COOLING'
             : 'READY';
     const boostColor =
       p.energy.boostMode.kind === 'drifting'
@@ -474,53 +487,38 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     ctx.font = 'bold 14px "Courier New", monospace';
     ctx.fillStyle = AMBER;
     ctx.textAlign = 'left';
-    ctx.fillText(`SPD ${Math.round(p.speed)} M/S`, leftX, dashY + 23);
+    ctx.fillText(`${Math.round(p.speed)} M/S`, leftX, dashY + 24);
     ctx.fillStyle = boostColor;
     ctx.textAlign = 'right';
-    ctx.fillText(boostLabel, leftX + colW, dashY + 23);
+    ctx.fillText(boostLabel, leftX + colW, dashY + 24);
 
     drawBar(
       leftX,
-      dashY + 44,
+      dashY + 46,
       colW,
       10,
       p.energy.engineCharge / 100,
       CYAN,
-      'ENG CAP',
+      'THRUSTER [SHIFT/SPC]',
       `${Math.round(p.energy.engineCharge)}%`,
     );
     drawBar(
       leftX,
-      dashY + 74,
+      dashY + 78,
       colW,
       10,
       p.energy.weaponCharge / 100,
       AMBER,
-      'WPN CAP',
+      'CANNONS',
       `${Math.round(p.energy.weaponCharge)}%`,
     );
 
-    ctx.font = 'bold 10px "Courier New", monospace';
-    ctx.textAlign = 'left';
-    const modes: readonly { key: string; mode: 'engines' | 'balanced' | 'weapons'; label: string }[] = [
-      { key: '1', mode: 'engines', label: 'ENG' },
-      { key: '2', mode: 'balanced', label: 'BAL' },
-      { key: '3', mode: 'weapons', label: 'WPN' },
-    ];
-    let modeX = leftX;
-    for (const item of modes) {
-      const active = p.energy.powerMode === item.mode;
-      ctx.fillStyle = active ? AMBER : 'rgba(244, 180, 89, 0.45)';
-      ctx.fillText(`[${item.key}]${item.label}`, modeX, dashY + 105);
-      modeX += 64;
-    }
-
-    drawRadar(world, cssWidth * 0.5, dashY + 56, 44);
+    drawRadar(world, cssWidth * 0.5, dashY + 52, 41);
 
     const rightX = dashX + dashW - colW - 18;
     drawBar(
       rightX,
-      dashY + 28,
+      dashY + 26,
       colW,
       10,
       p.energy.shieldCharge / 100,
@@ -530,7 +528,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     );
     drawBar(
       rightX,
-      dashY + 58,
+      dashY + 56,
       colW,
       10,
       p.hull / p.maxHull,
@@ -542,11 +540,11 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     ctx.font = 'bold 10px "Courier New", monospace';
     ctx.fillStyle = AMBER;
     ctx.textAlign = 'left';
-    ctx.fillText('MISSILES', rightX, dashY + 86);
+    ctx.fillText('MISSILES', rightX, dashY + 84);
     for (let i = 0; i < p.maxMissiles; i += 1) {
       const ready = i < p.missilesReady;
       ctx.fillStyle = ready ? '#ff8b4d' : 'rgba(255, 255, 255, 0.14)';
-      ctx.fillRect(rightX + 68 + i * 24, dashY + 76, 18, 10);
+      ctx.fillRect(rightX + 64 + i * 24, dashY + 74, 18, 10);
     }
 
     ctx.fillStyle = 'rgba(244, 180, 89, 0.78)';
@@ -554,7 +552,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     ctx.fillText(
       `CAM[V]:${world.cameraMode.toUpperCase()}  SFX[M]:${audioMuted ? 'OFF' : 'ON'}`,
       rightX,
-      dashY + 106,
+      dashY + 102,
     );
 
     if (p.proximityWarning) {
@@ -607,8 +605,8 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     ctx.fillStyle = 'rgba(8, 9, 18, 0.66)';
     ctx.fillRect(0, 0, cssWidth, cssHeight);
 
-    const cardW = Math.min(580, cssWidth - 40);
-    const cardH = 264;
+    const cardW = Math.min(560, cssWidth - 40);
+    const cardH = 250;
     const cardX = (cssWidth - cardW) * 0.5;
     const cardY = (cssHeight - cardH) * 0.5;
 
@@ -627,21 +625,21 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       ctx.font = '13px "Courier New", monospace';
       ctx.fillStyle = '#f6e8cf';
       ctx.fillText('SORTIE 01: DEFEND HMV-09 HEARTHSTONE', cssWidth * 0.5, cardY + 84);
-      ctx.fillText('Destroy enemy raiders & disable the rival frigate subsystems.', cssWidth * 0.5, cardY + 108);
+      ctx.fillText('Clear the raiders & knock out both frigate subsystems.', cssWidth * 0.5, cardY + 108);
 
       ctx.font = 'bold 12px "Courier New", monospace';
       ctx.fillStyle = '#fff0d4';
-      ctx.fillText('MOUSE: Steer  |  LMB: Cannons  |  RMB/E: Missile  |  T: Cycle Target', cssWidth * 0.5, cardY + 146);
+      ctx.fillText('MOUSE: Steer  |  LMB: Cannons  |  RMB/E: Homing Missile', cssWidth * 0.5, cardY + 146);
 
       ctx.font = '12px "Courier New", monospace';
       ctx.fillStyle = CYAN;
-      ctx.fillText('W/S: Throttle  |  A/D: Roll  |  SHIFT: Boost  |  SPACE: AOA Drift', cssWidth * 0.5, cardY + 172);
-      ctx.fillStyle = 'rgba(244, 180, 89, 0.85)';
-      ctx.fillText('F: Order Wingmate  |  1/2/3: Power  |  V: Camera  |  R: Retry  |  M: Sound', cssWidth * 0.5, cardY + 196);
+      ctx.fillText('SHIFT: Afterburner  |  SPACE: Snap-Turn  |  W/S: Speed  |  A/D: Roll', cssWidth * 0.5, cardY + 172);
+      ctx.fillStyle = 'rgba(244, 180, 89, 0.82)';
+      ctx.fillText('T: Cycle Target  |  V: Cockpit/Chase  |  R: Retry  |  M: Sound', cssWidth * 0.5, cardY + 194);
 
       ctx.font = 'bold 15px "Courier New", monospace';
       ctx.fillStyle = EMERALD;
-      ctx.fillText('PRESS [ENTER] OR CLICK TO LAUNCH', cssWidth * 0.5, cardY + 238);
+      ctx.fillText('PRESS [ENTER] OR CLICK TO LAUNCH', cssWidth * 0.5, cardY + 230);
     } else if (world.phase.kind === 'victory') {
       ctx.font = 'bold 26px "Courier New", monospace';
       ctx.fillStyle = EMERALD;
@@ -660,7 +658,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       );
       ctx.font = 'bold 15px "Courier New", monospace';
       ctx.fillStyle = AMBER;
-      ctx.fillText('PRESS [R] OR [ENTER] TO FLY AGAIN', cssWidth * 0.5, cardY + 216);
+      ctx.fillText('PRESS [R] OR [ENTER] TO FLY AGAIN', cssWidth * 0.5, cardY + 210);
     } else {
       ctx.font = 'bold 26px "Courier New", monospace';
       ctx.fillStyle = CRIMSON;
@@ -670,7 +668,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       ctx.fillText(world.phase.reason, cssWidth * 0.5, cardY + 118);
       ctx.font = 'bold 15px "Courier New", monospace';
       ctx.fillStyle = AMBER;
-      ctx.fillText('PRESS [R] OR [ENTER] FOR INSTANT RETRY', cssWidth * 0.5, cardY + 206);
+      ctx.fillText('PRESS [R] OR [ENTER] FOR INSTANT RETRY', cssWidth * 0.5, cardY + 204);
     }
   }
 

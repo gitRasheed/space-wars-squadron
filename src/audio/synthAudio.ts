@@ -124,9 +124,6 @@ export function createSynthAudio(): SynthAudio {
       case 'drift_engaged':
         playTone(360, 140, 0.28, 0.08, 'sine');
         break;
-      case 'wingmate_ordered':
-        playTone(680, 880, 0.12, 0.06, 'sine');
-        break;
       case 'subsystem_destroyed':
         playTone(120, 28, 0.6, 0.22, 'sawtooth');
         break;

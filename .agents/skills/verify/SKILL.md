@@ -17,13 +17,9 @@ Confirm build, types, lint, and simulation contracts pass before browser verific
 ```bash
 npm run check
 ```
-Confirm Chromium is installed in Playwright cache:
-```bash
-ls ~/.cache/ms-playwright
-```
 
 ## Drive
-Run the end-to-end browser verification script, which launches its own isolated Vite server, drives real keyboard and mouse inputs (`Enter`, `KeyF`, `KeyJ`, `KeyE`, `Space`, `ShiftLeft`, `KeyD`, `KeyV`, mouse steering), asserts zero console/page errors and real simulation telemetry transitions, and shuts down the server cleanly:
+Run the end-to-end browser verification script, which launches its own isolated Vite server, clears stale PNGs, drives real keyboard and mouse inputs (`Enter`, `KeyJ`, `KeyE`, `Space`, `ShiftLeft`, `KeyD`, `KeyV`, `KeyR`, mouse steering), asserts zero console/page errors and real simulation telemetry transitions, and shuts down the server cleanly:
 ```bash
 npm run verify:browser
 ```
@@ -31,13 +27,13 @@ npm run verify:browser
 ## Evidence
 Proof artifacts survive server teardown in `artifacts/verify/`:
 - `artifacts/verify/01-briefing.png` — Briefing card over live 3D orbital backdrop
-- `artifacts/verify/02-cockpit-combat.png` — First-person cockpit firing cannons + wingmate ordered
-- `artifacts/verify/03-aoa-drift.png` — Mid-turn AOA Drift + missile launch
-- `artifacts/verify/04-chase-boost.png` — Chase camera (`V`) with active boost plumes
-- `artifacts/verify/05-cockpit-turn.png` — Sustained turning fire in cockpit view
+- `artifacts/verify/02-cockpit-combat.png` — First-person cockpit firing cannons against raiders & frigate
+- `artifacts/verify/03-snap-turn.png` — Mid-turn Snap-Turn Flip (`Space`) + missile launch
+- `artifacts/verify/04-chase-boost.png` — Chase camera (`V`) with active afterburner plumes & speed streaks
+- `artifacts/verify/05-chase-combat.png` — Exterior chase combat view firing on opening approach
 - `artifacts/verify/report.json` — Read-only telemetry snapshots across every step
 
-Always inspect the saved PNGs directly (never rely solely on exit code `0`) to verify 3D models, cockpit framing, lighting, HUD legibility, and zero WebGL blank screens.
+Always inspect the saved PNGs directly (never rely solely on exit code `0`) to verify 3D models, cockpit framing, lighting/gamma, HUD legibility, and zero WebGL blank screens.
 
 ## Cleanup
 `scripts/verify-browser.mjs` terminates only the child Vite process it spawned (`server.kill('SIGTERM')`) in its `finally` block and leaves `artifacts/verify/` intact.

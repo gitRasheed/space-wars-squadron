@@ -11,7 +11,6 @@ export interface Quat {
   readonly w: number;
 }
 
-export type PowerMode = 'engines' | 'balanced' | 'weapons';
 export type CameraMode = 'cockpit' | 'chase';
 export type EnemyKind = 'raider' | 'striker';
 
@@ -40,6 +39,14 @@ export type LockState =
       readonly targetId: string;
     };
 
+export type EnemyManeuver =
+  | { readonly kind: 'approach'; readonly remainingSeconds: number }
+  | {
+      readonly kind: 'break_away';
+      readonly escapeDir: Vec3;
+      readonly remainingSeconds: number;
+    };
+
 export type SortiePhase =
   | { readonly kind: 'briefing' }
   | { readonly kind: 'active'; readonly elapsedSeconds: number }
@@ -65,15 +72,12 @@ export interface FlightInput {
   readonly firePrimary: boolean;
   readonly fireMissile: boolean;
   readonly cycleTarget: boolean;
-  readonly orderWingmate: boolean;
   readonly toggleCamera: boolean;
-  readonly powerMode: PowerMode | null;
   readonly launchBriefing: boolean;
   readonly restartSortie: boolean;
 }
 
 export interface EnergyState {
-  readonly powerMode: PowerMode;
   readonly boostMode: BoostMode;
   readonly engineCharge: number;
   readonly weaponCharge: number;
@@ -107,7 +111,7 @@ export interface WingmateState {
   readonly position: Vec3;
   readonly velocity: Vec3;
   readonly orientation: Quat;
-  readonly assignedTargetId: string | null;
+  readonly targetId: string | null;
   readonly fireCooldown: number;
 }
 
@@ -118,6 +122,7 @@ export interface EnemyShipState {
   readonly position: Vec3;
   readonly velocity: Vec3;
   readonly orientation: Quat;
+  readonly maneuver: EnemyManeuver;
   readonly hull: number;
   readonly maxHull: number;
   readonly shields: number;
@@ -145,6 +150,14 @@ export interface CapitalShipState {
   readonly hull: number;
   readonly maxHull: number;
   readonly subsystems: readonly SubsystemState[];
+}
+
+export interface AsteroidState {
+  readonly id: string;
+  readonly position: Vec3;
+  readonly radius: number;
+  readonly rotation: Vec3;
+  readonly tint: 'ice' | 'ochre' | 'slate';
 }
 
 export interface ProjectileState {
@@ -181,7 +194,6 @@ export type SimEvent =
   | { readonly kind: 'player_damaged' }
   | { readonly kind: 'boost_engaged' }
   | { readonly kind: 'drift_engaged' }
-  | { readonly kind: 'wingmate_ordered' }
   | { readonly kind: 'subsystem_destroyed'; readonly label: string };
 
 export interface WorldState {
@@ -194,6 +206,7 @@ export interface WorldState {
   readonly enemies: readonly EnemyShipState[];
   readonly friendlyCarrier: CapitalShipState;
   readonly hostileFrigate: CapitalShipState;
+  readonly asteroids: readonly AsteroidState[];
   readonly projectiles: readonly ProjectileState[];
   readonly explosions: readonly ExplosionState[];
   readonly radio: RadioMessage | null;
@@ -215,9 +228,7 @@ export const NEUTRAL_INPUT: FlightInput = {
   firePrimary: false,
   fireMissile: false,
   cycleTarget: false,
-  orderWingmate: false,
   toggleCamera: false,
-  powerMode: null,
   launchBriefing: false,
   restartSortie: false,
 };

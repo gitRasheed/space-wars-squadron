@@ -31,6 +31,12 @@ function assertCondition(condition, message) {
 
 async function run() {
   await fs.mkdir(OUT_DIR, { recursive: true });
+  const existingFiles = await fs.readdir(OUT_DIR);
+  for (const file of existingFiles) {
+    if (file.endsWith('.png')) {
+      await fs.unlink(path.join(OUT_DIR, file));
+    }
+  }
 
   const server = spawn('npx', ['vite', '--host', '127.0.0.1', '--port', String(PORT), '--strictPort'], {
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -96,13 +102,12 @@ async function run() {
     assertCondition(active.phase === 'active', `Expected active phase after Enter, got ${active.phase}`);
     assertCondition(active.tick > 5, `Expected simulation tick progression, got ${active.tick}`);
 
-    await page.keyboard.press('KeyF');
     await page.keyboard.down('KeyJ');
-    await page.waitForTimeout(320);
+    await page.waitForTimeout(340);
     const combatSnap = await readTelemetry();
     assertCondition(
-      combatSnap.wingmateAssignedTargetId !== null,
-      'Wingmate should receive target assignment on F',
+      combatSnap.wingmateTargetId !== null,
+      'Autonomous wingmate should track an active target',
     );
     assertCondition(
       combatSnap.projectilesCount > 0 || combatSnap.weaponCharge < 100,
@@ -113,23 +118,23 @@ async function run() {
 
     await page.keyboard.press('KeyE');
     await page.keyboard.down('Space');
-    await page.mouse.move(940, 290, { steps: 8 });
-    await page.waitForTimeout(450);
+    await page.mouse.move(930, 310, { steps: 8 });
+    await page.waitForTimeout(420);
     const driftSnap = await readTelemetry();
     assertCondition(
       driftSnap.boostMode === 'drifting' || driftSnap.boostMode === 'recovering',
       `Expected drifting/recovering state, got ${driftSnap.boostMode}`,
     );
     assertCondition(driftSnap.missilesReady < 4, 'Missile count should drop after firing with E');
-    await page.screenshot({ path: path.join(OUT_DIR, '03-aoa-drift.png') });
+    await page.screenshot({ path: path.join(OUT_DIR, '03-snap-turn.png') });
     await page.keyboard.up('Space');
 
-    await page.waitForTimeout(1150);
+    await page.waitForTimeout(1050);
     await page.keyboard.press('KeyV');
     await page.mouse.move(640, 360, { steps: 4 });
     await page.keyboard.down('ShiftLeft');
     await page.keyboard.down('KeyD');
-    await page.waitForTimeout(360);
+    await page.waitForTimeout(380);
     const chaseSnap = await readTelemetry();
     assertCondition(chaseSnap.cameraMode === 'chase', `Expected chase camera, got ${chaseSnap.cameraMode}`);
     assertCondition(chaseSnap.boostMode === 'boosting', `Expected boosting state, got ${chaseSnap.boostMode}`);
@@ -137,14 +142,22 @@ async function run() {
     await page.keyboard.up('ShiftLeft');
     await page.keyboard.up('KeyD');
 
-    await page.keyboard.press('KeyV');
-    await page.mouse.move(480, 320, { steps: 6 });
+    await page.keyboard.press('KeyR');
+    await page.waitForTimeout(260);
+    const afterRestart = await readTelemetry();
+    if (afterRestart.cameraMode !== 'chase') {
+      await page.keyboard.press('KeyV');
+      await page.waitForTimeout(100);
+    }
     await page.keyboard.down('KeyJ');
-    await page.waitForTimeout(500);
-    await page.screenshot({ path: path.join(OUT_DIR, '05-cockpit-turn.png') });
-    await page.keyboard.up('KeyJ');
-
+    await page.waitForTimeout(360);
     const finalSnap = await readTelemetry();
+    assertCondition(
+      finalSnap.cameraMode === 'chase',
+      `Expected chase camera for 05-chase-combat.png, got ${finalSnap.cameraMode}`,
+    );
+    await page.screenshot({ path: path.join(OUT_DIR, '05-chase-combat.png') });
+    await page.keyboard.up('KeyJ');
     assertCondition(consoleErrors.length === 0, `Console errors: ${consoleErrors.join('; ')}`);
     assertCondition(pageErrors.length === 0, `Page errors: ${pageErrors.join('; ')}`);
 
@@ -154,9 +167,9 @@ async function run() {
       screenshots: [
         '01-briefing.png',
         '02-cockpit-combat.png',
-        '03-aoa-drift.png',
+        '03-snap-turn.png',
         '04-chase-boost.png',
-        '05-cockpit-turn.png',
+        '05-chase-combat.png',
       ],
       snapshots: {
         initial,

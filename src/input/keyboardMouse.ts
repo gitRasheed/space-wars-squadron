@@ -1,5 +1,5 @@
 import { clamp } from '../sim/math';
-import type { FlightInput, PowerMode } from '../sim/types';
+import type { FlightInput } from '../sim/types';
 
 export interface InputChannel {
   readonly sample: () => FlightInput;
@@ -12,7 +12,7 @@ type SteeringMode =
   | { readonly kind: 'cursor'; readonly x: number; readonly y: number }
   | { readonly kind: 'pointer_locked'; readonly dx: number; readonly dy: number };
 
-const MOUSE_SENSITIVITY = 0.0042;
+const MOUSE_SENSITIVITY = 0.0046;
 const CURSOR_STEER_DEADZONE = 0.05;
 
 export function createInputChannel(
@@ -25,11 +25,9 @@ export function createInputChannel(
   let steering: SteeringMode = { kind: 'idle' };
 
   let queuedCycleTarget = false;
-  let queuedOrderWingmate = false;
   let queuedToggleCamera = false;
   let queuedLaunchBriefing = false;
   let queuedRestartSortie = false;
-  let queuedPowerMode: PowerMode | null = null;
   let queuedFireMissile = false;
 
   function clearHeldInputs(): void {
@@ -58,8 +56,6 @@ export function createInputChannel(
     if (!event.repeat) {
       if (code === 'KeyT' || code === 'Tab') {
         queuedCycleTarget = true;
-      } else if (code === 'KeyF') {
-        queuedOrderWingmate = true;
       } else if (code === 'KeyV') {
         queuedToggleCamera = true;
       } else if (code === 'Enter') {
@@ -68,12 +64,6 @@ export function createInputChannel(
         queuedRestartSortie = true;
       } else if (code === 'KeyE') {
         queuedFireMissile = true;
-      } else if (code === 'Digit1') {
-        queuedPowerMode = 'engines';
-      } else if (code === 'Digit2') {
-        queuedPowerMode = 'balanced';
-      } else if (code === 'Digit3') {
-        queuedPowerMode = 'weapons';
       }
     }
 
@@ -180,8 +170,8 @@ export function createInputChannel(
       mousePitch = -steering.dy;
       steering = {
         kind: 'pointer_locked',
-        dx: steering.dx * 0.35,
-        dy: steering.dy * 0.35,
+        dx: steering.dx * 0.42,
+        dy: steering.dy * 0.42,
       };
     } else if (steering.kind === 'cursor') {
       mouseYaw = applyDeadzone(steering.x);
@@ -198,19 +188,15 @@ export function createInputChannel(
       firePrimary: mouseLeftHeld || heldKeys.has('KeyJ'),
       fireMissile: queuedFireMissile || mouseRightHeld,
       cycleTarget: queuedCycleTarget,
-      orderWingmate: queuedOrderWingmate,
       toggleCamera: queuedToggleCamera,
-      powerMode: queuedPowerMode,
       launchBriefing: queuedLaunchBriefing,
       restartSortie: queuedRestartSortie,
     };
 
     queuedCycleTarget = false;
-    queuedOrderWingmate = false;
     queuedToggleCamera = false;
     queuedLaunchBriefing = false;
     queuedRestartSortie = false;
-    queuedPowerMode = null;
     queuedFireMissile = false;
 
     return input;

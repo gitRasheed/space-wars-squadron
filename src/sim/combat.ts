@@ -3,6 +3,7 @@ import {
   add,
   clamp,
   computeLeadPoint,
+  cross,
   distance,
   dot,
   forwardOf,
@@ -20,6 +21,7 @@ import {
 } from './math';
 import type {
   CapitalShipState,
+  EnemyManeuver,
   EnemyShipState,
   ExplosionState,
   FlightInput,
@@ -34,23 +36,26 @@ import type {
 } from './types';
 
 export const COMBAT_TUNING = {
-  boltSpeed: 540,
-  boltDamage: 22,
+  boltSpeed: 580,
+  boltDamage: 24,
   boltTtl: 1.9,
-  primaryFireInterval: 0.14,
-  missileSpeed: 290,
-  missileDamage: 75,
+  primaryFireInterval: 0.13,
+  missileSpeed: 320,
+  missileDamage: 80,
   missileTtl: 5.2,
-  missileCooldown: 0.55,
-  missileRearmSeconds: 4.5,
-  missileTurnRate: 4.2,
-  lockConeCos: 0.88,
-  lockMaxRange: 1150,
-  lockAcquireSeconds: 0.9,
-  enemyBoltSpeed: 340,
-  enemyBoltDamage: 8,
-  enemyHitRadius: 11,
-  playerHitRadius: 8,
+  missileCooldown: 0.5,
+  missileRearmSeconds: 4.0,
+  missileTurnRate: 4.8,
+  lockConeCos: 0.86,
+  lockMaxRange: 1200,
+  lockAcquireSeconds: 0.8,
+  enemyBoltSpeed: 310,
+  enemyBoltDamage: 6,
+  enemyHitRadius: 14,
+  playerHitRadius: 7.5,
+  enemyMinApproachDistance: 215,
+  enemyBreakAwaySeconds: 3.4,
+  enemyApproachSeconds: 5.5,
 } as const;
 
 export interface TargetContact {
@@ -270,8 +275,13 @@ export function stepCombat(
       primaryCooldown = COMBAT_TUNING.primaryFireInterval;
       recoilKick = 1;
       const right = rightOf(player.orientation);
-      const down = scale(upOf(player.orientation), -1.1);
-      const aimDir = computeAimAssistDirection(player.position, player.velocity, playerForward, selectedContact);
+      const down = scale(upOf(player.orientation), -1.0);
+      const aimDir = computeAimAssistDirection(
+        player.position,
+        player.velocity,
+        playerForward,
+        selectedContact,
+      );
 
       for (const side of [-1, 1] as const) {
         const muzzle = add(
@@ -309,22 +319,12 @@ export function stepCombat(
       kind: 'missile',
       faction: 'friendly',
       position: launchPos,
-      velocity: add(player.velocity, scale(playerForward, COMBAT_TUNING.missileSpeed * 0.75)),
+      velocity: add(player.velocity, scale(playerForward, COMBAT_TUNING.missileSpeed * 0.8)),
       targetId: lockedId,
       damage: COMBAT_TUNING.missileDamage,
       ttl: COMBAT_TUNING.missileTtl,
     });
     events.push({ kind: 'missile_fired' });
-  }
-
-  if (input.orderWingmate && selectedContact !== null) {
-    wingmate = { ...wingmate, assignedTargetId: selectedContact.id };
-    radio = {
-      speaker: wingmate.callsign,
-      text: `Copy, breaking onto ${selectedContact.label}.`,
-      remainingSeconds: 3.4,
-    };
-    events.push({ kind: 'wingmate_ordered' });
   }
 
   player = {
@@ -343,6 +343,13 @@ export function stepCombat(
   wingmate = wingmateStep.wingmate;
   if (wingmateStep.projectile !== null) {
     spawnedProjectiles.push(wingmateStep.projectile);
+  }
+  if (wingmateStep.callout !== null && radio === null) {
+    radio = {
+      speaker: wingmate.callsign,
+      text: wingmateStep.callout,
+      remainingSeconds: 3.0,
+    };
   }
 
   const steppedEnemies: EnemyShipState[] = [];
@@ -409,9 +416,9 @@ export function stepCombat(
             nextExplosions.push({
               id: `exp-${tick}-${id}`,
               position: enemy.position,
-              radius: enemy.kind === 'striker' ? 28 : 20,
+              radius: enemy.kind === 'striker' ? 30 : 22,
               elapsed: 0,
-              duration: 0.95,
+              duration: 1.0,
               tint: 'amber',
             });
             radio = {
@@ -425,7 +432,7 @@ export function stepCombat(
             nextExplosions.push({
               id: `hit-${tick}-${proj.id}`,
               position: nextPos,
-              radius: 5.5,
+              radius: 6,
               elapsed: 0,
               duration: 0.28,
               tint: 'emerald',
@@ -442,7 +449,7 @@ export function stepCombat(
             continue;
           }
           const worldPos = subsystemWorldPosition(hostileFrigate, subsys);
-          if (distance(nextPos, worldPos) <= subsys.radius + 7) {
+          if (distance(nextPos, worldPos) <= subsys.radius + 9) {
             hit = true;
             const nextHull = Math.max(0, subsys.hull - proj.damage);
             subsystems[i] = { ...subsys, hull: nextHull };
@@ -454,9 +461,9 @@ export function stepCombat(
               nextExplosions.push({
                 id: `sub-${tick}-${subsys.id}`,
                 position: worldPos,
-                radius: 42,
+                radius: 44,
                 elapsed: 0,
-                duration: 1.3,
+                duration: 1.35,
                 tint: 'crimson',
               });
               radio = {
@@ -468,7 +475,7 @@ export function stepCombat(
               nextExplosions.push({
                 id: `subhit-${tick}-${proj.id}`,
                 position: nextPos,
-                radius: 7,
+                radius: 7.5,
                 elapsed: 0,
                 duration: 0.3,
                 tint: 'crimson',
@@ -493,7 +500,7 @@ export function stepCombat(
         hit = true;
         friendlyCarrier = {
           ...friendlyCarrier,
-          hull: Math.max(0, friendlyCarrier.hull - proj.damage * 0.45),
+          hull: Math.max(0, friendlyCarrier.hull - proj.damage * 0.4),
         };
         nextExplosions.push({
           id: `carhit-${tick}-${proj.id}`,
@@ -539,10 +546,10 @@ export function stepCombat(
   }
 
   if (
-    wingmate.assignedTargetId !== null &&
-    findTargetContact(wingmate.assignedTargetId, survivingEnemies, hostileFrigate) === null
+    wingmate.targetId !== null &&
+    findTargetContact(wingmate.targetId, survivingEnemies, hostileFrigate) === null
   ) {
-    wingmate = { ...wingmate, assignedTargetId: null };
+    wingmate = { ...wingmate, targetId: null };
   }
 
   return {
@@ -578,9 +585,9 @@ function computeAimAssistDirection(
     COMBAT_TUNING.boltSpeed,
   );
   const toLead = normalize(sub(leadPoint, shooterPos));
-  // Subtle gimbal convergence inside a narrow 5-degree cone keeps mouse aiming crisp without auto-aiming.
-  if (dot(playerForward, toLead) >= 0.996) {
-    return normalize(lerpVec3(playerForward, toLead, 0.65));
+  // Subtle gimbal convergence inside a 7-degree cone makes leading shots feel crisp with mouse aim.
+  if (dot(playerForward, toLead) >= 0.992) {
+    return normalize(lerpVec3(playerForward, toLead, 0.72));
   }
   return playerForward;
 }
@@ -611,6 +618,33 @@ function isInsideCapitalBox(pos: Vec3, ship: CapitalShipState, pad: number): boo
   );
 }
 
+function pickWingmateTarget(
+  player: PlayerShipState,
+  enemies: readonly EnemyShipState[],
+  hostileFrigate: CapitalShipState,
+): TargetContact | null {
+  let closestThreat: EnemyShipState | null = null;
+  let closestDist = Infinity;
+  for (const enemy of enemies) {
+    const d = distance(enemy.position, player.position);
+    if (d < closestDist) {
+      closestDist = d;
+      closestThreat = enemy;
+    }
+  }
+  if (closestThreat !== null && closestDist < 750) {
+    return {
+      id: closestThreat.id,
+      label: closestThreat.callsign,
+      position: closestThreat.position,
+      velocity: closestThreat.velocity,
+      kind: 'enemy',
+    };
+  }
+  const contacts = listHostileContacts(enemies, hostileFrigate);
+  return contacts[0] ?? null;
+}
+
 function stepWingmate(
   tick: number,
   wingmate: WingmateState,
@@ -618,36 +652,55 @@ function stepWingmate(
   enemies: readonly EnemyShipState[],
   hostileFrigate: CapitalShipState,
   dt: number,
-): { readonly wingmate: WingmateState; readonly projectile: ProjectileState | null } {
-  const assigned = findTargetContact(wingmate.assignedTargetId, enemies, hostileFrigate);
+): {
+  readonly wingmate: WingmateState;
+  readonly projectile: ProjectileState | null;
+  readonly callout: string | null;
+} {
+  let target = findTargetContact(wingmate.targetId, enemies, hostileFrigate);
+  let callout: string | null = null;
+  if (target === null) {
+    target = pickWingmateTarget(player, enemies, hostileFrigate);
+    if (target !== null && tick > 60 && tick % 180 === 0) {
+      callout = `Covering your six—engaging ${target.label}.`;
+    }
+  }
+
   const right = rightOf(player.orientation);
   const forward = forwardOf(player.orientation);
   const up = upOf(player.orientation);
   const formationPos = add(
-    add(player.position, scale(right, -28)),
-    add(scale(forward, -18), scale(up, 6)),
+    add(player.position, scale(right, -30)),
+    add(scale(forward, -16), scale(up, 8)),
   );
 
-  const desiredPos = assigned !== null ? assigned.position : formationPos;
+  const desiredPos = target !== null ? target.position : formationPos;
   const toDesired = sub(desiredPos, wingmate.position);
   const dist = len(toDesired);
   const desiredDir = dist > 1 ? scale(toDesired, 1 / dist) : forward;
   const targetQuat = quatLookAt(desiredDir);
-  const orientation = slerpQuat(wingmate.orientation, targetQuat, clamp(dt * 3.2, 0, 1));
-  const speed = assigned !== null ? 96 : clamp(player.speed + dist * 0.45, 45, 130);
+  const orientation = slerpQuat(wingmate.orientation, targetQuat, clamp(dt * 3.0, 0, 1));
+  const speed = target !== null ? 96 : clamp(player.speed + dist * 0.45, 45, 130);
   const velocity = lerpVec3(wingmate.velocity, scale(forwardOf(orientation), speed), clamp(dt * 3.5, 0, 1));
   const position = add(wingmate.position, scale(velocity, dt));
 
   let fireCooldown = Math.max(0, wingmate.fireCooldown - dt);
   let projectile: ProjectileState | null = null;
   if (
-    assigned !== null &&
+    target !== null &&
     fireCooldown <= 0 &&
-    dist < 520 &&
+    dist < 540 &&
+    dist > 90 &&
     dot(forwardOf(orientation), desiredDir) > 0.94
   ) {
-    fireCooldown = 0.48;
-    const lead = computeLeadPoint(position, velocity, assigned.position, assigned.velocity, COMBAT_TUNING.boltSpeed);
+    fireCooldown = 0.62;
+    const lead = computeLeadPoint(
+      position,
+      velocity,
+      target.position,
+      target.velocity,
+      COMBAT_TUNING.boltSpeed,
+    );
     const shotDir = normalize(sub(lead, position));
     projectile = {
       id: `wb-${tick}`,
@@ -656,7 +709,7 @@ function stepWingmate(
       position: add(position, scale(shotDir, 6)),
       velocity: add(velocity, scale(shotDir, COMBAT_TUNING.boltSpeed)),
       targetId: null,
-      damage: 14,
+      damage: 11,
       ttl: 1.4,
     };
   }
@@ -664,12 +717,14 @@ function stepWingmate(
   return {
     wingmate: {
       ...wingmate,
+      targetId: target?.id ?? null,
       position,
       velocity,
       orientation,
       fireCooldown,
     },
     projectile,
+    callout,
   };
 }
 
@@ -681,47 +736,97 @@ function stepEnemyAi(
   friendlyCarrier: CapitalShipState,
   dt: number,
 ): { readonly enemy: EnemyShipState; readonly projectile: ProjectileState | null; readonly rngState: number } {
-  const time = tick / 60 + enemy.phaseOffset;
-  const orbitRadius = enemy.kind === 'raider' ? 280 : 380;
-  const orbitTarget: Vec3 = {
-    x: friendlyCarrier.position.x + Math.cos(time * 0.42) * orbitRadius,
-    y: friendlyCarrier.position.y + Math.sin(time * 0.65) * 95 + 25,
-    z: friendlyCarrier.position.z + Math.sin(time * 0.42) * orbitRadius - 120,
-  };
+  let nextRng = rngState;
+  const toPlayer = sub(player.position, enemy.position);
+  const distToPlayer = len(toPlayer);
+  const dirToPlayer = distToPlayer > 1 ? scale(toPlayer, 1 / distToPlayer) : forwardOf(enemy.orientation);
 
-  const playerDist = distance(enemy.position, player.position);
-  const attackTarget =
-    enemy.kind === 'raider' && playerDist < 540
-      ? add(player.position, {
-          x: Math.sin(time * 1.1) * 75,
-          y: Math.cos(time * 0.9) * 45,
-          z: Math.cos(time * 1.1) * 75,
-        })
-      : orbitTarget;
+  let maneuver: EnemyManeuver = enemy.maneuver;
+  let goalDir: Vec3;
 
-  const toGoal = sub(attackTarget, enemy.position);
-  const goalDir = normalize(toGoal);
+  if (maneuver.kind === 'approach') {
+    const remainingSeconds = maneuver.remainingSeconds - dt;
+    if (distToPlayer < COMBAT_TUNING.enemyMinApproachDistance || remainingSeconds <= 0) {
+      const r = nextRandom(nextRng);
+      nextRng = r.nextState;
+      const sideSign = r.value >= 0.5 ? 1 : -1;
+      const away = scale(dirToPlayer, -1);
+      const lateral = normalize(cross(away, { x: 0, y: 1, z: 0 }));
+      const escapeDir = normalize(
+        add(add(scale(away, 0.7), scale(lateral, sideSign * 0.72)), {
+          x: 0,
+          y: (r.value - 0.5) * 0.6,
+          z: 0,
+        }),
+      );
+      maneuver = {
+        kind: 'break_away',
+        escapeDir,
+        remainingSeconds: COMBAT_TUNING.enemyBreakAwaySeconds + r.value * 1.1,
+      };
+      goalDir = escapeDir;
+    } else {
+      maneuver = { kind: 'approach', remainingSeconds };
+      const time = tick / 60 + enemy.phaseOffset;
+      const anchor =
+        enemy.kind === 'raider'
+          ? add(player.position, {
+              x: Math.sin(time * 0.6) * 95,
+              y: Math.cos(time * 0.5) * 55,
+              z: Math.cos(time * 0.6) * 95,
+            })
+          : add(friendlyCarrier.position, {
+              x: Math.cos(time * 0.35) * 260,
+              y: 65 + Math.sin(time * 0.5) * 60,
+              z: Math.sin(time * 0.35) * 260,
+            });
+      goalDir = normalize(sub(anchor, enemy.position));
+    }
+  } else {
+    const remainingSeconds = maneuver.remainingSeconds - dt;
+    if (remainingSeconds <= 0 && distToPlayer > 320) {
+      maneuver = { kind: 'approach', remainingSeconds: COMBAT_TUNING.enemyApproachSeconds };
+    } else if (remainingSeconds <= -1.2) {
+      maneuver = { kind: 'approach', remainingSeconds: COMBAT_TUNING.enemyApproachSeconds };
+    } else {
+      maneuver = {
+        kind: 'break_away',
+        escapeDir: maneuver.escapeDir,
+        remainingSeconds,
+      };
+    }
+    goalDir = maneuver.kind === 'break_away' ? maneuver.escapeDir : dirToPlayer;
+  }
+
   const targetQuat = quatLookAt(goalDir);
-  const turnSpeed = enemy.kind === 'raider' ? 2.4 : 1.5;
+  const turnSpeed = enemy.kind === 'raider' ? 1.65 : 1.15;
   const orientation = slerpQuat(enemy.orientation, targetQuat, clamp(dt * turnSpeed, 0, 1));
-  const cruiseSpeed = enemy.kind === 'raider' ? 84 : 62;
-  const velocity = lerpVec3(enemy.velocity, scale(forwardOf(orientation), cruiseSpeed), clamp(dt * 2.8, 0, 1));
+  const cruiseSpeed =
+    maneuver.kind === 'break_away'
+      ? enemy.kind === 'raider'
+        ? 92
+        : 68
+      : enemy.kind === 'raider'
+        ? 78
+        : 58;
+  const velocity = lerpVec3(enemy.velocity, scale(forwardOf(orientation), cruiseSpeed), clamp(dt * 2.5, 0, 1));
   const position = add(enemy.position, scale(velocity, dt));
 
-  let nextRng = rngState;
   let fireCooldown = Math.max(0, enemy.fireCooldown - dt);
   let projectile: ProjectileState | null = null;
+  const facingPlayer = dot(forwardOf(orientation), dirToPlayer) > 0.92;
 
-  const toPlayer = sub(player.position, position);
-  const distToPlayer = len(toPlayer);
-  const dirToPlayer = distToPlayer > 1 ? scale(toPlayer, 1 / distToPlayer) : forwardOf(orientation);
-  const facingPlayer = dot(forwardOf(orientation), dirToPlayer) > 0.91;
-
-  if (fireCooldown <= 0 && distToPlayer < 460 && facingPlayer) {
+  if (
+    maneuver.kind === 'approach' &&
+    fireCooldown <= 0 &&
+    distToPlayer > 175 &&
+    distToPlayer < 480 &&
+    facingPlayer
+  ) {
     const roll = nextRandom(nextRng);
     nextRng = roll.nextState;
-    fireCooldown = 1.1 + roll.value * 0.7;
-    const spread = (roll.value - 0.5) * 0.04;
+    fireCooldown = 1.35 + roll.value * 0.85;
+    const spread = (roll.value - 0.5) * 0.05;
     const shotDir = normalize(add(dirToPlayer, { x: spread, y: -spread * 0.5, z: 0 }));
     projectile = {
       id: `eb-${tick}-${enemy.id}`,
@@ -741,6 +846,7 @@ function stepEnemyAi(
       position,
       velocity,
       orientation,
+      maneuver,
       fireCooldown,
     },
     projectile,

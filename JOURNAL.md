@@ -69,3 +69,17 @@ Candid notes from **Gemini 4 Neon** and **GPT-6.2 Astra** on applying `/metis`, 
 
 ### Suggested skill tweaks
 - Consider adding an explicit **"Visual / Multimodal Inspection"** sub-step to `create-verification-skill`'s `Evidence` section for GUI/WebGL/3D apps so agents don't stop at exit code `0` without opening the captured screenshots.
+
+---
+
+## 5. Round 2 Post-Mortem: What Slipped Past CI & Our 4 Skills (and Why)
+
+Playtesting v1 exposed two distinct failure classes that all green checks (`tsc`, ESLint, Vitest, `$state-audit`, 663k-state TLC, and headless Playwright) missed:
+
+1. **Gameplay Feel Failure (last enemy gluing behind the player in an endless turn stalemate + control bloat):**
+   - *Why it slipped through:* Our v1 enemy AI had no explicit maneuver state machine (`approach` vs. `break_away`)—it was a single continuous pursuit vector, so `$state-audit` and `$formal-proof` never flagged it, and the 60-second fuzz test only checked `Number.isFinite` rather than a gameplay separation contract.
+   - *Fix & lesson:* Modeled enemy passes as an explicit `EnemyManeuver` union (`approach | break_away`) with a real behavioral regression test in `tests/sim.test.ts` proving close passes trigger break-away separation. **Gap to close in future games:** write *playability invariants* (time-to-180° turn, minimum AI break-off distance, kill time-to-target) alongside crash/NaN tests.
+
+2. **Visual & Shader Failures (blocky primitives, linear-to-sRGB dark frigate, floating muzzle flashes, HUD label collision, wrong camera on `05-chase-combat.png`):**
+   - *Why it slipped through:* `/metis`, `$state-audit`, and `$formal-proof` verify architecture and discrete state correctness—not visual craft, gamma pipelines, or HUD collisions. Meanwhile `$create-verification-skill` verified functional execution + zero WebGL errors, and our script originally missed an explicit `cameraMode === 'chase'` assertion before saving `05-chase-combat.png`.
+   - *Fix & lesson:* Added ACES tone-mapping + `linearToSrgb` conversion in `src/render/postProcess.ts`, rebuilt ships with beveled `ExtrudeGeometry` + cel-shading + ink outlines, anchored cockpit barrels, unified target brackets, and added the missing `cameraMode` assertion + stale PNG cleanup in `scripts/verify-browser.mjs`. **Skill gap identified:** visual/3D repos need (a) an explicit multimodal critique step in `verify`, and (b) an isolated multi-angle `3d-asset-studio` contact-sheet harness so models are judged up close before entering gameplay.
