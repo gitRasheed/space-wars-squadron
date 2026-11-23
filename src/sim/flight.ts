@@ -11,8 +11,10 @@ import {
   quatFromAxisAngle,
   quatMul,
   rightOf,
+  rotateVec3,
   scale,
   sub,
+  toLocalPoint,
   upOf,
 } from './math';
 import type {
@@ -51,7 +53,7 @@ function sweetSpotTurnFactor(throttle: number): number {
   return clamp(1.16 - distanceFromOptimal * 0.35, 0.9, 1.16);
 }
 
-function resolveObstacleClearance(
+export function resolveObstacleClearance(
   position: Vec3,
   velocity: Vec3,
   ships: readonly CapitalShipState[],
@@ -62,33 +64,38 @@ function resolveObstacleClearance(
   let warning = false;
 
   for (const ship of ships) {
-    const delta = sub(nextPos, ship.position);
+    const localDelta = toLocalPoint(ship.position, ship.orientation, nextPos);
     const ex = ship.halfExtents.x + FLIGHT_TUNING.carrierClearanceMargin;
     const ey = ship.halfExtents.y + FLIGHT_TUNING.carrierClearanceMargin;
     const ez = ship.halfExtents.z + FLIGHT_TUNING.carrierClearanceMargin;
 
-    if (Math.abs(delta.x) < ex + 24 && Math.abs(delta.y) < ey + 24 && Math.abs(delta.z) < ez + 24) {
+    if (
+      Math.abs(localDelta.x) < ex + 24 &&
+      Math.abs(localDelta.y) < ey + 24 &&
+      Math.abs(localDelta.z) < ez + 24
+    ) {
       warning = true;
     }
 
-    if (Math.abs(delta.x) < ex && Math.abs(delta.y) < ey && Math.abs(delta.z) < ez) {
-      const penX = ex - Math.abs(delta.x);
-      const penY = ey - Math.abs(delta.y);
-      const penZ = ez - Math.abs(delta.z);
+    if (Math.abs(localDelta.x) < ex && Math.abs(localDelta.y) < ey && Math.abs(localDelta.z) < ez) {
+      const penX = ex - Math.abs(localDelta.x);
+      const penY = ey - Math.abs(localDelta.y);
+      const penZ = ez - Math.abs(localDelta.z);
 
-      let pushNormal: Vec3;
+      let localNormal: Vec3;
       let penetration: number;
       if (penY <= penX && penY <= penZ) {
-        pushNormal = { x: 0, y: delta.y >= 0 ? 1 : -1, z: 0 };
+        localNormal = { x: 0, y: localDelta.y >= 0 ? 1 : -1, z: 0 };
         penetration = penY;
       } else if (penX <= penZ) {
-        pushNormal = { x: delta.x >= 0 ? 1 : -1, y: 0, z: 0 };
+        localNormal = { x: localDelta.x >= 0 ? 1 : -1, y: 0, z: 0 };
         penetration = penX;
       } else {
-        pushNormal = { x: 0, y: 0, z: delta.z >= 0 ? 1 : -1 };
+        localNormal = { x: 0, y: 0, z: localDelta.z >= 0 ? 1 : -1 };
         penetration = penZ;
       }
 
+      const pushNormal = normalize(rotateVec3(ship.orientation, localNormal));
       nextPos = add(nextPos, scale(pushNormal, penetration + 0.5));
       const inwardSpeed = dot(nextVel, pushNormal);
       if (inwardSpeed < FLIGHT_TUNING.carrierRepelSpeed) {
@@ -191,7 +198,6 @@ export function stepPlayerFlight(
       orientation,
       angularVelocity,
       throttle,
-      speed: len(clearance.velocity),
       energy: updatedEnergy,
       proximityWarning: clearance.warning,
       hitFlash: Math.max(0, player.hitFlash - dt * 2.5),

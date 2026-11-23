@@ -10,10 +10,12 @@ import {
   buildOrbitalBackdrop,
   buildPlayerFighterMesh,
   createSoftDotTexture,
+  SHARED_MODEL_MATERIALS,
   type CockpitRig,
   type FighterMeshRig,
   type HostileFrigateRig,
 } from './models';
+import { LIGHT_PALETTE, SCENE_PALETTE, SUN_DIRECTION } from './palette';
 import { createStylizedPostPass } from './postProcess';
 import { createHullTextureSet } from './textures';
 
@@ -85,6 +87,46 @@ function clearTrail(trail: TrailLine): void {
   trail.line.geometry.setDrawRange(0, 0);
 }
 
+function disposeObject3D(
+  root: THREE.Object3D,
+  sharedGeometries: ReadonlySet<THREE.BufferGeometry>,
+  sharedMaterials: ReadonlySet<THREE.Material>,
+): void {
+  const geometries = new Set<THREE.BufferGeometry>();
+  const materials = new Set<THREE.Material>();
+
+  root.traverse((node) => {
+    if (
+      node instanceof THREE.Mesh ||
+      node instanceof THREE.Line ||
+      node instanceof THREE.LineSegments ||
+      node instanceof THREE.Points
+    ) {
+      const geo = node.geometry as THREE.BufferGeometry;
+      if (!sharedGeometries.has(geo)) {
+        geometries.add(geo);
+      }
+      const mat = node.material as THREE.Material | THREE.Material[];
+      if (Array.isArray(mat)) {
+        for (const item of mat) {
+          if (!sharedMaterials.has(item)) {
+            materials.add(item);
+          }
+        }
+      } else if (!sharedMaterials.has(mat)) {
+        materials.add(mat);
+      }
+    }
+  });
+
+  for (const geo of geometries) {
+    geo.dispose();
+  }
+  for (const mat of materials) {
+    mat.dispose();
+  }
+}
+
 export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   const renderer = new THREE.WebGLRenderer({
     canvas,
@@ -100,15 +142,19 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   const camera = new THREE.PerspectiveCamera(68, 16 / 9, 0.25, 12000);
   scene.add(camera);
 
-  const sunLight = new THREE.DirectionalLight(0xffcb99, 2.4);
-  sunLight.position.set(840, 180, -510);
+  const sunLight = new THREE.DirectionalLight(LIGHT_PALETTE.sunColor, LIGHT_PALETTE.sunIntensity);
+  sunLight.position.set(SUN_DIRECTION.x * 1000, SUN_DIRECTION.y * 1000, SUN_DIRECTION.z * 1000);
   scene.add(sunLight);
 
-  const rimLight = new THREE.DirectionalLight(0x6b88ff, 1.05);
+  const rimLight = new THREE.DirectionalLight(LIGHT_PALETTE.rimColor, LIGHT_PALETTE.rimIntensity);
   rimLight.position.set(-520, 120, 480);
   scene.add(rimLight);
 
-  const ambientLight = new THREE.HemisphereLight(0x7c88b8, 0x1b172c, 0.78);
+  const ambientLight = new THREE.HemisphereLight(
+    LIGHT_PALETTE.hemiSky,
+    LIGHT_PALETTE.hemiGround,
+    LIGHT_PALETTE.hemiIntensity,
+  );
   scene.add(ambientLight);
 
   const dotTexture = createSoftDotTexture();
@@ -118,10 +164,10 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   const cockpitRig: CockpitRig = buildCockpitRig();
   camera.add(cockpitRig.root);
 
-  const playerRig: FighterMeshRig = buildPlayerFighterMesh(0xe88332, textures);
+  const playerRig: FighterMeshRig = buildPlayerFighterMesh(SCENE_PALETTE.playerStripe, textures);
   scene.add(playerRig.root);
 
-  const wingmateRig: FighterMeshRig = buildPlayerFighterMesh(0x4bc5e8, textures);
+  const wingmateRig: FighterMeshRig = buildPlayerFighterMesh(SCENE_PALETTE.wingmateStripe, textures);
   scene.add(wingmateRig.root);
 
   const carrierMesh = buildFriendlyCarrierMesh(textures);
@@ -137,9 +183,9 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   const missileTrails = new Map<string, TrailLine>();
   const explosionVisuals = new Map<string, ExplosionVisual>();
 
-  const playerLeftTrail = createTrail(0x88e8ff, 28, 0.72);
-  const playerRightTrail = createTrail(0x88e8ff, 28, 0.72);
-  const wingmateTrail = createTrail(0x52d4ff, 34, 0.65);
+  const playerLeftTrail = createTrail(SCENE_PALETTE.friendlyTrail, 28, 0.72);
+  const playerRightTrail = createTrail(SCENE_PALETTE.friendlyTrail, 28, 0.72);
+  const wingmateTrail = createTrail(SCENE_PALETTE.wingmateTrail, 34, 0.65);
   scene.add(playerLeftTrail.line);
   scene.add(playerRightTrail.line);
   scene.add(wingmateTrail.line);
@@ -147,9 +193,9 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   const boltGeo = new THREE.BoxGeometry(0.45, 0.45, 13);
   const missileGeo = new THREE.ConeGeometry(0.7, 5.8, 5);
   missileGeo.rotateX(-Math.PI / 2);
-  const friendlyBoltMat = new THREE.MeshBasicMaterial({ color: 0xffe07d });
-  const hostileBoltMat = new THREE.MeshBasicMaterial({ color: 0x5dffb3 });
-  const missileMat = new THREE.MeshBasicMaterial({ color: 0xff7740 });
+  const friendlyBoltMat = new THREE.MeshBasicMaterial({ color: SCENE_PALETTE.friendlyBolt });
+  const hostileBoltMat = new THREE.MeshBasicMaterial({ color: SCENE_PALETTE.hostileBolt });
+  const missileMat = new THREE.MeshBasicMaterial({ color: SCENE_PALETTE.missile });
 
   const explosionGeo = new THREE.IcosahedronGeometry(1, 1);
   const ringGeo = new THREE.RingGeometry(0.84, 1.08, 20);
@@ -168,7 +214,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   const dustGeo = new THREE.BufferGeometry();
   dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPositions, 3));
   const dustMat = new THREE.PointsMaterial({
-    color: 0xd4e2ff,
+    color: SCENE_PALETTE.dust,
     map: dotTexture,
     size: 1.25,
     sizeAttenuation: false,
@@ -191,7 +237,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   const streakGeo = new THREE.BufferGeometry();
   streakGeo.setAttribute('position', new THREE.BufferAttribute(streakVertices, 3));
   const streakMat = new THREE.LineBasicMaterial({
-    color: 0xa6e8ff,
+    color: SCENE_PALETTE.streakBoost,
     transparent: true,
     opacity: 0,
     depthWrite: false,
@@ -202,13 +248,32 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   const scratchVec = new THREE.Vector3();
   const scratchDir = new THREE.Vector3();
   const scratchUp = new THREE.Vector3(0, 1, 0);
-  const destroyedSubMat = new THREE.MeshToonMaterial({ color: 0x1b1922 });
+  const destroyedSubMat = new THREE.MeshToonMaterial({ color: SCENE_PALETTE.destroyedSubsystem });
   const initialSubMaterials = new Map<string, THREE.Material>();
   for (const [id, mesh] of frigateRig.subsystemMeshes) {
     if (!Array.isArray(mesh.material)) {
       initialSubMaterials.set(id, mesh.material);
     }
   }
+
+  const sharedGeometries = new Set<THREE.BufferGeometry>([
+    boltGeo,
+    missileGeo,
+    explosionGeo,
+    ringGeo,
+    shardGeo,
+    dustGeo,
+    streakGeo,
+  ]);
+  const sharedMaterials = new Set<THREE.Material>([
+    ...SHARED_MODEL_MATERIALS,
+    friendlyBoltMat,
+    hostileBoltMat,
+    missileMat,
+    destroyedSubMat,
+    dustMat,
+    streakMat,
+  ]);
 
   let lastTick = -1;
 
@@ -238,7 +303,9 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     if (!speedStreaks.visible) {
       return;
     }
-    streakMat.color.setHex(boostKind === 'drifting' ? 0x5dffdb : 0xa6e8ff);
+    streakMat.color.setHex(
+      boostKind === 'drifting' ? SCENE_PALETTE.streakDrift : SCENE_PALETTE.streakBoost,
+    );
     const posAttr = streakGeo.getAttribute('position') as THREE.BufferAttribute;
     const travel = (world.tick * 5.2) % 90;
     const length = boostKind === 'boosting' ? 13 : 7;
@@ -270,6 +337,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     for (const [id, mesh] of asteroidMeshes) {
       if (!activeIds.has(id)) {
         scene.remove(mesh);
+        disposeObject3D(mesh, sharedGeometries, sharedMaterials);
         asteroidMeshes.delete(id);
       }
     }
@@ -289,7 +357,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
 
       let trail = enemyTrails.get(enemy.id);
       if (trail === undefined) {
-        trail = createTrail(0x5dffb3, 30, 0.55);
+        trail = createTrail(SCENE_PALETTE.enemyTrail, 30, 0.55);
         enemyTrails.set(enemy.id, trail);
         scene.add(trail.line);
       }
@@ -301,6 +369,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     for (const [id, mesh] of enemyMeshes) {
       if (!activeIds.has(id)) {
         scene.remove(mesh);
+        disposeObject3D(mesh, sharedGeometries, sharedMaterials);
         enemyMeshes.delete(id);
       }
     }
@@ -341,7 +410,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
       if (proj.kind === 'missile') {
         let trail = missileTrails.get(proj.id);
         if (trail === undefined) {
-          trail = createTrail(0xffaa55, 22, 0.85);
+          trail = createTrail(SCENE_PALETTE.missileTrail, 22, 0.85);
           missileTrails.set(proj.id, trail);
           scene.add(trail.line);
         }
@@ -373,14 +442,18 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
       let entry = explosionVisuals.get(exp.id);
       if (entry === undefined) {
         const color =
-          exp.tint === 'crimson' ? 0xff4560 : exp.tint === 'emerald' ? 0x6bffb8 : 0xffb84d;
+          exp.tint === 'crimson'
+            ? SCENE_PALETTE.explosionCrimson
+            : exp.tint === 'emerald'
+              ? SCENE_PALETTE.explosionEmerald
+              : SCENE_PALETTE.explosionAmber;
         const sphereMat = new THREE.MeshBasicMaterial({
           color,
           transparent: true,
           opacity: 0.94,
         });
         const ringMat = new THREE.MeshBasicMaterial({
-          color: 0xfff3d4,
+          color: SCENE_PALETTE.explosionRing,
           side: THREE.DoubleSide,
           transparent: true,
           opacity: 0.88,
@@ -401,7 +474,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
             z: Math.sin(phi),
           };
           const shardMat = new THREE.MeshBasicMaterial({
-            color: i % 2 === 0 ? color : 0xffe8b0,
+            color: i % 2 === 0 ? color : SCENE_PALETTE.explosionShardHighlight,
             transparent: true,
             opacity: 0.95,
           });
@@ -451,25 +524,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     }
   }
 
-  function render(world: WorldState): void {
-    const tickReset = world.tick < lastTick;
-    const tickAdvanced = world.tick > lastTick;
-    lastTick = world.tick;
-    if (tickReset) {
-      clearTrail(playerLeftTrail);
-      clearTrail(playerRightTrail);
-      clearTrail(wingmateTrail);
-      for (const trail of enemyTrails.values()) {
-        clearTrail(trail);
-      }
-    }
-
-    const player = world.player;
-    setPose(playerRig.root, player.position, player.orientation);
-    setPose(wingmateRig.root, world.wingmate.position, world.wingmate.orientation);
-    setPose(carrierMesh, world.friendlyCarrier.position, world.friendlyCarrier.orientation);
-    setPose(frigateRig.root, world.hostileFrigate.position, world.hostileFrigate.orientation);
-
+  function syncSubsystems(world: WorldState): void {
     let shieldAlive = false;
     for (const subsys of world.hostileFrigate.subsystems) {
       const mesh = frigateRig.subsystemMeshes.get(subsys.id);
@@ -492,15 +547,11 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     }
     frigateRig.shieldRing.visible = shieldAlive;
     frigateRig.shieldRing.rotation.z = world.tick * 0.035;
+  }
 
+  function updateCamera(world: WorldState): void {
+    const player = world.player;
     const boostKind = player.energy.boostMode.kind;
-    const flicker = 0.92 + ((world.tick * 13) % 7) * 0.03;
-    const plumeScale =
-      (boostKind === 'boosting' ? 2.25 : boostKind === 'drifting' ? 1.5 : 0.95) * flicker;
-    for (const plume of playerRig.plumes) {
-      plume.scale.set(1, 1, plumeScale);
-    }
-
     const targetFov = boostKind === 'boosting' ? 82 : boostKind === 'drifting' ? 76 : 68;
     if (Math.abs(camera.fov - targetFov) > 0.1) {
       camera.fov += (targetFov - camera.fov) * 0.16;
@@ -516,17 +567,6 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     const fwd = forwardOf(player.orientation);
     const up = upOf(player.orientation);
     const right = rightOf(player.orientation);
-
-    if (tickAdvanced) {
-      const tipLeft = add(add(player.position, scale(right, -6.8)), scale(fwd, -1.5));
-      const tipRight = add(add(player.position, scale(right, 6.8)), scale(fwd, -1.5));
-      pushTrailPoint(playerLeftTrail, tipLeft);
-      pushTrailPoint(playerRightTrail, tipRight);
-      pushTrailPoint(
-        wingmateTrail,
-        add(world.wingmate.position, scale(forwardOf(world.wingmate.orientation), -4)),
-      );
-    }
 
     if (isCockpit) {
       const eyePos = add(add(player.position, scale(up, 1.35)), scale(fwd, 1.8));
@@ -568,7 +608,50 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
       camera.up.copy(scratchUp);
       camera.lookAt(lookPos.x, lookPos.y, lookPos.z);
     }
+  }
 
+  function render(world: WorldState): void {
+    const tickReset = world.tick < lastTick;
+    const tickAdvanced = world.tick > lastTick;
+    lastTick = world.tick;
+    if (tickReset) {
+      clearTrail(playerLeftTrail);
+      clearTrail(playerRightTrail);
+      clearTrail(wingmateTrail);
+      for (const trail of enemyTrails.values()) {
+        clearTrail(trail);
+      }
+    }
+
+    const player = world.player;
+    setPose(playerRig.root, player.position, player.orientation);
+    setPose(wingmateRig.root, world.wingmate.position, world.wingmate.orientation);
+    setPose(carrierMesh, world.friendlyCarrier.position, world.friendlyCarrier.orientation);
+    setPose(frigateRig.root, world.hostileFrigate.position, world.hostileFrigate.orientation);
+    syncSubsystems(world);
+
+    const boostKind = player.energy.boostMode.kind;
+    const flicker = 0.92 + ((world.tick * 13) % 7) * 0.03;
+    const plumeScale =
+      (boostKind === 'boosting' ? 2.25 : boostKind === 'drifting' ? 1.5 : 0.95) * flicker;
+    for (const plume of playerRig.plumes) {
+      plume.scale.set(1, 1, plumeScale);
+    }
+
+    if (tickAdvanced) {
+      const fwd = forwardOf(player.orientation);
+      const right = rightOf(player.orientation);
+      const tipLeft = add(add(player.position, scale(right, -6.8)), scale(fwd, -1.5));
+      const tipRight = add(add(player.position, scale(right, 6.8)), scale(fwd, -1.5));
+      pushTrailPoint(playerLeftTrail, tipLeft);
+      pushTrailPoint(playerRightTrail, tipRight);
+      pushTrailPoint(
+        wingmateTrail,
+        add(world.wingmate.position, scale(forwardOf(world.wingmate.orientation), -4)),
+      );
+    }
+
+    updateCamera(world);
     backdrop.position.copy(camera.position);
     updateDustField(player.position);
     updateSpeedStreaks(world);
@@ -604,6 +687,18 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   }
 
   function destroy(): void {
+    disposeObject3D(scene, sharedGeometries, sharedMaterials);
+    for (const geo of sharedGeometries) {
+      geo.dispose();
+    }
+    for (const mat of sharedMaterials) {
+      if (!SHARED_MODEL_MATERIALS.has(mat)) {
+        mat.dispose();
+      }
+    }
+    for (const mat of initialSubMaterials.values()) {
+      mat.dispose();
+    }
     dotTexture.dispose();
     textures.dispose();
     postPass.destroy();

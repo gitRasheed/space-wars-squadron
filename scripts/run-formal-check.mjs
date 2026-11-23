@@ -106,8 +106,21 @@ async function measureSimulation(work) {
     const missiles = [];
     const shots = [];
     ticksUntil((tick) => {
-      const result = stepCombat(tick, world.rngState, player, world.wingmate, [],
-        world.friendlyCarrier, world.hostileFrigate, [], [], null, input, dt);
+      const result = stepCombat({
+        tick,
+        rngState: world.rngState,
+        player,
+        wingmate: world.wingmate,
+        enemies: [],
+        friendlyCarrier: world.friendlyCarrier,
+        hostileFrigate: world.hostileFrigate,
+        asteroids: [],
+        projectiles: [],
+        explosions: [],
+        radio: null,
+        input,
+        dt,
+      });
       player = result.player;
       if (result.events.some(e => e.kind === 'missile_fired')) missiles.push(tick);
       if (result.events.some(e => e.kind === 'cannon_fired' && e.faction === 'friendly')) shots.push(tick);

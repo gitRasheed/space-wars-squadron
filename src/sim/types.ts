@@ -73,6 +73,7 @@ export interface FlightInput {
   readonly fireMissile: boolean;
   readonly cycleTarget: boolean;
   readonly toggleCamera: boolean;
+  readonly toggleMute: boolean;
   readonly launchBriefing: boolean;
   readonly restartSortie: boolean;
 }
@@ -90,7 +91,6 @@ export interface PlayerShipState {
   readonly orientation: Quat;
   readonly angularVelocity: Vec3;
   readonly throttle: number;
-  readonly speed: number;
   readonly hull: number;
   readonly maxHull: number;
   readonly energy: EnergyState;
@@ -216,6 +216,17 @@ export interface WorldState {
   readonly events: readonly SimEvent[];
 }
 
+export interface SortieConfig {
+  readonly id: string;
+  readonly openingRadio: RadioMessage;
+  readonly createPlayer: () => PlayerShipState;
+  readonly createWingmate: () => WingmateState;
+  readonly createEnemies: () => readonly EnemyShipState[];
+  readonly createFriendlyCarrier: () => CapitalShipState;
+  readonly createHostileFrigate: () => CapitalShipState;
+  readonly createAsteroids: () => readonly AsteroidState[];
+}
+
 export const FIXED_DT = 1 / 60;
 export const DEFAULT_SORTIE_SEED = 0x51a7f00d;
 
@@ -230,6 +241,7 @@ export const NEUTRAL_INPUT: FlightInput = {
   fireMissile: false,
   cycleTarget: false,
   toggleCamera: false,
+  toggleMute: false,
   launchBriefing: false,
   restartSortie: false,
 };

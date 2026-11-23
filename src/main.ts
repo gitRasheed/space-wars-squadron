@@ -2,6 +2,7 @@ import { createSynthAudio } from './audio/synthAudio';
 import { createInputChannel } from './input/keyboardMouse';
 import { createCockpitHud } from './render/cockpitHud';
 import { createSceneRenderer } from './render/sceneRenderer';
+import { len } from './sim/math';
 import { DEFAULT_SORTIE_SEED, FIXED_DT, type WorldState } from './sim/types';
 import { createInitialWorld, stepWorld } from './sim/world';
 
@@ -42,7 +43,7 @@ function boot(): void {
   const hudCanvas = requireCanvas('hud-canvas');
 
   let world = createInitialWorld(DEFAULT_SORTIE_SEED, false);
-  const input = createInputChannel(glCanvas, () => world.phase.kind === 'briefing');
+  const input = createInputChannel(glCanvas, () => world.phase.kind !== 'active');
   const renderer = createSceneRenderer(glCanvas);
   const hud = createCockpitHud(hudCanvas);
   const audio = createSynthAudio();
@@ -60,18 +61,12 @@ function boot(): void {
     audio.unlock();
   });
 
-  window.addEventListener('keydown', (event) => {
-    if (!event.repeat && event.code === 'KeyM') {
-      audio.toggleMute();
-    }
-  });
-
   window.__SWS_TELEMETRY__ = {
     getSnapshot: () => ({
       tick: world.tick,
       phase: world.phase.kind,
       cameraMode: world.cameraMode,
-      speed: world.player.speed,
+      speed: len(world.player.velocity),
       boostMode: world.player.energy.boostMode.kind,
       engineCharge: world.player.energy.engineCharge,
       weaponCharge: world.player.energy.weaponCharge,
@@ -94,6 +89,9 @@ function boot(): void {
 
     while (accumulator >= FIXED_DT) {
       const sampled = input.sample();
+      if (sampled.toggleMute) {
+        audio.toggleMute();
+      }
       world = stepWorld(world, sampled, FIXED_DT);
       audio.sync(world);
       accumulator -= FIXED_DT;

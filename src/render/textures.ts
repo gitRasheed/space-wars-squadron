@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { TEXTURE_PALETTE } from './palette';
 
 function createPixelCanvas(
   size: number,
@@ -107,31 +108,35 @@ function paintAsteroidSurface(
 }
 
 export function createHullTextureSet(): HullTextureSet {
+  const f = TEXTURE_PALETTE.fighter;
   const fighterHull = createPixelCanvas(64, (ctx, size) => {
-    paintPanelGrid(ctx, size, '#dfd9cc', '#d2cab9', '#8a857c', '#f7f3e8', null);
-    ctx.fillStyle = '#c4baa8';
+    paintPanelGrid(ctx, size, f.base, f.alt, f.seam, f.rivet, null);
+    ctx.fillStyle = f.band;
     ctx.fillRect(0, 28, size, 6);
-    ctx.fillStyle = '#6c6f7d';
+    ctx.fillStyle = f.trim;
     ctx.fillRect(0, 34, size, 2);
   });
 
+  const c = TEXTURE_PALETTE.carrier;
   const carrierHull = createPixelCanvas(64, (ctx, size) => {
-    paintPanelGrid(ctx, size, '#7e889b', '#6d778a', '#3c4354', '#a4b0c4', '#ffd88a');
-    ctx.fillStyle = '#586276';
+    paintPanelGrid(ctx, size, c.base, c.alt, c.seam, c.rivet, c.light);
+    ctx.fillStyle = c.band;
     ctx.fillRect(0, 20, size, 4);
     ctx.fillRect(0, 48, size, 3);
   });
 
+  const fr = TEXTURE_PALETTE.frigate;
   const frigateHull = createPixelCanvas(64, (ctx, size) => {
-    paintPanelGrid(ctx, size, '#5a5070', '#4d4363', '#272036', '#8577a3', '#ff6478');
-    ctx.fillStyle = '#3b314d';
+    paintPanelGrid(ctx, size, fr.base, fr.alt, fr.seam, fr.rivet, fr.light);
+    ctx.fillStyle = fr.band;
     ctx.fillRect(0, 30, size, 4);
   });
 
+  const sv = TEXTURE_PALETTE.solarVane;
   const solarVane = createPixelCanvas(64, (ctx, size) => {
-    ctx.fillStyle = '#1d2230';
+    ctx.fillStyle = sv.bg;
     ctx.fillRect(0, 0, size, size);
-    ctx.strokeStyle = '#394359';
+    ctx.strokeStyle = sv.grid;
     ctx.lineWidth = 1;
     for (let i = 0; i < size; i += 8) {
       ctx.beginPath();
@@ -141,27 +146,30 @@ export function createHullTextureSet(): HullTextureSet {
       ctx.lineTo(size, i + 0.5);
       ctx.stroke();
     }
-    ctx.fillStyle = '#2a3347';
+    ctx.fillStyle = sv.cell;
     for (let y = 2; y < size; y += 8) {
       for (let x = 2; x < size; x += 8) {
         ctx.fillRect(x, y, 4, 4);
       }
     }
-    ctx.strokeStyle = '#9ea8bd';
+    ctx.strokeStyle = sv.border;
     ctx.lineWidth = 2;
     ctx.strokeRect(1, 1, size - 2, size - 2);
   });
 
+  const ice = TEXTURE_PALETTE.asteroidIce;
   const asteroidIce = createPixelCanvas(64, (ctx, size) => {
-    paintAsteroidSurface(ctx, size, '#8f84ab', '#776c94', '#4d4466', '#bfb7d9');
+    paintAsteroidSurface(ctx, size, ice.base, ice.mid, ice.dark, ice.highlight);
   });
 
+  const ochre = TEXTURE_PALETTE.asteroidOchre;
   const asteroidOchre = createPixelCanvas(64, (ctx, size) => {
-    paintAsteroidSurface(ctx, size, '#8f5f4e', '#754b3d', '#4c2e26', '#bd866d');
+    paintAsteroidSurface(ctx, size, ochre.base, ochre.mid, ochre.dark, ochre.highlight);
   });
 
+  const slate = TEXTURE_PALETTE.asteroidSlate;
   const asteroidSlate = createPixelCanvas(64, (ctx, size) => {
-    paintAsteroidSurface(ctx, size, '#555c73', '#444a5e', '#2b2f3d', '#828ca8');
+    paintAsteroidSurface(ctx, size, slate.base, slate.mid, slate.dark, slate.highlight);
   });
 
   function dispose(): void {

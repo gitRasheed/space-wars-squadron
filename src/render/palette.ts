@@ -1,0 +1,112 @@
+export const SUN_DIRECTION = {
+  x: 0.84,
+  y: 0.18,
+  z: -0.51,
+} as const;
+
+export const LIGHT_PALETTE = {
+  sunColor: 0xffcb99,
+  sunIntensity: 2.4,
+  rimColor: 0x6b88ff,
+  rimIntensity: 1.05,
+  hemiSky: 0x7c88b8,
+  hemiGround: 0x1b172c,
+  hemiIntensity: 0.78,
+} as const;
+
+export const SCENE_PALETTE = {
+  playerStripe: 0xe88332,
+  wingmateStripe: 0x4bc5e8,
+  friendlyTrail: 0x88e8ff,
+  wingmateTrail: 0x52d4ff,
+  friendlyBolt: 0xffe07d,
+  hostileBolt: 0x5dffb3,
+  missile: 0xff7740,
+  missileTrail: 0xffaa55,
+  enemyTrail: 0x5dffb3,
+  inkOutline: 0x070712,
+  subtleEdge: 0x111222,
+  destroyedSubsystem: 0x1b1922,
+  explosionCrimson: 0xff4560,
+  explosionEmerald: 0x6bffb8,
+  explosionAmber: 0xffb84d,
+  explosionRing: 0xfff3d4,
+  explosionShardHighlight: 0xffe8b0,
+  dust: 0xd4e2ff,
+  streakBoost: 0xa6e8ff,
+  streakDrift: 0x5dffdb,
+  hostileAccent: 0xe84852,
+  hostileEmissive: 0x6b1218,
+  frigateAccent: 0xf04d5c,
+  frigateGlow: 0xff6b7a,
+  shieldDome: 0xff5ec0,
+  clampCore: 0xff843b,
+} as const;
+
+export const HUD_PALETTE = {
+  amber: '#f4b459',
+  cyan: '#6be5ff',
+  crimson: '#ff4d63',
+  emerald: '#5dffb0',
+  warmWhite: '#fff0d4',
+  cream: '#f6e8cf',
+  radioText: '#f2e6cf',
+  boostGold: '#ffd966',
+  missileOrange: '#ff8e4d',
+  frigateOrange: '#ff8040',
+  subsystemMagenta: '#ff52b8',
+  labelBg: 'rgba(8, 10, 18, 0.78)',
+  panelBg: 'rgba(7, 10, 18, 0.68)',
+  inkStroke: '#070812',
+} as const;
+
+export const TEXTURE_PALETTE = {
+  fighter: {
+    base: '#dfd9cc',
+    alt: '#d2cab9',
+    seam: '#8a857c',
+    rivet: '#f7f3e8',
+    band: '#c4baa8',
+    trim: '#6c6f7d',
+  },
+  carrier: {
+    base: '#7e889b',
+    alt: '#6d778a',
+    seam: '#3c4354',
+    rivet: '#a4b0c4',
+    light: '#ffd88a',
+    band: '#586276',
+  },
+  frigate: {
+    base: '#5a5070',
+    alt: '#4d4363',
+    seam: '#272036',
+    rivet: '#8577a3',
+    light: '#ff6478',
+    band: '#3b314d',
+  },
+  solarVane: {
+    bg: '#1d2230',
+    grid: '#394359',
+    cell: '#2a3347',
+    border: '#9ea8bd',
+  },
+  asteroidIce: {
+    base: '#8f84ab',
+    mid: '#776c94',
+    dark: '#4d4466',
+    highlight: '#bfb7d9',
+  },
+  asteroidOchre: {
+    base: '#8f5f4e',
+    mid: '#754b3d',
+    dark: '#4c2e26',
+    highlight: '#bd866d',
+  },
+  asteroidSlate: {
+    base: '#555c73',
+    mid: '#444a5e',
+    dark: '#2b2f3d',
+    highlight: '#828ca8',
+  },
+} as const;

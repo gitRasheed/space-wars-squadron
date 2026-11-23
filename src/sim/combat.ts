@@ -17,6 +17,7 @@ import {
   scale,
   slerpQuat,
   sub,
+  toLocalPoint,
   upOf,
 } from './math';
 import type {
@@ -65,6 +66,38 @@ export interface TargetContact {
   readonly position: Vec3;
   readonly velocity: Vec3;
   readonly kind: 'enemy' | 'subsystem';
+}
+
+export interface CombatStepInput {
+  readonly tick: number;
+  readonly rngState: number;
+  readonly player: PlayerShipState;
+  readonly wingmate: WingmateState;
+  readonly enemies: readonly EnemyShipState[];
+  readonly friendlyCarrier: CapitalShipState;
+  readonly hostileFrigate: CapitalShipState;
+  readonly asteroids: readonly AsteroidState[];
+  readonly projectiles: readonly ProjectileState[];
+  readonly explosions: readonly ExplosionState[];
+  readonly radio: RadioMessage | null;
+  readonly input: FlightInput;
+  readonly dt: number;
+}
+
+export interface CombatStepOutput {
+  readonly player: PlayerShipState;
+  readonly wingmate: WingmateState;
+  readonly enemies: readonly EnemyShipState[];
+  readonly friendlyCarrier: CapitalShipState;
+  readonly hostileFrigate: CapitalShipState;
+  readonly asteroids: readonly AsteroidState[];
+  readonly projectiles: readonly ProjectileState[];
+  readonly explosions: readonly ExplosionState[];
+  readonly radio: RadioMessage | null;
+  readonly enemiesDestroyedDelta: number;
+  readonly subsystemsDestroyedDelta: number;
+  readonly rngState: number;
+  readonly events: readonly SimEvent[];
 }
 
 export function subsystemWorldPosition(ship: CapitalShipState, subsys: SubsystemState): Vec3 {
@@ -187,50 +220,31 @@ export function stepLockState(
   };
 }
 
-export interface CombatStepOutput {
-  readonly player: PlayerShipState;
-  readonly wingmate: WingmateState;
-  readonly enemies: readonly EnemyShipState[];
-  readonly friendlyCarrier: CapitalShipState;
-  readonly hostileFrigate: CapitalShipState;
-  readonly asteroids: readonly AsteroidState[];
-  readonly projectiles: readonly ProjectileState[];
-  readonly explosions: readonly ExplosionState[];
-  readonly radio: RadioMessage | null;
-  readonly enemiesDestroyedDelta: number;
-  readonly subsystemsDestroyedDelta: number;
-  readonly rngState: number;
-  readonly events: readonly SimEvent[];
+export function isInsideCapitalBox(pos: Vec3, ship: CapitalShipState, pad: number): boolean {
+  const local = toLocalPoint(ship.position, ship.orientation, pos);
+  return (
+    Math.abs(local.x) <= ship.halfExtents.x + pad &&
+    Math.abs(local.y) <= ship.halfExtents.y + pad &&
+    Math.abs(local.z) <= ship.halfExtents.z + pad
+  );
 }
 
-export function stepCombat(
+function stepPlayerWeapons(
   tick: number,
-  rngState: number,
-  playerInput: PlayerShipState,
-  wingmateInput: WingmateState,
-  enemiesInput: readonly EnemyShipState[],
-  friendlyCarrierInput: CapitalShipState,
-  hostileFrigateInput: CapitalShipState,
-  asteroidsInput: readonly AsteroidState[],
-  projectilesInput: readonly ProjectileState[],
-  explosionsInput: readonly ExplosionState[],
-  radioInput: RadioMessage | null,
+  player: PlayerShipState,
+  enemies: readonly EnemyShipState[],
+  hostileFrigate: CapitalShipState,
   input: FlightInput,
   dt: number,
-): CombatStepOutput {
+): {
+  readonly player: PlayerShipState;
+  readonly spawned: readonly ProjectileState[];
+  readonly events: readonly SimEvent[];
+} {
   const events: SimEvent[] = [];
-  let nextRng = rngState;
-  let player = playerInput;
-  let wingmate = wingmateInput;
-  let friendlyCarrier = friendlyCarrierInput;
-  let hostileFrigate = hostileFrigateInput;
-  let radio: RadioMessage | null =
-    radioInput !== null && radioInput.remainingSeconds > dt
-      ? { ...radioInput, remainingSeconds: radioInput.remainingSeconds - dt }
-      : null;
-
+  const spawned: ProjectileState[] = [];
   const playerForward = forwardOf(player.orientation);
-  const contacts = listHostileContacts(enemiesInput, hostileFrigate);
+  const contacts = listHostileContacts(enemies, hostileFrigate);
   const selectedTargetId = selectNextTarget(
     player.selectedTargetId,
     player.position,
@@ -238,7 +252,7 @@ export function stepCombat(
     contacts,
     input.cycleTarget,
   );
-  const selectedContact = findTargetContact(selectedTargetId, enemiesInput, hostileFrigate);
+  const selectedContact = findTargetContact(selectedTargetId, enemies, hostileFrigate);
 
   let missilesReady = player.missilesReady;
   let missileRearmTimer = player.missileRearmTimer;
@@ -269,7 +283,6 @@ export function stepCombat(
   let energy = player.energy;
   let recoilKick = player.recoilKick;
   let lockState = lockStep.lockState;
-  const spawnedProjectiles: ProjectileState[] = [];
 
   if (input.firePrimary && primaryCooldown <= 0) {
     const spent = spendWeaponCharge(energy, ENERGY_RULES.primaryShotCost);
@@ -291,7 +304,7 @@ export function stepCombat(
           add(player.position, scale(playerForward, 5)),
           add(scale(right, side * 3.1), down),
         );
-        spawnedProjectiles.push({
+        spawned.push({
           id: `pb-${tick}-${side > 0 ? 'r' : 'l'}`,
           kind: 'bolt',
           faction: 'friendly',
@@ -317,7 +330,7 @@ export function stepCombat(
       add(player.position, scale(playerForward, 4)),
       scale(right, side * 4.2),
     );
-    spawnedProjectiles.push({
+    spawned.push({
       id: `pm-${tick}`,
       kind: 'missile',
       faction: 'friendly',
@@ -330,62 +343,127 @@ export function stepCombat(
     events.push({ kind: 'missile_fired' });
   }
 
-  player = {
-    ...player,
-    energy,
-    primaryCooldown,
-    missileCooldown,
-    missilesReady,
-    missileRearmTimer,
-    selectedTargetId,
-    lockState,
-    recoilKick,
+  return {
+    player: {
+      ...player,
+      energy,
+      primaryCooldown,
+      missileCooldown,
+      missilesReady,
+      missileRearmTimer,
+      selectedTargetId,
+      lockState,
+      recoilKick,
+    },
+    spawned,
+    events,
   };
+}
 
-  const wingmateStep = stepWingmate(tick, wingmate, player, enemiesInput, hostileFrigate, dt);
-  wingmate = wingmateStep.wingmate;
+function stepNpcAgents(
+  tick: number,
+  rngState: number,
+  player: PlayerShipState,
+  wingmateInput: WingmateState,
+  enemiesInput: readonly EnemyShipState[],
+  friendlyCarrier: CapitalShipState,
+  hostileFrigate: CapitalShipState,
+  radioInput: RadioMessage | null,
+  dt: number,
+): {
+  readonly wingmate: WingmateState;
+  readonly enemies: readonly EnemyShipState[];
+  readonly spawned: readonly ProjectileState[];
+  readonly radio: RadioMessage | null;
+  readonly rngState: number;
+  readonly events: readonly SimEvent[];
+} {
+  let nextRng = rngState;
+  let radio = radioInput;
+  const spawned: ProjectileState[] = [];
+  const events: SimEvent[] = [];
+
+  const wingmateStep = stepWingmate(tick, wingmateInput, player, enemiesInput, hostileFrigate, dt);
   if (wingmateStep.projectile !== null) {
-    spawnedProjectiles.push(wingmateStep.projectile);
+    spawned.push(wingmateStep.projectile);
   }
   if (wingmateStep.callout !== null && radio === null) {
     radio = {
-      speaker: wingmate.callsign,
+      speaker: wingmateStep.wingmate.callsign,
       text: wingmateStep.callout,
       remainingSeconds: 3.0,
     };
   }
 
-  const steppedEnemies: EnemyShipState[] = [];
+  const enemies: EnemyShipState[] = [];
   for (const enemy of enemiesInput) {
     const enemyStep = stepEnemyAi(tick, nextRng, enemy, player, friendlyCarrier, dt);
     nextRng = enemyStep.rngState;
-    steppedEnemies.push(enemyStep.enemy);
+    enemies.push(enemyStep.enemy);
     if (enemyStep.projectile !== null) {
-      spawnedProjectiles.push(enemyStep.projectile);
+      spawned.push(enemyStep.projectile);
       events.push({ kind: 'cannon_fired', faction: 'hostile' });
     }
   }
 
-  const activeProjectiles = [...projectilesInput, ...spawnedProjectiles];
+  return {
+    wingmate: wingmateStep.wingmate,
+    enemies,
+    spawned,
+    radio,
+    rngState: nextRng,
+    events,
+  };
+}
+
+function stepProjectilesAndHits(
+  tick: number,
+  playerInput: PlayerShipState,
+  wingmateCallsign: string,
+  enemiesInput: readonly EnemyShipState[],
+  friendlyCarrierInput: CapitalShipState,
+  hostileFrigateInput: CapitalShipState,
+  asteroidsInput: readonly AsteroidState[],
+  projectilesInput: readonly ProjectileState[],
+  explosionsInput: readonly ExplosionState[],
+  radioInput: RadioMessage | null,
+  dt: number,
+): {
+  readonly player: PlayerShipState;
+  readonly enemies: readonly EnemyShipState[];
+  readonly friendlyCarrier: CapitalShipState;
+  readonly hostileFrigate: CapitalShipState;
+  readonly asteroids: readonly AsteroidState[];
+  readonly projectiles: readonly ProjectileState[];
+  readonly explosions: readonly ExplosionState[];
+  readonly radio: RadioMessage | null;
+  readonly enemiesDestroyedDelta: number;
+  readonly subsystemsDestroyedDelta: number;
+  readonly events: readonly SimEvent[];
+} {
+  let player = playerInput;
+  let friendlyCarrier = friendlyCarrierInput;
+  let radio = radioInput;
+  const events: SimEvent[] = [];
   const survivingProjectiles: ProjectileState[] = [];
   const nextExplosions: ExplosionState[] = explosionsInput
     .map((e) => ({ ...e, elapsed: e.elapsed + dt }))
     .filter((e) => e.elapsed < e.duration);
 
   const enemyMap = new Map<string, EnemyShipState>();
-  for (const e of steppedEnemies) {
+  for (const e of enemiesInput) {
     enemyMap.set(e.id, e);
   }
   const asteroidMap = new Map<string, AsteroidState>();
   for (const ast of asteroidsInput) {
     asteroidMap.set(ast.id, ast);
   }
-  const subsystems = hostileFrigate.subsystems.map((s) => ({ ...s }));
+  const subsystems = hostileFrigateInput.subsystems.map((s) => ({ ...s }));
 
   let enemiesDestroyedDelta = 0;
   let subsystemsDestroyedDelta = 0;
 
-  for (const proj of activeProjectiles) {
+  for (const proj of projectilesInput) {
     const ttl = proj.ttl - dt;
     if (ttl <= 0) {
       continue;
@@ -393,7 +471,7 @@ export function stepCombat(
 
     let velocity = proj.velocity;
     if (proj.kind === 'missile' && proj.targetId !== null) {
-      const targetPos = resolveTargetPosition(proj.targetId, enemyMap, hostileFrigate, subsystems);
+      const targetPos = resolveTargetPosition(proj.targetId, enemyMap, hostileFrigateInput, subsystems);
       if (targetPos !== null) {
         const desiredDir = normalize(sub(targetPos, proj.position));
         const currentDir = normalize(velocity);
@@ -429,7 +507,7 @@ export function stepCombat(
               tint: 'amber',
             });
             radio = {
-              speaker: wingmate.callsign,
+              speaker: wingmateCallsign,
               text: `Splash ${enemy.callsign}! Good kill, lead.`,
               remainingSeconds: 2.8,
             };
@@ -455,7 +533,7 @@ export function stepCombat(
           if (subsys === undefined || subsys.hull <= 0) {
             continue;
           }
-          const worldPos = subsystemWorldPosition(hostileFrigate, subsys);
+          const worldPos = subsystemWorldPosition(hostileFrigateInput, subsys);
           if (distance(nextPos, worldPos) <= subsys.radius + 9) {
             hit = true;
             const nextHull = Math.max(0, subsys.hull - proj.damage);
@@ -524,32 +602,30 @@ export function stepCombat(
           }
         }
       }
-    } else {
-      if (distance(nextPos, player.position) <= COMBAT_TUNING.playerHitRadius) {
-        hit = true;
-        const absorbed = absorbShieldDamage(player.energy, proj.damage);
-        player = {
-          ...player,
-          energy: absorbed.energy,
-          hull: Math.max(0, player.hull - absorbed.hullDamage),
-          hitFlash: 1,
-        };
-        events.push({ kind: 'player_damaged' });
-      } else if (isInsideCapitalBox(nextPos, friendlyCarrier, 4)) {
-        hit = true;
-        friendlyCarrier = {
-          ...friendlyCarrier,
-          hull: Math.max(0, friendlyCarrier.hull - proj.damage * 0.4),
-        };
-        nextExplosions.push({
-          id: `carhit-${tick}-${proj.id}`,
-          position: nextPos,
-          radius: 8,
-          elapsed: 0,
-          duration: 0.32,
-          tint: 'amber',
-        });
-      }
+    } else if (distance(nextPos, player.position) <= COMBAT_TUNING.playerHitRadius) {
+      hit = true;
+      const absorbed = absorbShieldDamage(player.energy, proj.damage);
+      player = {
+        ...player,
+        energy: absorbed.energy,
+        hull: Math.max(0, player.hull - absorbed.hullDamage),
+        hitFlash: 1,
+      };
+      events.push({ kind: 'player_damaged' });
+    } else if (isInsideCapitalBox(nextPos, friendlyCarrier, 4)) {
+      hit = true;
+      friendlyCarrier = {
+        ...friendlyCarrier,
+        hull: Math.max(0, friendlyCarrier.hull - proj.damage * 0.4),
+      };
+      nextExplosions.push({
+        id: `carhit-${tick}-${proj.id}`,
+        position: nextPos,
+        radius: 8,
+        elapsed: 0,
+        duration: 0.32,
+        tint: 'amber',
+      });
     }
 
     if (!hit) {
@@ -562,14 +638,68 @@ export function stepCombat(
     }
   }
 
-  hostileFrigate = { ...hostileFrigate, subsystems };
-  const survivingEnemies = Array.from(enemyMap.values());
+  return {
+    player,
+    enemies: Array.from(enemyMap.values()),
+    friendlyCarrier,
+    hostileFrigate: { ...hostileFrigateInput, subsystems },
+    asteroids: Array.from(asteroidMap.values()),
+    projectiles: survivingProjectiles,
+    explosions: nextExplosions,
+    radio,
+    enemiesDestroyedDelta,
+    subsystemsDestroyedDelta,
+    events,
+  };
+}
 
+export function stepCombat(ctx: CombatStepInput): CombatStepOutput {
+  const decayedRadio: RadioMessage | null =
+    ctx.radio !== null && ctx.radio.remainingSeconds > ctx.dt
+      ? { ...ctx.radio, remainingSeconds: ctx.radio.remainingSeconds - ctx.dt }
+      : null;
+
+  const weaponStep = stepPlayerWeapons(
+    ctx.tick,
+    ctx.player,
+    ctx.enemies,
+    ctx.hostileFrigate,
+    ctx.input,
+    ctx.dt,
+  );
+
+  const agentStep = stepNpcAgents(
+    ctx.tick,
+    ctx.rngState,
+    weaponStep.player,
+    ctx.wingmate,
+    ctx.enemies,
+    ctx.friendlyCarrier,
+    ctx.hostileFrigate,
+    decayedRadio,
+    ctx.dt,
+  );
+
+  const hitStep = stepProjectilesAndHits(
+    ctx.tick,
+    weaponStep.player,
+    agentStep.wingmate.callsign,
+    agentStep.enemies,
+    ctx.friendlyCarrier,
+    ctx.hostileFrigate,
+    ctx.asteroids,
+    [...ctx.projectiles, ...weaponStep.spawned, ...agentStep.spawned],
+    ctx.explosions,
+    agentStep.radio,
+    ctx.dt,
+  );
+
+  let player = hitStep.player;
   const finalTargetValid =
     player.selectedTargetId !== null &&
-    findTargetContact(player.selectedTargetId, survivingEnemies, hostileFrigate) !== null;
+    findTargetContact(player.selectedTargetId, hitStep.enemies, hitStep.hostileFrigate) !== null;
   if (!finalTargetValid) {
-    const remainingContacts = listHostileContacts(survivingEnemies, hostileFrigate);
+    const remainingContacts = listHostileContacts(hitStep.enemies, hitStep.hostileFrigate);
     const nextSelectedId = selectNextTarget(
       null,
       player.position,
@@ -584,9 +714,10 @@ export function stepCombat(
     };
   }
 
+  let wingmate = agentStep.wingmate;
   if (
     wingmate.targetId !== null &&
-    findTargetContact(wingmate.targetId, survivingEnemies, hostileFrigate) === null
+    findTargetContact(wingmate.targetId, hitStep.enemies, hitStep.hostileFrigate) === null
   ) {
     wingmate = { ...wingmate, targetId: null };
   }
@@ -594,17 +725,17 @@ export function stepCombat(
   return {
     player,
     wingmate,
-    enemies: survivingEnemies,
-    friendlyCarrier,
-    hostileFrigate,
-    asteroids: Array.from(asteroidMap.values()),
-    projectiles: survivingProjectiles,
-    explosions: nextExplosions,
-    radio,
-    enemiesDestroyedDelta,
-    subsystemsDestroyedDelta,
-    rngState: nextRng,
-    events,
+    enemies: hitStep.enemies,
+    friendlyCarrier: hitStep.friendlyCarrier,
+    hostileFrigate: hitStep.hostileFrigate,
+    asteroids: hitStep.asteroids,
+    projectiles: hitStep.projectiles,
+    explosions: hitStep.explosions,
+    radio: hitStep.radio,
+    enemiesDestroyedDelta: hitStep.enemiesDestroyedDelta,
+    subsystemsDestroyedDelta: hitStep.subsystemsDestroyedDelta,
+    rngState: agentStep.rngState,
+    events: [...weaponStep.events, ...agentStep.events, ...hitStep.events],
   };
 }
 
@@ -647,15 +778,6 @@ function resolveTargetPosition(
     return subsystemWorldPosition(hostileFrigate, subsys);
   }
   return null;
-}
-
-function isInsideCapitalBox(pos: Vec3, ship: CapitalShipState, pad: number): boolean {
-  const d = sub(pos, ship.position);
-  return (
-    Math.abs(d.x) <= ship.halfExtents.x + pad &&
-    Math.abs(d.y) <= ship.halfExtents.y + pad &&
-    Math.abs(d.z) <= ship.halfExtents.z + pad
-  );
 }
 
 function pickWingmateTarget(
@@ -720,8 +842,13 @@ function stepWingmate(
   const desiredDir = dist > 1 ? scale(toDesired, 1 / dist) : forward;
   const targetQuat = quatLookAt(desiredDir);
   const orientation = slerpQuat(wingmate.orientation, targetQuat, clamp(dt * 3.0, 0, 1));
-  const speed = target !== null ? 96 : clamp(player.speed + dist * 0.45, 45, 130);
-  const velocity = lerpVec3(wingmate.velocity, scale(forwardOf(orientation), speed), clamp(dt * 3.5, 0, 1));
+  const playerSpeed = len(player.velocity);
+  const speed = target !== null ? 96 : clamp(playerSpeed + dist * 0.45, 45, 130);
+  const velocity = lerpVec3(
+    wingmate.velocity,
+    scale(forwardOf(orientation), speed),
+    clamp(dt * 3.5, 0, 1),
+  );
   const position = add(wingmate.position, scale(velocity, dt));
 
   let fireCooldown = Math.max(0, wingmate.fireCooldown - dt);

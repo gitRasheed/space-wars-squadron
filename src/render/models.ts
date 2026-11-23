@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { AsteroidState, EnemyKind } from '../sim/types';
+import { SCENE_PALETTE, SUN_DIRECTION } from './palette';
 import type { HullTextureSet } from './textures';
 
 function createToonGradientRamp(): THREE.DataTexture {
@@ -20,14 +21,19 @@ function createToonGradientRamp(): THREE.DataTexture {
 
 const TOON_RAMP = createToonGradientRamp();
 const INK_SHELL_MAT = new THREE.MeshBasicMaterial({
-  color: 0x070712,
+  color: SCENE_PALETTE.inkOutline,
   side: THREE.BackSide,
 });
 const SUBTLE_EDGE_MAT = new THREE.LineBasicMaterial({
-  color: 0x111222,
+  color: SCENE_PALETTE.subtleEdge,
   transparent: true,
   opacity: 0.48,
 });
+
+export const SHARED_MODEL_MATERIALS: ReadonlySet<THREE.Material> = new Set([
+  INK_SHELL_MAT,
+  SUBTLE_EDGE_MAT,
+]);
 
 function toonMat(
   color: number,
@@ -438,8 +444,11 @@ export function buildEnemyMesh(kind: EnemyKind, textures: HullTextureSet): THREE
   const hullMat = toonMat(0x616b85);
   const vaneMat = toonMat(0xffffff, { map: textures.solarVane });
   const rimMat = toonMat(0xc4cde0);
-  const crimsonMat = toonMat(0xe84852, { emissive: 0x6b1218, emissiveIntensity: 0.45 });
-  const coreMat = glowMat(0x5dffb3);
+  const crimsonMat = toonMat(SCENE_PALETTE.hostileAccent, {
+    emissive: SCENE_PALETTE.hostileEmissive,
+    emissiveIntensity: 0.45,
+  });
+  const coreMat = glowMat(SCENE_PALETTE.hostileBolt);
 
   if (kind === 'raider') {
     addStyledPart(root, new THREE.IcosahedronGeometry(2.6, 1), hullMat, { hullOutline: 1.05 });
@@ -642,8 +651,8 @@ export function buildHostileFrigateMesh(textures: HullTextureSet): HostileFrigat
     emissiveIntensity: 0.35,
   });
   const armorMat = toonMat(0x7c6282, { emissive: 0x180f1d, emissiveIntensity: 0.25 });
-  const crimsonAccent = toonMat(0xf04d5c, { emissive: 0x731420, emissiveIntensity: 0.5 });
-  const trenchGlow = glowMat(0xff6b7a);
+  const crimsonAccent = toonMat(SCENE_PALETTE.frigateAccent, { emissive: 0x731420, emissiveIntensity: 0.5 });
+  const trenchGlow = glowMat(SCENE_PALETTE.frigateGlow);
   const driveGlow = glowMat(0xff526b);
 
   const daggerShape = new THREE.Shape();
@@ -710,7 +719,7 @@ export function buildHostileFrigateMesh(textures: HullTextureSet): HostileFrigat
   const shieldDome = addStyledPart(
     root,
     new THREE.IcosahedronGeometry(15, 2),
-    toonMat(0xff5ec0, { emissive: 0xd42288, emissiveIntensity: 0.95 }),
+    toonMat(SCENE_PALETTE.shieldDome, { emissive: 0xd42288, emissiveIntensity: 0.95 }),
     { position: [0, 28, -32] },
   );
 
@@ -725,7 +734,7 @@ export function buildHostileFrigateMesh(textures: HullTextureSet): HostileFrigat
   const clampCore = addStyledPart(
     root,
     new THREE.OctahedronGeometry(15, 1),
-    toonMat(0xff843b, { emissive: 0xd6400e, emissiveIntensity: 0.95 }),
+    toonMat(SCENE_PALETTE.clampCore, { emissive: 0xd6400e, emissiveIntensity: 0.95 }),
     { position: [0, -20, 62] },
   );
 
@@ -780,7 +789,7 @@ export function buildAsteroidMesh(
 export function buildOrbitalBackdrop(dotTexture: THREE.CanvasTexture): THREE.Group {
   const group = new THREE.Group();
   // Keep the star off to the far right flank so it rim-lights ships cleanly without glaring in the player's eyes.
-  const sunDir = new THREE.Vector3(0.84, 0.18, -0.51).normalize();
+  const sunDir = new THREE.Vector3(SUN_DIRECTION.x, SUN_DIRECTION.y, SUN_DIRECTION.z).normalize();
 
   const skyGeo = new THREE.SphereGeometry(5400, 36, 24);
   const skyMat = new THREE.ShaderMaterial({

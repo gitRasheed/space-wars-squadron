@@ -1,3 +1,4 @@
+import { len } from '../sim/math';
 import type { SimEvent, WorldState } from '../sim/types';
 
 export interface SynthAudio {
@@ -138,7 +139,7 @@ export function createSynthAudio(): SynthAudio {
     const isActive = world.phase.kind === 'active';
     const boostAdd = world.player.energy.boostMode.kind === 'boosting' ? 58 : 0;
     const driftShift = world.player.energy.boostMode.kind === 'drifting' ? -18 : 0;
-    const targetFreq = 64 + world.player.speed * 0.72 + boostAdd + driftShift;
+    const targetFreq = 64 + len(world.player.velocity) * 0.72 + boostAdd + driftShift;
     engineOsc.frequency.setTargetAtTime(Math.max(40, targetFreq), now, 0.08);
     engineGain.gain.setTargetAtTime(isActive ? 0.045 : 0.008, now, 0.1);
 

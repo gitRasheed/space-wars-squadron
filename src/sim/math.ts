@@ -98,10 +98,18 @@ export function quatMul(a: Quat, b: Quat): Quat {
   };
 }
 
+export function quatConjugate(q: Quat): Quat {
+  return { x: -q.x, y: -q.y, z: -q.z, w: q.w };
+}
+
 export function rotateVec3(q: Quat, v: Vec3): Vec3 {
   const qv: Vec3 = { x: q.x, y: q.y, z: q.z };
   const t = scale(cross(qv, v), 2);
   return add(add(v, scale(t, q.w)), cross(qv, t));
+}
+
+export function toLocalPoint(origin: Vec3, orientation: Quat, worldPoint: Vec3): Vec3 {
+  return rotateVec3(quatConjugate(orientation), sub(worldPoint, origin));
 }
 
 export function forwardOf(q: Quat): Vec3 {

@@ -8,6 +8,7 @@ import type {
   EnemyShipState,
   FlightInput,
   PlayerShipState,
+  SortieConfig,
   SortiePhase,
   WingmateState,
   WorldState,
@@ -145,7 +146,6 @@ function createInitialPlayer(): PlayerShipState {
     orientation: IDENTITY_QUAT,
     angularVelocity: vec3(0, 0, 0),
     throttle: 0.55,
-    speed: 58,
     hull: 100,
     maxHull: 100,
     energy: createInitialEnergy(),
@@ -173,25 +173,40 @@ function createInitialWingmate(): WingmateState {
   };
 }
 
-export function createInitialWorld(seed: number, startActive = false): WorldState {
+export const DEFAULT_SORTIE_CONFIG: SortieConfig = {
+  id: 'sortie-01-hearthstone',
+  openingRadio: {
+    speaker: 'VALKYRIE-2',
+    text: 'Raiders inbound on Hearthstone—I have your flank, cleared hot!',
+    remainingSeconds: 4.5,
+  },
+  createPlayer: createInitialPlayer,
+  createWingmate: createInitialWingmate,
+  createEnemies: createInitialEnemies,
+  createFriendlyCarrier,
+  createHostileFrigate,
+  createAsteroids: createRingAsteroids,
+};
+
+export function createInitialWorld(
+  seed: number,
+  startActive = false,
+  config: SortieConfig = DEFAULT_SORTIE_CONFIG,
+): WorldState {
   return {
     tick: 0,
     rngState: seed,
     phase: startActive ? { kind: 'active', elapsedSeconds: 0 } : { kind: 'briefing' },
     cameraMode: 'cockpit',
-    player: createInitialPlayer(),
-    wingmate: createInitialWingmate(),
-    enemies: createInitialEnemies(),
-    friendlyCarrier: createFriendlyCarrier(),
-    hostileFrigate: createHostileFrigate(),
-    asteroids: createRingAsteroids(),
+    player: config.createPlayer(),
+    wingmate: config.createWingmate(),
+    enemies: config.createEnemies(),
+    friendlyCarrier: config.createFriendlyCarrier(),
+    hostileFrigate: config.createHostileFrigate(),
+    asteroids: config.createAsteroids(),
     projectiles: [],
     explosions: [],
-    radio: {
-      speaker: 'VALKYRIE-2',
-      text: 'Raiders inbound on Hearthstone—I have your flank, cleared hot!',
-      remainingSeconds: 4.5,
-    },
+    radio: config.openingRadio,
     enemiesDestroyed: 0,
     subsystemsDestroyed: 0,
     events: [],
@@ -229,7 +244,12 @@ function evaluatePhase(
   return { kind: 'active', elapsedSeconds };
 }
 
-export function stepWorld(world: WorldState, input: FlightInput, dt: number): WorldState {
+export function stepWorld(
+  world: WorldState,
+  input: FlightInput,
+  dt: number,
+  config: SortieConfig = DEFAULT_SORTIE_CONFIG,
+): WorldState {
   const cameraMode = input.toggleCamera
     ? world.cameraMode === 'cockpit'
       ? 'chase'
@@ -251,7 +271,7 @@ export function stepWorld(world: WorldState, input: FlightInput, dt: number): Wo
   if (world.phase.kind === 'victory' || world.phase.kind === 'failed') {
     if (input.launchBriefing || input.restartSortie) {
       return {
-        ...createInitialWorld(world.rngState, true),
+        ...createInitialWorld(world.rngState, true, config),
         cameraMode,
       };
     }
@@ -260,7 +280,7 @@ export function stepWorld(world: WorldState, input: FlightInput, dt: number): Wo
 
   if (input.restartSortie) {
     return {
-      ...createInitialWorld(world.rngState, true),
+      ...createInitialWorld(world.rngState, true, config),
       cameraMode,
     };
   }
@@ -272,21 +292,21 @@ export function stepWorld(world: WorldState, input: FlightInput, dt: number): Wo
     world.asteroids,
     dt,
   );
-  const combatStep = stepCombat(
-    world.tick + 1,
-    world.rngState,
-    flightStep.player,
-    world.wingmate,
-    world.enemies,
-    world.friendlyCarrier,
-    world.hostileFrigate,
-    world.asteroids,
-    world.projectiles,
-    world.explosions,
-    world.radio,
+  const combatStep = stepCombat({
+    tick: world.tick + 1,
+    rngState: world.rngState,
+    player: flightStep.player,
+    wingmate: world.wingmate,
+    enemies: world.enemies,
+    friendlyCarrier: world.friendlyCarrier,
+    hostileFrigate: world.hostileFrigate,
+    asteroids: world.asteroids,
+    projectiles: world.projectiles,
+    explosions: world.explosions,
+    radio: world.radio,
     input,
     dt,
-  );
+  });
 
   const enemiesDestroyed = world.enemiesDestroyed + combatStep.enemiesDestroyedDelta;
   const subsystemsDestroyed = world.subsystemsDestroyed + combatStep.subsystemsDestroyedDelta;

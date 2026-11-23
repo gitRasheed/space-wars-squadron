@@ -3,8 +3,9 @@ import {
   listHostileContacts,
   subsystemWorldPosition,
 } from '../sim/combat';
-import { add, clamp, computeLeadPoint, distance, dot, forwardOf, rightOf, scale, sub, upOf } from '../sim/math';
+import { add, clamp, computeLeadPoint, distance, dot, forwardOf, len, rightOf, scale, sub, upOf } from '../sim/math';
 import type { Vec3, WorldState } from '../sim/types';
+import { HUD_PALETTE } from './palette';
 import type { ProjectedPoint } from './sceneRenderer';
 
 export interface CockpitHud {
@@ -16,11 +17,11 @@ export interface CockpitHud {
   ) => void;
 }
 
-const AMBER = '#f4b459';
-const CYAN = '#6be5ff';
-const CRIMSON = '#ff4d63';
-const EMERALD = '#5dffb0';
-const LABEL_BG = 'rgba(8, 10, 18, 0.78)';
+const AMBER = HUD_PALETTE.amber;
+const CYAN = HUD_PALETTE.cyan;
+const CRIMSON = HUD_PALETTE.crimson;
+const EMERALD = HUD_PALETTE.emerald;
+const LABEL_BG = HUD_PALETTE.labelBg;
 const RADAR_RADIUS = 38;
 const BOTTOM_SAFE_HEIGHT = 104;
 
@@ -179,7 +180,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     const engRatio = clamp(p.energy.engineCharge / 100, 0, 1);
     const engColor =
       boostKind === 'boosting'
-        ? '#ffd966'
+        ? HUD_PALETTE.boostGold
         : boostKind === 'drifting'
           ? CYAN
           : boostKind === 'recovering'
@@ -202,7 +203,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     const pipStartX = cx - totalW * 0.5;
     const pipY = cy + arcRadius + 8;
     for (let i = 0; i < p.maxMissiles; i += 1) {
-      ctx.fillStyle = i < p.missilesReady ? '#ff8e4d' : 'rgba(255, 255, 255, 0.16)';
+      ctx.fillStyle = i < p.missilesReady ? HUD_PALETTE.missileOrange : 'rgba(255, 255, 255, 0.16)';
       ctx.fillRect(pipStartX + i * (pipW + pipGap), pipY, pipW, 3);
     }
 
@@ -445,7 +446,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     }
 
     drawBlip(world.friendlyCarrier.position, AMBER, 3, true);
-    drawBlip(world.hostileFrigate.position, '#ff8040', 3, true);
+    drawBlip(world.hostileFrigate.position, HUD_PALETTE.frigateOrange, 3, true);
     drawBlip(world.wingmate.position, CYAN, 2.4);
 
     let selectedPos: Vec3 | null = null;
@@ -464,7 +465,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       if (subsys.id === world.player.selectedTargetId) {
         selectedPos = pos;
       } else {
-        drawBlip(pos, '#ff52b8', 2.2);
+        drawBlip(pos, HUD_PALETTE.subsystemMagenta, 2.2);
       }
     }
     if (selectedPos !== null) {
@@ -506,9 +507,9 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     const rightBarX = cx + RADAR_RADIUS + 18;
 
     ctx.font = 'bold 19px "Courier New", monospace';
-    ctx.fillStyle = '#fff0d4';
+    ctx.fillStyle = HUD_PALETTE.warmWhite;
     ctx.textAlign = 'right';
-    ctx.fillText(`${Math.round(p.speed)}`, leftBarX + barW, radarY - 4);
+    ctx.fillText(`${Math.round(len(p.velocity))}`, leftBarX + barW, radarY - 4);
     ctx.font = 'bold 9px "Courier New", monospace';
     ctx.fillStyle = 'rgba(244, 180, 89, 0.72)';
     ctx.fillText('M/S', leftBarX + barW, radarY + 9);

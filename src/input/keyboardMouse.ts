@@ -1,5 +1,6 @@
 import { clamp } from '../sim/math';
 import type { FlightInput } from '../sim/types';
+import { applyDeadzone } from './combine';
 
 export interface InputChannel {
   readonly sample: () => FlightInput;
@@ -17,7 +18,7 @@ const CURSOR_STEER_DEADZONE = 0.05;
 
 export function createInputChannel(
   canvas: HTMLCanvasElement,
-  isBriefing: () => boolean,
+  isOverlayOpen: () => boolean,
 ): InputChannel {
   const heldKeys = new Set<string>();
   let mouseLeftHeld = false;
@@ -29,6 +30,7 @@ export function createInputChannel(
   let queuedLaunchBriefing = false;
   let queuedRestartSortie = false;
   let queuedFireMissile = false;
+  let queuedToggleMute = false;
 
   function clearHeldInputs(): void {
     heldKeys.clear();
@@ -64,6 +66,8 @@ export function createInputChannel(
         queuedRestartSortie = true;
       } else if (code === 'KeyE') {
         queuedFireMissile = true;
+      } else if (code === 'KeyM') {
+        queuedToggleMute = true;
       }
     }
 
@@ -79,7 +83,7 @@ export function createInputChannel(
       if (document.pointerLockElement !== canvas) {
         void Promise.resolve(canvas.requestPointerLock()).catch(() => undefined);
       }
-      if (isBriefing()) {
+      if (isOverlayOpen()) {
         queuedLaunchBriefing = true;
         return;
       }
@@ -149,14 +153,6 @@ export function createInputChannel(
   canvas.addEventListener('mousemove', onMouseMove);
   canvas.addEventListener('contextmenu', onContextMenu);
 
-  function applyDeadzone(value: number): number {
-    if (Math.abs(value) < CURSOR_STEER_DEADZONE) {
-      return 0;
-    }
-    const sign = Math.sign(value);
-    return (sign * (Math.abs(value) - CURSOR_STEER_DEADZONE)) / (1 - CURSOR_STEER_DEADZONE);
-  }
-
   function sample(): FlightInput {
     const keyPitch = (heldKeys.has('ArrowDown') ? 1 : 0) - (heldKeys.has('ArrowUp') ? 1 : 0);
     const keyYaw = (heldKeys.has('ArrowRight') ? 1 : 0) - (heldKeys.has('ArrowLeft') ? 1 : 0);
@@ -174,8 +170,8 @@ export function createInputChannel(
         dy: steering.dy * 0.42,
       };
     } else if (steering.kind === 'cursor') {
-      mouseYaw = applyDeadzone(steering.x);
-      mousePitch = -applyDeadzone(steering.y);
+      mouseYaw = applyDeadzone(steering.x, CURSOR_STEER_DEADZONE);
+      mousePitch = -applyDeadzone(steering.y, CURSOR_STEER_DEADZONE);
     }
 
     const input: FlightInput = {
@@ -191,6 +187,7 @@ export function createInputChannel(
       toggleCamera: queuedToggleCamera,
       launchBriefing: queuedLaunchBriefing,
       restartSortie: queuedRestartSortie,
+      toggleMute: queuedToggleMute,
     };
 
     queuedCycleTarget = false;
@@ -198,6 +195,7 @@ export function createInputChannel(
     queuedLaunchBriefing = false;
     queuedRestartSortie = false;
     queuedFireMissile = false;
+    queuedToggleMute = false;
 
     return input;
   }

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { isInsideCapitalBox } from '../src/sim/combat';
 import { createInitialEnergy, ENERGY_RULES, stepEnergy } from '../src/sim/energy';
-import { distance, nextRandom, vec3 } from '../src/sim/math';
-import { DEFAULT_SORTIE_SEED, FIXED_DT, NEUTRAL_INPUT } from '../src/sim/types';
+import { resolveObstacleClearance } from '../src/sim/flight';
+import { distance, nextRandom, quatFromAxisAngle, vec3 } from '../src/sim/math';
+import { DEFAULT_SORTIE_SEED, FIXED_DT, NEUTRAL_INPUT, type CapitalShipState } from '../src/sim/types';
 import { createInitialWorld, stepWorld } from '../src/sim/world';
 
 describe('energy and snap-turn drift kernel', () => {
@@ -127,6 +129,86 @@ describe('sortie simulation contracts', () => {
     const next = stepWorld(worldWithShot, NEUTRAL_INPUT, FIXED_DT);
     expect(next.asteroids.some((a) => a.id === targetRock.id)).toBe(false);
     expect(next.explosions.length).toBeGreaterThan(0);
+  });
+
+  it('transitions to victory when all raiders and subsystems are cleared, and retries cleanly', () => {
+    const base = createInitialWorld(DEFAULT_SORTIE_SEED, true);
+    const cleared = {
+      ...base,
+      enemies: [],
+      hostileFrigate: {
+        ...base.hostileFrigate,
+        subsystems: base.hostileFrigate.subsystems.map((s) => ({ ...s, hull: 0 })),
+      },
+    };
+    const won = stepWorld(cleared, NEUTRAL_INPUT, FIXED_DT);
+    expect(won.phase.kind).toBe('victory');
+
+    const retried = stepWorld(won, { ...NEUTRAL_INPUT, launchBriefing: true }, FIXED_DT);
+    expect(retried.phase.kind).toBe('active');
+    expect(retried.tick).toBe(0);
+    expect(retried.enemies.length).toBeGreaterThan(0);
+  });
+
+  it('transitions to failed when either player fighter or friendly carrier is destroyed', () => {
+    const base = createInitialWorld(DEFAULT_SORTIE_SEED, true);
+    const deadPlayer = stepWorld(
+      { ...base, player: { ...base.player, hull: 0 } },
+      NEUTRAL_INPUT,
+      FIXED_DT,
+    );
+    expect(deadPlayer.phase.kind).toBe('failed');
+    if (deadPlayer.phase.kind === 'failed') {
+      expect(deadPlayer.phase.reason).toBe('FIGHTER DESTROYED');
+    }
+
+    const deadCarrier = stepWorld(
+      { ...base, friendlyCarrier: { ...base.friendlyCarrier, hull: 0 } },
+      NEUTRAL_INPUT,
+      FIXED_DT,
+    );
+    expect(deadCarrier.phase.kind).toBe('failed');
+    if (deadCarrier.phase.kind === 'failed') {
+      expect(deadCarrier.phase.reason).toBe('CARRIER HEARTHSTONE LOST');
+    }
+  });
+
+  it('resolves rotated capital-ship clearance and projectile hitboxes in ship-local space', () => {
+    const rotatedFrigate: CapitalShipState = {
+      id: 'rotated-frigate',
+      name: 'ROTATED FRIGATE',
+      faction: 'hostile',
+      position: vec3(0, 0, 0),
+      orientation: quatFromAxisAngle(vec3(0, 1, 0), Math.PI / 2),
+      halfExtents: vec3(20, 15, 100),
+      hull: 1000,
+      maxHull: 1000,
+      subsystems: [],
+    };
+
+    // After 90 deg yaw, local Z (halfExtent 100) lies along world X, and local X (halfExtent 20) lies along world Z.
+    expect(isInsideCapitalBox(vec3(80, 0, 0), rotatedFrigate, 0)).toBe(true);
+    expect(isInsideCapitalBox(vec3(0, 0, 80), rotatedFrigate, 0)).toBe(false);
+
+    const alongRotatedHull = resolveObstacleClearance(
+      vec3(80, 0, 14),
+      vec3(0, 0, -40),
+      [rotatedFrigate],
+      [],
+    );
+    expect(alongRotatedHull.warning).toBe(true);
+    expect(alongRotatedHull.position.x).toBeCloseTo(80, 4);
+    expect(alongRotatedHull.position.y).toBeCloseTo(0, 4);
+    expect(alongRotatedHull.position.z).toBeGreaterThan(20);
+
+    const clearAlongOldAxis = resolveObstacleClearance(
+      vec3(0, 0, 80),
+      vec3(0, 0, -40),
+      [rotatedFrigate],
+      [],
+    );
+    expect(clearAlongOldAxis.warning).toBe(false);
+    expect(clearAlongOldAxis.position).toEqual(vec3(0, 0, 80));
   });
 
   it('survives 60 seconds of randomized combat flight with finite state and valid invariants', () => {
