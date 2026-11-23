@@ -17,14 +17,12 @@ export interface CockpitHud {
 }
 
 const AMBER = '#f4b459';
-const AMBER_DIM = 'rgba(244, 180, 89, 0.38)';
 const CYAN = '#6be5ff';
 const CRIMSON = '#ff4d63';
 const EMERALD = '#5dffb0';
-const PANEL_BG = 'rgba(11, 13, 22, 0.84)';
-const LABEL_BG = 'rgba(10, 11, 19, 0.82)';
-const DASH_HEIGHT = 114;
-const DASH_BOTTOM_MARGIN = 10;
+const LABEL_BG = 'rgba(8, 10, 18, 0.78)';
+const RADAR_RADIUS = 38;
+const BOTTOM_SAFE_HEIGHT = 104;
 
 export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
   const maybeCtx = canvas.getContext('2d');
@@ -43,10 +41,10 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     readonly bottom: number;
   } {
     return {
-      left: 30,
-      right: cssWidth - 30,
-      top: 72,
-      bottom: cssHeight - DASH_HEIGHT - DASH_BOTTOM_MARGIN - 24,
+      left: 34,
+      right: cssWidth - 34,
+      top: 56,
+      bottom: cssHeight - BOTTOM_SAFE_HEIGHT - 16,
     };
   }
 
@@ -113,13 +111,13 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     ctx.translate(edgeX, edgeY);
     ctx.rotate(angle);
     ctx.fillStyle = color;
-    ctx.strokeStyle = '#090a12';
+    ctx.strokeStyle = '#070812';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.moveTo(12, 0);
-    ctx.lineTo(-7, -7);
-    ctx.lineTo(-4, 0);
-    ctx.lineTo(-7, 7);
+    ctx.moveTo(11, 0);
+    ctx.lineTo(-6, -6);
+    ctx.lineTo(-3.5, 0);
+    ctx.lineTo(-6, 6);
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
@@ -127,52 +125,27 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
 
     if (label !== null) {
       const labelAlign = edgeX > cssWidth * 0.65 ? 'right' : edgeX < cssWidth * 0.35 ? 'left' : 'center';
-      const offsetX = labelAlign === 'right' ? -16 : labelAlign === 'left' ? 16 : 0;
+      const offsetX = labelAlign === 'right' ? -15 : labelAlign === 'left' ? 15 : 0;
       const offsetY = edgeY > bounds.bottom - 26 ? -12 : 4;
       drawPillLabel(label, edgeX + offsetX, edgeY + offsetY, color, labelAlign);
     }
   }
 
-  function drawBar(
-    x: number,
-    y: number,
-    w: number,
-    h: number,
-    ratio: number,
-    fillColor: string,
-    label: string,
-    valueText: string,
-  ): void {
-    const clamped = clamp(ratio, 0, 1);
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
-    ctx.fillRect(x, y, w, h);
-    ctx.fillStyle = fillColor;
-    ctx.fillRect(x, y, w * clamped, h);
-    ctx.strokeStyle = AMBER_DIM;
-    ctx.lineWidth = 1;
-    ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
-
-    ctx.font = 'bold 10px "Courier New", monospace';
-    ctx.fillStyle = AMBER;
-    ctx.textAlign = 'left';
-    ctx.fillText(label, x, y - 4);
-    ctx.textAlign = 'right';
-    ctx.fillText(valueText, x + w, y - 4);
-  }
-
-  function drawReticleAndDrift(
+  function drawReticleCluster(
     world: WorldState,
     project: (point: Vec3, width: number, height: number) => ProjectedPoint,
   ): void {
     const cx = cssWidth * 0.5;
     const cy = cssHeight * 0.5;
-    const isDrifting = world.player.energy.boostMode.kind === 'drifting';
+    const p = world.player;
+    const boostKind = p.energy.boostMode.kind;
+    const isDrifting = boostKind === 'drifting';
 
-    ctx.strokeStyle = isDrifting ? CYAN : AMBER;
-    ctx.lineWidth = 1.6;
+    ctx.strokeStyle = isDrifting ? CYAN : 'rgba(244, 180, 89, 0.88)';
+    ctx.lineWidth = 1.5;
 
-    const gap = 10;
-    const arm = 12;
+    const gap = 8;
+    const arm = 10;
     ctx.beginPath();
     ctx.moveTo(cx - gap - arm, cy);
     ctx.lineTo(cx - gap, cy);
@@ -187,8 +160,63 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     ctx.fillStyle = isDrifting ? CYAN : AMBER;
     ctx.fillRect(cx - 1.5, cy - 1.5, 3, 3);
 
+    const arcRadius = 46;
+    const arcSpan = 0.72;
+    const leftStart = Math.PI - arcSpan;
+    const leftEnd = Math.PI + arcSpan;
+    const rightStart = -arcSpan;
+    const rightEnd = arcSpan;
+
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+    ctx.beginPath();
+    ctx.arc(cx, cy, arcRadius, leftStart, leftEnd);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(cx, cy, arcRadius, rightStart, rightEnd);
+    ctx.stroke();
+
+    const engRatio = clamp(p.energy.engineCharge / 100, 0, 1);
+    const engColor =
+      boostKind === 'boosting'
+        ? '#ffd966'
+        : boostKind === 'drifting'
+          ? CYAN
+          : boostKind === 'recovering'
+            ? CRIMSON
+            : 'rgba(107, 229, 255, 0.85)';
+    ctx.strokeStyle = engColor;
+    ctx.beginPath();
+    ctx.arc(cx, cy, arcRadius, leftEnd - (leftEnd - leftStart) * engRatio, leftEnd);
+    ctx.stroke();
+
+    const wpnRatio = clamp(p.energy.weaponCharge / 100, 0, 1);
+    ctx.strokeStyle = wpnRatio < 0.2 ? CRIMSON : 'rgba(244, 180, 89, 0.85)';
+    ctx.beginPath();
+    ctx.arc(cx, cy, arcRadius, rightEnd - (rightEnd - rightStart) * wpnRatio, rightEnd);
+    ctx.stroke();
+
+    const pipW = 8;
+    const pipGap = 4;
+    const totalW = p.maxMissiles * pipW + (p.maxMissiles - 1) * pipGap;
+    const pipStartX = cx - totalW * 0.5;
+    const pipY = cy + arcRadius + 8;
+    for (let i = 0; i < p.maxMissiles; i += 1) {
+      ctx.fillStyle = i < p.missilesReady ? '#ff8e4d' : 'rgba(255, 255, 255, 0.16)';
+      ctx.fillRect(pipStartX + i * (pipW + pipGap), pipY, pipW, 3);
+    }
+
+    if (boostKind === 'boosting' || boostKind === 'drifting' || boostKind === 'recovering') {
+      const modeText =
+        boostKind === 'boosting' ? 'BOOST' : boostKind === 'drifting' ? 'SNAP TURN' : 'COOLING';
+      ctx.font = 'bold 10px "Courier New", monospace';
+      ctx.fillStyle = engColor;
+      ctx.textAlign = 'center';
+      ctx.fillText(modeText, cx, cy - arcRadius - 8);
+    }
+
     const bounds = canopyBounds();
-    const velPoint = add(world.player.position, scale(world.player.velocity, 3));
+    const velPoint = add(p.position, scale(p.velocity, 3));
     const projectedVel = project(velPoint, cssWidth, cssHeight);
     const inCanopy =
       projectedVel.inFront &&
@@ -198,14 +226,14 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       projectedVel.y <= bounds.bottom;
 
     if (inCanopy) {
-      ctx.strokeStyle = isDrifting ? CYAN : 'rgba(107, 229, 255, 0.58)';
-      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = isDrifting ? CYAN : 'rgba(107, 229, 255, 0.52)';
+      ctx.lineWidth = 1.4;
       ctx.beginPath();
-      ctx.arc(projectedVel.x, projectedVel.y, 7, 0, Math.PI * 2);
-      ctx.moveTo(projectedVel.x - 11, projectedVel.y);
-      ctx.lineTo(projectedVel.x - 7, projectedVel.y);
-      ctx.moveTo(projectedVel.x + 7, projectedVel.y);
-      ctx.lineTo(projectedVel.x + 11, projectedVel.y);
+      ctx.arc(projectedVel.x, projectedVel.y, 6, 0, Math.PI * 2);
+      ctx.moveTo(projectedVel.x - 10, projectedVel.y);
+      ctx.lineTo(projectedVel.x - 6, projectedVel.y);
+      ctx.moveTo(projectedVel.x + 6, projectedVel.y);
+      ctx.lineTo(projectedVel.x + 10, projectedVel.y);
       ctx.stroke();
     } else if (isDrifting) {
       drawEdgeChevron(projectedVel, CYAN, null);
@@ -256,7 +284,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
 
       if (inCanopy) {
         if (!isSelected) {
-          const size = 9;
+          const size = 8;
           ctx.strokeStyle = 'rgba(255, 110, 96, 0.42)';
           ctx.lineWidth = 1;
           ctx.beginPath();
@@ -272,24 +300,24 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
         const lock = world.player.lockState;
         const bracketHalf =
           lock.kind === 'acquiring' && lock.targetId === contact.id
-            ? 32 - lock.progress * 10
+            ? 30 - lock.progress * 9
             : lock.kind === 'locked' && lock.targetId === contact.id
-              ? 20
-              : 23;
+              ? 19
+              : 22;
         const bracketColor =
           lock.kind === 'acquiring' && lock.targetId === contact.id ? AMBER : CRIMSON;
         const bracketWidth =
-          lock.kind === 'locked' && lock.targetId === contact.id ? 2.4 : 1.8;
+          lock.kind === 'locked' && lock.targetId === contact.id ? 2.2 : 1.7;
         drawLockCorners(projected.x, projected.y, bracketHalf, bracketColor, bracketWidth);
 
         const labelAlign = projected.x > cssWidth * 0.55 ? 'right' : 'left';
         const labelX =
-          labelAlign === 'right' ? projected.x - bracketHalf - 8 : projected.x + bracketHalf + 8;
+          labelAlign === 'right' ? projected.x - bracketHalf - 7 : projected.x + bracketHalf + 7;
         const lockSuffix = lock.kind === 'locked' && lock.targetId === contact.id ? ' [LOCK]' : '';
         drawPillLabel(
           `${contact.label} ${distMeters}M${lockSuffix}`,
           labelX,
-          projected.y - 6,
+          projected.y - 5,
           CRIMSON,
           labelAlign,
         );
@@ -311,25 +339,25 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
           projLead.y <= bounds.bottom;
 
         if (leadInCanopy && leadDist > 12) {
-          ctx.strokeStyle = 'rgba(244, 180, 89, 0.42)';
+          ctx.strokeStyle = 'rgba(244, 180, 89, 0.36)';
           ctx.lineWidth = 1;
-          ctx.setLineDash([4, 4]);
+          ctx.setLineDash([3, 4]);
           ctx.beginPath();
           ctx.moveTo(projected.x, projected.y);
           ctx.lineTo(projLead.x, projLead.y);
           ctx.stroke();
           ctx.setLineDash([]);
 
-          ctx.strokeStyle = '#090a12';
+          ctx.strokeStyle = '#070812';
           ctx.lineWidth = 3.5;
           ctx.beginPath();
-          ctx.arc(projLead.x, projLead.y, 8, 0, Math.PI * 2);
+          ctx.arc(projLead.x, projLead.y, 7.5, 0, Math.PI * 2);
           ctx.stroke();
 
           ctx.strokeStyle = EMERALD;
-          ctx.lineWidth = 2;
+          ctx.lineWidth = 1.8;
           ctx.beginPath();
-          ctx.arc(projLead.x, projLead.y, 8, 0, Math.PI * 2);
+          ctx.arc(projLead.x, projLead.y, 7.5, 0, Math.PI * 2);
           ctx.stroke();
 
           ctx.fillStyle = EMERALD;
@@ -349,24 +377,26 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       wingProj.y <= bounds.bottom
     ) {
       ctx.strokeStyle = CYAN;
-      ctx.lineWidth = 1.25;
-      ctx.strokeRect(wingProj.x - 9, wingProj.y - 9, 18, 18);
-      drawPillLabel(world.wingmate.callsign, wingProj.x + 13, wingProj.y + 4, CYAN, 'left');
+      ctx.lineWidth = 1.2;
+      ctx.strokeRect(wingProj.x - 7, wingProj.y - 7, 14, 14);
+      drawPillLabel(world.wingmate.callsign, wingProj.x + 11, wingProj.y + 4, CYAN, 'left');
     }
   }
 
   function drawRadar(world: WorldState, cx: number, cy: number, radius: number): void {
-    ctx.fillStyle = 'rgba(10, 14, 22, 0.9)';
+    ctx.fillStyle = 'rgba(7, 10, 18, 0.68)';
     ctx.beginPath();
     ctx.arc(cx, cy, radius, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.strokeStyle = AMBER_DIM;
-    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = 'rgba(244, 180, 89, 0.45)';
+    ctx.lineWidth = 1.25;
     ctx.stroke();
 
+    ctx.strokeStyle = 'rgba(244, 180, 89, 0.18)';
+    ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.arc(cx, cy, radius * 0.55, 0, Math.PI * 2);
+    ctx.arc(cx, cy, radius * 0.52, 0, Math.PI * 2);
     ctx.stroke();
 
     ctx.beginPath();
@@ -381,54 +411,49 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     const up = upOf(world.player.orientation);
     const radarRange = 1300;
 
-    function projectBlip(pos: Vec3): { readonly bx: number; readonly by: number; readonly elev: number } {
+    function drawBlip(pos: Vec3, color: string, size: number, isSquare = false, bracketed = false): void {
       const rel = sub(pos, world.player.position);
       const lx = dot(rel, right) / radarRange;
       const ly = dot(rel, up) / radarRange;
       const lz = dot(rel, fwd) / radarRange;
       const planarMag = Math.hypot(lx, lz);
-      const scaleFactor = planarMag > 0.9 ? 0.9 / planarMag : 1;
-      return {
-        bx: cx + lx * scaleFactor * radius,
-        by: cy - lz * scaleFactor * radius,
-        elev: clamp(ly * radius * 0.42, -16, 16),
-      };
-    }
+      const scaleFactor = planarMag > 0.88 ? 0.88 / planarMag : 1;
+      const bx = cx + lx * scaleFactor * radius;
+      const by = cy - lz * scaleFactor * radius;
+      const elev = clamp(ly * radius * 0.38, -14, 14);
 
-    function drawBlip(pos: Vec3, color: string, size: number, isSquare = false, bracketed = false): void {
-      const p = projectBlip(pos);
       ctx.strokeStyle = color;
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(p.bx, p.by);
-      ctx.lineTo(p.bx, p.by - p.elev);
+      ctx.moveTo(bx, by);
+      ctx.lineTo(bx, by - elev);
       ctx.stroke();
 
       ctx.fillStyle = color;
       if (isSquare) {
-        ctx.fillRect(p.bx - size, p.by - p.elev - size, size * 2, size * 2);
+        ctx.fillRect(bx - size, by - elev - size, size * 2, size * 2);
       } else {
         ctx.beginPath();
-        ctx.arc(p.bx, p.by - p.elev, size, 0, Math.PI * 2);
+        ctx.arc(bx, by - elev, size, 0, Math.PI * 2);
         ctx.fill();
       }
       if (bracketed) {
         ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 1.4;
-        ctx.strokeRect(p.bx - 6, p.by - p.elev - 6, 12, 12);
+        ctx.lineWidth = 1.3;
+        ctx.strokeRect(bx - 5, by - elev - 5, 10, 10);
       }
     }
 
-    drawBlip(world.friendlyCarrier.position, AMBER, 3.2, true);
-    drawBlip(world.hostileFrigate.position, '#ff8040', 3.2, true);
-    drawBlip(world.wingmate.position, CYAN, 2.6);
+    drawBlip(world.friendlyCarrier.position, AMBER, 3, true);
+    drawBlip(world.hostileFrigate.position, '#ff8040', 3, true);
+    drawBlip(world.wingmate.position, CYAN, 2.4);
 
     let selectedPos: Vec3 | null = null;
     for (const enemy of world.enemies) {
       if (enemy.id === world.player.selectedTargetId) {
         selectedPos = enemy.position;
       } else {
-        drawBlip(enemy.position, CRIMSON, 2.4);
+        drawBlip(enemy.position, CRIMSON, 2.2);
       }
     }
     for (const subsys of world.hostileFrigate.subsystems) {
@@ -439,162 +464,130 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       if (subsys.id === world.player.selectedTargetId) {
         selectedPos = pos;
       } else {
-        drawBlip(pos, '#ff52b8', 2.4);
+        drawBlip(pos, '#ff52b8', 2.2);
       }
     }
     if (selectedPos !== null) {
-      drawBlip(selectedPos, '#ffffff', 2.8, false, true);
+      drawBlip(selectedPos, '#ffffff', 2.6, false, true);
     }
-
-    ctx.font = 'bold 9px "Courier New", monospace';
-    ctx.fillStyle = AMBER;
-    ctx.textAlign = 'center';
-    ctx.fillText('TACTICAL', cx, cy + radius + 12);
   }
 
-  function drawLowerDash(world: WorldState, audioMuted: boolean): void {
-    const dashW = Math.min(720, cssWidth - 28);
-    const dashX = (cssWidth - dashW) * 0.5;
-    const dashY = cssHeight - DASH_HEIGHT - DASH_BOTTOM_MARGIN;
+  function drawSegmentedBar(
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    ratio: number,
+    color: string,
+    alignRight: boolean,
+  ): void {
+    const clamped = clamp(ratio, 0, 1);
+    ctx.fillStyle = 'rgba(7, 10, 18, 0.65)';
+    ctx.fillRect(x, y, w, h);
 
-    ctx.fillStyle = PANEL_BG;
-    ctx.fillRect(dashX, dashY, dashW, DASH_HEIGHT);
-    ctx.strokeStyle = AMBER_DIM;
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(dashX + 0.5, dashY + 0.5, dashW - 1, DASH_HEIGHT - 1);
+    const fillW = w * clamped;
+    ctx.fillStyle = color;
+    ctx.fillRect(alignRight ? x + (w - fillW) : x, y, fillW, h);
 
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+  }
+
+  function drawMinimalBottomHud(world: WorldState, audioMuted: boolean): void {
+    const cx = cssWidth * 0.5;
+    const radarY = cssHeight - RADAR_RADIUS - 16;
     const p = world.player;
-    const leftX = dashX + 18;
-    const colW = Math.min(210, dashW * 0.3);
 
-    const boostLabel =
-      p.energy.boostMode.kind === 'boosting'
-        ? 'AFTERBURNER'
-        : p.energy.boostMode.kind === 'drifting'
-          ? 'SNAP TURN'
-          : p.energy.boostMode.kind === 'recovering'
-            ? 'COOLING'
-            : 'READY';
-    const boostColor =
-      p.energy.boostMode.kind === 'drifting'
-        ? CYAN
-        : p.energy.boostMode.kind === 'boosting'
-          ? '#ffd466'
-          : p.energy.boostMode.kind === 'recovering'
-            ? CRIMSON
-            : EMERALD;
+    drawRadar(world, cx, radarY, RADAR_RADIUS);
 
-    ctx.font = 'bold 14px "Courier New", monospace';
-    ctx.fillStyle = AMBER;
-    ctx.textAlign = 'left';
-    ctx.fillText(`${Math.round(p.speed)} M/S`, leftX, dashY + 24);
-    ctx.fillStyle = boostColor;
+    const barW = 108;
+    const leftBarX = cx - RADAR_RADIUS - barW - 18;
+    const rightBarX = cx + RADAR_RADIUS + 18;
+
+    ctx.font = 'bold 19px "Courier New", monospace';
+    ctx.fillStyle = '#fff0d4';
     ctx.textAlign = 'right';
-    ctx.fillText(boostLabel, leftX + colW, dashY + 24);
+    ctx.fillText(`${Math.round(p.speed)}`, leftBarX + barW, radarY - 4);
+    ctx.font = 'bold 9px "Courier New", monospace';
+    ctx.fillStyle = 'rgba(244, 180, 89, 0.72)';
+    ctx.fillText('M/S', leftBarX + barW, radarY + 9);
 
-    drawBar(
-      leftX,
-      dashY + 46,
-      colW,
-      10,
-      p.energy.engineCharge / 100,
-      CYAN,
-      'THRUSTER [SHIFT/SPC]',
-      `${Math.round(p.energy.engineCharge)}%`,
-    );
-    drawBar(
-      leftX,
-      dashY + 78,
-      colW,
-      10,
-      p.energy.weaponCharge / 100,
+    drawSegmentedBar(
+      leftBarX,
+      radarY + 18,
+      barW,
+      5,
+      p.throttle,
       AMBER,
-      'CANNONS',
-      `${Math.round(p.energy.weaponCharge)}%`,
+      true,
     );
 
-    drawRadar(world, cssWidth * 0.5, dashY + 52, 41);
-
-    const rightX = dashX + dashW - colW - 18;
-    drawBar(
-      rightX,
-      dashY + 26,
-      colW,
-      10,
+    drawSegmentedBar(
+      rightBarX,
+      radarY - 12,
+      barW,
+      7,
       p.energy.shieldCharge / 100,
       CYAN,
-      'SHIELDS',
-      `${Math.round(p.energy.shieldCharge)}%`,
+      false,
     );
-    drawBar(
-      rightX,
-      dashY + 56,
-      colW,
-      10,
+    drawSegmentedBar(
+      rightBarX,
+      radarY + 2,
+      barW,
+      7,
       p.hull / p.maxHull,
       p.hull < 35 ? CRIMSON : EMERALD,
-      'HULL',
-      `${Math.round(p.hull)}%`,
+      false,
     );
 
-    ctx.font = 'bold 10px "Courier New", monospace';
-    ctx.fillStyle = AMBER;
+    ctx.font = 'bold 9px "Courier New", monospace';
     ctx.textAlign = 'left';
-    ctx.fillText('MISSILES', rightX, dashY + 84);
-    for (let i = 0; i < p.maxMissiles; i += 1) {
-      const ready = i < p.missilesReady;
-      ctx.fillStyle = ready ? '#ff8b4d' : 'rgba(255, 255, 255, 0.14)';
-      ctx.fillRect(rightX + 64 + i * 24, dashY + 74, 18, 10);
-    }
+    ctx.fillStyle = CYAN;
+    ctx.fillText('SHD', rightBarX + barW + 6, radarY - 5);
+    ctx.fillStyle = p.hull < 35 ? CRIMSON : EMERALD;
+    ctx.fillText('HUL', rightBarX + barW + 6, radarY + 9);
 
-    ctx.fillStyle = 'rgba(244, 180, 89, 0.78)';
-    ctx.textAlign = 'left';
+    ctx.font = '10px "Courier New", monospace';
+    ctx.fillStyle = 'rgba(216, 224, 245, 0.45)';
+    ctx.textAlign = 'right';
     ctx.fillText(
-      `CAM[V]:${world.cameraMode.toUpperCase()}  SFX[M]:${audioMuted ? 'OFF' : 'ON'}`,
-      rightX,
-      dashY + 102,
+      `[V] ${world.cameraMode.toUpperCase()}  [M] ${audioMuted ? 'MUTED' : 'SFX'}`,
+      cssWidth - 16,
+      cssHeight - 14,
     );
 
     if (p.proximityWarning) {
-      drawPillLabel('!! PROXIMITY — PULL UP !!', cssWidth * 0.5, dashY - 8, CRIMSON, 'center');
+      drawPillLabel('PROXIMITY', cx, radarY - RADAR_RADIUS - 12, CRIMSON, 'center');
     }
   }
 
-  function drawTopBar(world: WorldState): void {
+  function drawTopStrip(world: WorldState): void {
     const remainingSubsystems = world.hostileFrigate.subsystems.filter((s) => s.hull > 0).length;
-    ctx.fillStyle = PANEL_BG;
-    ctx.fillRect(14, 12, 332, 50);
-    ctx.strokeStyle = AMBER_DIM;
-    ctx.lineWidth = 1;
-    ctx.strokeRect(14.5, 12.5, 331, 49);
+    const carrierRatio = world.friendlyCarrier.hull / world.friendlyCarrier.maxHull;
 
-    ctx.font = 'bold 11px "Courier New", monospace';
-    ctx.fillStyle = AMBER;
-    ctx.textAlign = 'left';
-    ctx.fillText(
-      `RAIDERS: ${world.enemies.length}   FRIGATE SUBSYS: ${remainingSubsystems}`,
-      24,
-      30,
+    drawPillLabel(
+      `RAIDERS ${world.enemies.length}  ·  CORES ${remainingSubsystems}`,
+      16,
+      26,
+      AMBER,
+      'left',
     );
-    ctx.fillStyle = CYAN;
-    const carrierPct = Math.round((world.friendlyCarrier.hull / world.friendlyCarrier.maxHull) * 100);
-    ctx.fillText(`HEARTHSTONE: ${carrierPct}%   WING: ${world.wingmate.callsign}`, 24, 49);
+    drawSegmentedBar(16, 34, 128, 4, carrierRatio, CYAN, false);
+    ctx.font = 'bold 9px "Courier New", monospace';
+    ctx.fillStyle = 'rgba(107, 229, 255, 0.78)';
+    ctx.textAlign = 'left';
+    ctx.fillText('HEARTHSTONE', 150, 39);
 
     if (world.radio !== null) {
-      const boxW = Math.min(520, cssWidth - 380);
-      const boxX = cssWidth - boxW - 14;
-      ctx.fillStyle = PANEL_BG;
-      ctx.fillRect(boxX, 12, boxW, 44);
-      ctx.strokeStyle = 'rgba(107, 229, 255, 0.45)';
-      ctx.strokeRect(boxX + 0.5, 12.5, boxW - 1, 43);
-
-      ctx.font = 'bold 11px "Courier New", monospace';
-      ctx.fillStyle = CYAN;
-      ctx.textAlign = 'left';
-      ctx.fillText(world.radio.speaker, boxX + 12, 29);
-      ctx.fillStyle = '#f6e8cf';
-      ctx.font = '11px "Courier New", monospace';
-      ctx.fillText(world.radio.text, boxX + 12, 46);
+      drawPillLabel(
+        `${world.radio.speaker}: ${world.radio.text}`,
+        cssWidth - 16,
+        26,
+        '#f2e6cf',
+        'right',
+      );
     }
   }
 
@@ -602,15 +595,15 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     if (world.phase.kind === 'active') {
       return;
     }
-    ctx.fillStyle = 'rgba(8, 9, 18, 0.66)';
+    ctx.fillStyle = 'rgba(6, 7, 15, 0.68)';
     ctx.fillRect(0, 0, cssWidth, cssHeight);
 
-    const cardW = Math.min(560, cssWidth - 40);
-    const cardH = 250;
+    const cardW = Math.min(540, cssWidth - 40);
+    const cardH = 240;
     const cardX = (cssWidth - cardW) * 0.5;
     const cardY = (cssHeight - cardH) * 0.5;
 
-    ctx.fillStyle = 'rgba(14, 15, 26, 0.94)';
+    ctx.fillStyle = 'rgba(11, 13, 24, 0.94)';
     ctx.fillRect(cardX, cardY, cardW, cardH);
     ctx.strokeStyle = AMBER;
     ctx.lineWidth = 2;
@@ -620,26 +613,25 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     if (world.phase.kind === 'briefing') {
       ctx.font = 'bold 26px "Courier New", monospace';
       ctx.fillStyle = AMBER;
-      ctx.fillText('SPACE WAR SQUADRONS', cssWidth * 0.5, cardY + 50);
+      ctx.fillText('SPACE WAR SQUADRONS', cssWidth * 0.5, cardY + 48);
 
       ctx.font = '13px "Courier New", monospace';
       ctx.fillStyle = '#f6e8cf';
-      ctx.fillText('SORTIE 01: DEFEND HMV-09 HEARTHSTONE', cssWidth * 0.5, cardY + 84);
-      ctx.fillText('Clear the raiders & knock out both frigate subsystems.', cssWidth * 0.5, cardY + 108);
+      ctx.fillText('Defend Hearthstone · Destroy raiders & both frigate cores', cssWidth * 0.5, cardY + 84);
 
       ctx.font = 'bold 12px "Courier New", monospace';
       ctx.fillStyle = '#fff0d4';
-      ctx.fillText('MOUSE: Steer  |  LMB: Cannons  |  RMB/E: Homing Missile', cssWidth * 0.5, cardY + 146);
+      ctx.fillText('MOUSE: Steer  |  LMB: Cannons  |  RMB/E: Missile', cssWidth * 0.5, cardY + 126);
 
       ctx.font = '12px "Courier New", monospace';
       ctx.fillStyle = CYAN;
-      ctx.fillText('SHIFT: Afterburner  |  SPACE: Snap-Turn  |  W/S: Speed  |  A/D: Roll', cssWidth * 0.5, cardY + 172);
-      ctx.fillStyle = 'rgba(244, 180, 89, 0.82)';
-      ctx.fillText('T: Cycle Target  |  V: Cockpit/Chase  |  R: Retry  |  M: Sound', cssWidth * 0.5, cardY + 194);
+      ctx.fillText('SHIFT: Boost  |  SPACE: Snap-Turn  |  W/S: Speed  |  A/D: Roll', cssWidth * 0.5, cardY + 152);
+      ctx.fillStyle = 'rgba(244, 180, 89, 0.78)';
+      ctx.fillText('T: Target  |  V: Cockpit/Chase  |  R: Retry  |  M: Sound', cssWidth * 0.5, cardY + 174);
 
       ctx.font = 'bold 15px "Courier New", monospace';
       ctx.fillStyle = EMERALD;
-      ctx.fillText('PRESS [ENTER] OR CLICK TO LAUNCH', cssWidth * 0.5, cardY + 230);
+      ctx.fillText('PRESS [ENTER] OR CLICK TO LAUNCH', cssWidth * 0.5, cardY + 214);
     } else if (world.phase.kind === 'victory') {
       ctx.font = 'bold 26px "Courier New", monospace';
       ctx.fillStyle = EMERALD;
@@ -647,28 +639,28 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       ctx.font = '14px "Courier New", monospace';
       ctx.fillStyle = '#f6e8cf';
       ctx.fillText(
-        `Raiders Down: ${world.phase.enemiesDestroyed}   Subsystems Neutralized: ${world.phase.subsystemsDestroyed}`,
+        `Raiders Down: ${world.phase.enemiesDestroyed}   Cores Neutralized: ${world.phase.subsystemsDestroyed}`,
         cssWidth * 0.5,
-        cardY + 118,
+        cardY + 114,
       );
       ctx.fillText(
         `Flight Time: ${world.phase.elapsedSeconds.toFixed(1)}s`,
         cssWidth * 0.5,
-        cardY + 148,
+        cardY + 144,
       );
       ctx.font = 'bold 15px "Courier New", monospace';
       ctx.fillStyle = AMBER;
-      ctx.fillText('PRESS [R] OR [ENTER] TO FLY AGAIN', cssWidth * 0.5, cardY + 210);
+      ctx.fillText('PRESS [R] OR [ENTER] TO FLY AGAIN', cssWidth * 0.5, cardY + 202);
     } else {
       ctx.font = 'bold 26px "Courier New", monospace';
       ctx.fillStyle = CRIMSON;
       ctx.fillText('SORTIE FAILED', cssWidth * 0.5, cardY + 62);
       ctx.font = '15px "Courier New", monospace';
       ctx.fillStyle = '#f6e8cf';
-      ctx.fillText(world.phase.reason, cssWidth * 0.5, cardY + 118);
+      ctx.fillText(world.phase.reason, cssWidth * 0.5, cardY + 116);
       ctx.font = 'bold 15px "Courier New", monospace';
       ctx.fillStyle = AMBER;
-      ctx.fillText('PRESS [R] OR [ENTER] FOR INSTANT RETRY', cssWidth * 0.5, cardY + 204);
+      ctx.fillText('PRESS [R] OR [ENTER] FOR INSTANT RETRY', cssWidth * 0.5, cardY + 196);
     }
   }
 
@@ -684,10 +676,10 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       ctx.fillRect(0, 0, cssWidth, cssHeight);
     }
 
-    drawReticleAndDrift(world, project);
+    drawReticleCluster(world, project);
     drawTargets(world, project);
-    drawTopBar(world);
-    drawLowerDash(world, audioMuted);
+    drawTopStrip(world);
+    drawMinimalBottomHud(world, audioMuted);
     drawOverlay(world);
   }
 

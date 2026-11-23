@@ -157,6 +157,7 @@ export interface AsteroidState {
   readonly position: Vec3;
   readonly radius: number;
   readonly rotation: Vec3;
+  readonly hull: number;
   readonly tint: 'ice' | 'ochre' | 'slate';
 }
 

@@ -100,6 +100,35 @@ describe('sortie simulation contracts', () => {
     expect(world.player.missilesReady).toBe(4);
   });
 
+  it('shatters asteroids when hit by player projectiles', () => {
+    const base = createInitialWorld(DEFAULT_SORTIE_SEED, true);
+    const targetRock = base.asteroids[0];
+    expect(targetRock).toBeDefined();
+    if (targetRock === undefined) {
+      return;
+    }
+
+    const worldWithShot = {
+      ...base,
+      projectiles: [
+        {
+          id: 'test-missile',
+          kind: 'missile' as const,
+          faction: 'friendly' as const,
+          position: targetRock.position,
+          velocity: vec3(0, 0, -1),
+          targetId: null,
+          damage: targetRock.hull + 10,
+          ttl: 2,
+        },
+      ],
+    };
+
+    const next = stepWorld(worldWithShot, NEUTRAL_INPUT, FIXED_DT);
+    expect(next.asteroids.some((a) => a.id === targetRock.id)).toBe(false);
+    expect(next.explosions.length).toBeGreaterThan(0);
+  });
+
   it('survives 60 seconds of randomized combat flight with finite state and valid invariants', () => {
     let world = createInitialWorld(DEFAULT_SORTIE_SEED, true);
     let seed = 0xdeadbeef;

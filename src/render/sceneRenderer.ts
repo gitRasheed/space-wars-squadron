@@ -15,6 +15,7 @@ import {
   type HostileFrigateRig,
 } from './models';
 import { createStylizedPostPass } from './postProcess';
+import { createHullTextureSet } from './textures';
 
 export interface ProjectedPoint {
   readonly x: number;
@@ -91,24 +92,23 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     powerPreference: 'high-performance',
   });
   renderer.setPixelRatio(1);
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.18;
 
   const postPass = createStylizedPostPass();
+  const textures = createHullTextureSet();
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(68, 16 / 9, 0.25, 12000);
   scene.add(camera);
 
-  const sunLight = new THREE.DirectionalLight(0xffc088, 2.7);
-  sunLight.position.set(580, 240, -780);
+  const sunLight = new THREE.DirectionalLight(0xffcb99, 2.4);
+  sunLight.position.set(840, 180, -510);
   scene.add(sunLight);
 
-  const rimLight = new THREE.DirectionalLight(0x7c96ff, 1.15);
-  rimLight.position.set(-420, -180, 520);
+  const rimLight = new THREE.DirectionalLight(0x6b88ff, 1.05);
+  rimLight.position.set(-520, 120, 480);
   scene.add(rimLight);
 
-  const ambientLight = new THREE.HemisphereLight(0x9a78ad, 0x261a30, 0.9);
+  const ambientLight = new THREE.HemisphereLight(0x7c88b8, 0x1b172c, 0.78);
   scene.add(ambientLight);
 
   const dotTexture = createSoftDotTexture();
@@ -118,21 +118,24 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   const cockpitRig: CockpitRig = buildCockpitRig();
   camera.add(cockpitRig.root);
 
-  const playerRig: FighterMeshRig = buildPlayerFighterMesh(0xe88332);
+  const playerRig: FighterMeshRig = buildPlayerFighterMesh(0xe88332, textures);
   scene.add(playerRig.root);
 
-  const wingmateRig: FighterMeshRig = buildPlayerFighterMesh(0x4bc5e8);
+  const wingmateRig: FighterMeshRig = buildPlayerFighterMesh(0x4bc5e8, textures);
   scene.add(wingmateRig.root);
 
-  const carrierMesh = buildFriendlyCarrierMesh();
+  const carrierMesh = buildFriendlyCarrierMesh(textures);
   scene.add(carrierMesh);
 
-  const frigateRig: HostileFrigateRig = buildHostileFrigateMesh();
+  const frigateRig: HostileFrigateRig = buildHostileFrigateMesh(textures);
   scene.add(frigateRig.root);
 
-  const asteroidGroup = new THREE.Group();
-  scene.add(asteroidGroup);
-  let asteroidsSeeded = false;
+  const asteroidMeshes = new Map<string, THREE.Group>();
+  const enemyMeshes = new Map<string, THREE.Group>();
+  const enemyTrails = new Map<string, TrailLine>();
+  const projectileMeshes = new Map<string, THREE.Mesh>();
+  const missileTrails = new Map<string, TrailLine>();
+  const explosionVisuals = new Map<string, ExplosionVisual>();
 
   const playerLeftTrail = createTrail(0x88e8ff, 28, 0.72);
   const playerRightTrail = createTrail(0x88e8ff, 28, 0.72);
@@ -140,12 +143,6 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   scene.add(playerLeftTrail.line);
   scene.add(playerRightTrail.line);
   scene.add(wingmateTrail.line);
-
-  const enemyMeshes = new Map<string, THREE.Group>();
-  const enemyTrails = new Map<string, TrailLine>();
-  const projectileMeshes = new Map<string, THREE.Mesh>();
-  const missileTrails = new Map<string, TrailLine>();
-  const explosionVisuals = new Map<string, ExplosionVisual>();
 
   const boltGeo = new THREE.BoxGeometry(0.45, 0.45, 13);
   const missileGeo = new THREE.ConeGeometry(0.7, 5.8, 5);
@@ -156,9 +153,9 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
 
   const explosionGeo = new THREE.IcosahedronGeometry(1, 1);
   const ringGeo = new THREE.RingGeometry(0.84, 1.08, 20);
-  const shardGeo = new THREE.OctahedronGeometry(0.55, 0);
+  const shardGeo = new THREE.OctahedronGeometry(0.6, 0);
 
-  const dustCount = 170;
+  const dustCount = 150;
   const dustPositions = new Float32Array(dustCount * 3);
   const dustBox = 280;
   let dustSeed = 0x99aabb;
@@ -171,18 +168,18 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   const dustGeo = new THREE.BufferGeometry();
   dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPositions, 3));
   const dustMat = new THREE.PointsMaterial({
-    color: 0xffdfb8,
+    color: 0xd4e2ff,
     map: dotTexture,
-    size: 1.35,
+    size: 1.25,
     sizeAttenuation: false,
     transparent: true,
-    opacity: 0.36,
+    opacity: 0.32,
     depthWrite: false,
   });
   const dustPoints = new THREE.Points(dustGeo, dustMat);
   scene.add(dustPoints);
 
-  const streakCount = 52;
+  const streakCount = 46;
   const streakBase: { x: number; y: number; z: number }[] = [];
   const streakVertices = new Float32Array(streakCount * 6);
   for (let i = 0; i < streakCount; i += 1) {
@@ -235,7 +232,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
 
   function updateSpeedStreaks(world: WorldState): void {
     const boostKind = world.player.energy.boostMode.kind;
-    const targetOpacity = boostKind === 'boosting' ? 0.42 : boostKind === 'drifting' ? 0.3 : 0;
+    const targetOpacity = boostKind === 'boosting' ? 0.38 : boostKind === 'drifting' ? 0.28 : 0;
     streakMat.opacity += (targetOpacity - streakMat.opacity) * 0.2;
     speedStreaks.visible = streakMat.opacity > 0.01;
     if (!speedStreaks.visible) {
@@ -260,13 +257,31 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     posAttr.needsUpdate = true;
   }
 
+  function syncAsteroids(world: WorldState): void {
+    const activeIds = new Set<string>();
+    for (const ast of world.asteroids) {
+      activeIds.add(ast.id);
+      if (!asteroidMeshes.has(ast.id)) {
+        const mesh = buildAsteroidMesh(ast, textures);
+        asteroidMeshes.set(ast.id, mesh);
+        scene.add(mesh);
+      }
+    }
+    for (const [id, mesh] of asteroidMeshes) {
+      if (!activeIds.has(id)) {
+        scene.remove(mesh);
+        asteroidMeshes.delete(id);
+      }
+    }
+  }
+
   function syncEnemies(world: WorldState, tickAdvanced: boolean): void {
     const activeIds = new Set<string>();
     for (const enemy of world.enemies) {
       activeIds.add(enemy.id);
       let mesh = enemyMeshes.get(enemy.id);
       if (mesh === undefined) {
-        mesh = buildEnemyMesh(enemy.kind);
+        mesh = buildEnemyMesh(enemy.kind, textures);
         enemyMeshes.set(enemy.id, mesh);
         scene.add(mesh);
       }
@@ -274,7 +289,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
 
       let trail = enemyTrails.get(enemy.id);
       if (trail === undefined) {
-        trail = createTrail(0x5dffb3, 30, 0.52);
+        trail = createTrail(0x5dffb3, 30, 0.55);
         enemyTrails.set(enemy.id, trail);
         scene.add(trail.line);
       }
@@ -375,7 +390,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
         scene.add(sphere);
         scene.add(ring);
 
-        const shardCount = exp.radius > 14 ? 8 : 0;
+        const shardCount = exp.radius > 14 ? 10 : 0;
         const shards: { readonly mesh: THREE.Mesh; readonly dir: Vec3 }[] = [];
         for (let i = 0; i < shardCount; i += 1) {
           const phi = (i / shardCount) * Math.PI * 2;
@@ -417,7 +432,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
           exp.position.z + shard.dir.z * dist,
         );
         shard.mesh.rotation.set(t * 7, t * 5, t * 4);
-        shard.mesh.scale.setScalar(Math.max(0.2, (1 - t) * 2.4));
+        shard.mesh.scale.setScalar(Math.max(0.2, (1 - t) * 2.6));
         (shard.mesh.material as THREE.MeshBasicMaterial).opacity = Math.max(0, 1 - t);
       }
     }
@@ -437,13 +452,6 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   }
 
   function render(world: WorldState): void {
-    if (!asteroidsSeeded) {
-      for (const ast of world.asteroids) {
-        asteroidGroup.add(buildAsteroidMesh(ast));
-      }
-      asteroidsSeeded = true;
-    }
-
     const tickReset = world.tick < lastTick;
     const tickAdvanced = world.tick > lastTick;
     lastTick = world.tick;
@@ -514,7 +522,10 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
       const tipRight = add(add(player.position, scale(right, 6.8)), scale(fwd, -1.5));
       pushTrailPoint(playerLeftTrail, tipLeft);
       pushTrailPoint(playerRightTrail, tipRight);
-      pushTrailPoint(wingmateTrail, add(world.wingmate.position, scale(forwardOf(world.wingmate.orientation), -4)));
+      pushTrailPoint(
+        wingmateTrail,
+        add(world.wingmate.position, scale(forwardOf(world.wingmate.orientation), -4)),
+      );
     }
 
     if (isCockpit) {
@@ -536,8 +547,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
         player.angularVelocity.y * 0.022,
         player.angularVelocity.z * 0.032,
       );
-      const throttleZ =
-        boostKind === 'boosting' ? -0.98 : -0.82 - player.throttle * 0.12;
+      const throttleZ = boostKind === 'boosting' ? -0.96 : -0.82 - player.throttle * 0.12;
       cockpitRig.throttleHandle.position.z = throttleZ;
 
       const firingGlow = player.recoilKick > 0.5;
@@ -562,6 +572,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     backdrop.position.copy(camera.position);
     updateDustField(player.position);
     updateSpeedStreaks(world);
+    syncAsteroids(world);
     syncEnemies(world, tickAdvanced);
     syncProjectiles(world, tickAdvanced);
     syncExplosions(world);
@@ -594,6 +605,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
 
   function destroy(): void {
     dotTexture.dispose();
+    textures.dispose();
     postPass.destroy();
     renderer.dispose();
   }

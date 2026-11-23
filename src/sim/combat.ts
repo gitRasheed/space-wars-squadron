@@ -20,6 +20,7 @@ import {
   upOf,
 } from './math';
 import type {
+  AsteroidState,
   CapitalShipState,
   EnemyManeuver,
   EnemyShipState,
@@ -192,6 +193,7 @@ export interface CombatStepOutput {
   readonly enemies: readonly EnemyShipState[];
   readonly friendlyCarrier: CapitalShipState;
   readonly hostileFrigate: CapitalShipState;
+  readonly asteroids: readonly AsteroidState[];
   readonly projectiles: readonly ProjectileState[];
   readonly explosions: readonly ExplosionState[];
   readonly radio: RadioMessage | null;
@@ -209,6 +211,7 @@ export function stepCombat(
   enemiesInput: readonly EnemyShipState[],
   friendlyCarrierInput: CapitalShipState,
   hostileFrigateInput: CapitalShipState,
+  asteroidsInput: readonly AsteroidState[],
   projectilesInput: readonly ProjectileState[],
   explosionsInput: readonly ExplosionState[],
   radioInput: RadioMessage | null,
@@ -373,6 +376,10 @@ export function stepCombat(
   for (const e of steppedEnemies) {
     enemyMap.set(e.id, e);
   }
+  const asteroidMap = new Map<string, AsteroidState>();
+  for (const ast of asteroidsInput) {
+    asteroidMap.set(ast.id, ast);
+  }
   const subsystems = hostileFrigate.subsystems.map((s) => ({ ...s }));
 
   let enemiesDestroyedDelta = 0;
@@ -485,6 +492,38 @@ export function stepCombat(
           }
         }
       }
+
+      if (!hit) {
+        for (const [id, ast] of asteroidMap) {
+          if (distance(nextPos, ast.position) <= ast.radius + 4) {
+            hit = true;
+            const nextHull = ast.hull - proj.damage;
+            if (nextHull <= 0) {
+              asteroidMap.delete(id);
+              events.push({ kind: 'hit_confirmed', isKill: true });
+              nextExplosions.push({
+                id: `ast-${tick}-${id}`,
+                position: ast.position,
+                radius: ast.radius * 1.15,
+                elapsed: 0,
+                duration: 1.1,
+                tint: 'amber',
+              });
+            } else {
+              asteroidMap.set(id, { ...ast, hull: nextHull });
+              nextExplosions.push({
+                id: `asthit-${tick}-${proj.id}`,
+                position: nextPos,
+                radius: 6,
+                elapsed: 0,
+                duration: 0.25,
+                tint: 'amber',
+              });
+            }
+            break;
+          }
+        }
+      }
     } else {
       if (distance(nextPos, player.position) <= COMBAT_TUNING.playerHitRadius) {
         hit = true;
@@ -558,6 +597,7 @@ export function stepCombat(
     enemies: survivingEnemies,
     friendlyCarrier,
     hostileFrigate,
+    asteroids: Array.from(asteroidMap.values()),
     projectiles: survivingProjectiles,
     explosions: nextExplosions,
     radio,

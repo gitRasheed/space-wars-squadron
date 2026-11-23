@@ -7,14 +7,16 @@ export interface StylizedPostPass {
   readonly destroy: () => void;
 }
 
-const TARGET_INTERNAL_HEIGHT = 480;
+const TARGET_INTERNAL_HEIGHT = 600;
 
 export function createStylizedPostPass(): StylizedPostPass {
-  const target = new THREE.WebGLRenderTarget(854, TARGET_INTERNAL_HEIGHT, {
-    minFilter: THREE.NearestFilter,
+  // 4x MSAA on the offscreen target removes jagged diagonal stair-stepping while textures keep crisp pixel detail.
+  const target = new THREE.WebGLRenderTarget(1066, TARGET_INTERNAL_HEIGHT, {
+    minFilter: THREE.LinearFilter,
     magFilter: THREE.NearestFilter,
     format: THREE.RGBAFormat,
     type: THREE.HalfFloatType,
+    samples: 4,
     depthBuffer: true,
     stencilBuffer: false,
   });
@@ -24,7 +26,7 @@ export function createStylizedPostPass(): StylizedPostPass {
 
   const uniforms = {
     tDiffuse: { value: target.texture },
-    uResolution: { value: new THREE.Vector2(854, TARGET_INTERNAL_HEIGHT) },
+    uResolution: { value: new THREE.Vector2(1066, TARGET_INTERNAL_HEIGHT) },
   };
 
   const material = new THREE.ShaderMaterial({
@@ -81,7 +83,7 @@ export function createStylizedPostPass(): StylizedPostPass {
 
       vec3 brightOnly(vec3 c) {
         float lum = dot(c, vec3(0.299, 0.587, 0.114));
-        return c * smoothstep(0.78, 1.4, lum);
+        return c * smoothstep(0.82, 1.5, lum);
       }
 
       void main() {
@@ -93,23 +95,23 @@ export function createStylizedPostPass(): StylizedPostPass {
         bloomLinear += brightOnly(texture2D(tDiffuse, vUv + vec2(-texel.x * 2.0, 0.0)).rgb);
         bloomLinear += brightOnly(texture2D(tDiffuse, vUv + vec2(0.0, texel.y * 2.0)).rgb);
         bloomLinear += brightOnly(texture2D(tDiffuse, vUv + vec2(0.0, -texel.y * 2.0)).rgb);
-        bloomLinear += brightOnly(texture2D(tDiffuse, vUv + vec2(texel.x * 3.0, texel.y * 3.0)).rgb) * 0.6;
-        bloomLinear += brightOnly(texture2D(tDiffuse, vUv + vec2(-texel.x * 3.0, texel.y * 3.0)).rgb) * 0.6;
-        bloomLinear += brightOnly(texture2D(tDiffuse, vUv + vec2(texel.x * 3.0, -texel.y * 3.0)).rgb) * 0.6;
-        bloomLinear += brightOnly(texture2D(tDiffuse, vUv + vec2(-texel.x * 3.0, -texel.y * 3.0)).rgb) * 0.6;
+        bloomLinear += brightOnly(texture2D(tDiffuse, vUv + vec2(texel.x * 3.0, texel.y * 3.0)).rgb) * 0.55;
+        bloomLinear += brightOnly(texture2D(tDiffuse, vUv + vec2(-texel.x * 3.0, texel.y * 3.0)).rgb) * 0.55;
+        bloomLinear += brightOnly(texture2D(tDiffuse, vUv + vec2(texel.x * 3.0, -texel.y * 3.0)).rgb) * 0.55;
+        bloomLinear += brightOnly(texture2D(tDiffuse, vUv + vec2(-texel.x * 3.0, -texel.y * 3.0)).rgb) * 0.55;
 
-        vec3 exposed = (baseLinear + bloomLinear * 0.12) * 1.15;
+        vec3 exposed = (baseLinear + bloomLinear * 0.11) * 1.05;
         vec3 displayColor = linearToSrgb(acesToneMap(exposed));
 
         vec2 pixelCoord = vUv * uResolution;
         float lum = dot(displayColor, vec3(0.299, 0.587, 0.114));
-        float ditherStrength = mix(0.014, 0.032, smoothstep(0.12, 0.72, lum));
+        float ditherStrength = mix(0.008, 0.018, smoothstep(0.15, 0.75, lum));
         float dither = (bayer4(pixelCoord) - 0.5) * ditherStrength;
-        displayColor = floor(clamp(displayColor + dither, 0.0, 1.0) * 30.0 + 0.5) / 30.0;
+        displayColor = floor(clamp(displayColor + dither, 0.0, 1.0) * 42.0 + 0.5) / 42.0;
 
         vec2 centered = vUv * 2.0 - 1.0;
-        float vignette = 1.0 - dot(centered, centered) * 0.12;
-        displayColor *= clamp(vignette, 0.78, 1.0);
+        float vignette = 1.0 - dot(centered, centered) * 0.14;
+        displayColor *= clamp(vignette, 0.76, 1.0);
 
         gl_FragColor = vec4(displayColor, 1.0);
       }

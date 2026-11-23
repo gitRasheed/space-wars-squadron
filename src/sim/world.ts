@@ -60,16 +60,16 @@ function createHostileFrigate(): CapitalShipState {
 
 function createRingAsteroids(): readonly AsteroidState[] {
   return [
-    { id: 'ast-1', position: vec3(285, -96, -210), radius: 28, rotation: vec3(0.4, 1.1, 0.2), tint: 'ochre' },
-    { id: 'ast-2', position: vec3(-340, 115, -420), radius: 38, rotation: vec3(1.2, 0.3, 0.7), tint: 'ice' },
-    { id: 'ast-3', position: vec3(185, 165, -360), radius: 24, rotation: vec3(0.8, 2.0, 0.5), tint: 'ice' },
-    { id: 'ast-4', position: vec3(-135, -148, -510), radius: 34, rotation: vec3(0.2, 0.9, 1.4), tint: 'slate' },
-    { id: 'ast-5', position: vec3(470, 82, -520), radius: 46, rotation: vec3(1.7, 0.6, 0.3), tint: 'ochre' },
-    { id: 'ast-6', position: vec3(-420, -45, -120), radius: 32, rotation: vec3(0.5, 1.8, 0.9), tint: 'slate' },
-    { id: 'ast-7', position: vec3(40, -135, -920), radius: 52, rotation: vec3(0.9, 0.4, 1.1), tint: 'ice' },
-    { id: 'ast-8', position: vec3(410, -125, -880), radius: 36, rotation: vec3(1.4, 2.2, 0.4), tint: 'slate' },
-    { id: 'ast-9', position: vec3(-290, 155, -760), radius: 44, rotation: vec3(0.3, 1.5, 0.8), tint: 'ochre' },
-    { id: 'ast-10', position: vec3(310, 138, -90), radius: 24, rotation: vec3(1.1, 0.7, 1.9), tint: 'ice' },
+    { id: 'ast-1', position: vec3(285, -96, -210), radius: 28, rotation: vec3(0.4, 1.1, 0.2), hull: 60, tint: 'ochre' },
+    { id: 'ast-2', position: vec3(-340, 115, -420), radius: 38, rotation: vec3(1.2, 0.3, 0.7), hull: 80, tint: 'ice' },
+    { id: 'ast-3', position: vec3(185, 165, -360), radius: 24, rotation: vec3(0.8, 2.0, 0.5), hull: 55, tint: 'ice' },
+    { id: 'ast-4', position: vec3(-135, -148, -510), radius: 34, rotation: vec3(0.2, 0.9, 1.4), hull: 75, tint: 'slate' },
+    { id: 'ast-5', position: vec3(470, 82, -520), radius: 46, rotation: vec3(1.7, 0.6, 0.3), hull: 95, tint: 'ochre' },
+    { id: 'ast-6', position: vec3(-420, -45, -120), radius: 32, rotation: vec3(0.5, 1.8, 0.9), hull: 70, tint: 'slate' },
+    { id: 'ast-7', position: vec3(40, -135, -920), radius: 52, rotation: vec3(0.9, 0.4, 1.1), hull: 110, tint: 'ice' },
+    { id: 'ast-8', position: vec3(410, -125, -880), radius: 36, rotation: vec3(1.4, 2.2, 0.4), hull: 80, tint: 'slate' },
+    { id: 'ast-9', position: vec3(-290, 155, -760), radius: 44, rotation: vec3(0.3, 1.5, 0.8), hull: 90, tint: 'ochre' },
+    { id: 'ast-10', position: vec3(310, 138, -90), radius: 24, rotation: vec3(1.1, 0.7, 1.9), hull: 55, tint: 'ice' },
   ];
 }
 
@@ -280,6 +280,7 @@ export function stepWorld(world: WorldState, input: FlightInput, dt: number): Wo
     world.enemies,
     world.friendlyCarrier,
     world.hostileFrigate,
+    world.asteroids,
     world.projectiles,
     world.explosions,
     world.radio,
@@ -312,7 +313,7 @@ export function stepWorld(world: WorldState, input: FlightInput, dt: number): Wo
     enemies: combatStep.enemies,
     friendlyCarrier: combatStep.friendlyCarrier,
     hostileFrigate: combatStep.hostileFrigate,
-    asteroids: world.asteroids,
+    asteroids: combatStep.asteroids,
     projectiles: combatStep.projectiles,
     explosions: combatStep.explosions,
     radio: combatStep.radio,
