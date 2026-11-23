@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck, lint, unit tests, and build
+        run: npm run check
+
+      - name: Exhaustive TLA+ formal verification and mutant kill gate
+        run: npm run verify:formal
+
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium --with-deps
+
+      - name: Headless browser gameplay verification
+        run: npm run verify:browser
+
+      - name: Upload Playwright screenshots and telemetry
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-screenshots
+          path: artifacts/verify/

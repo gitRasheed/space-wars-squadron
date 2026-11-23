@@ -1,0 +1,34 @@
+{
+  "name": "space-wars-squadron",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "verify:formal": "node scripts/run-formal-check.mjs",
+    "verify:browser": "node scripts/verify-browser.mjs",
+    "check": "npm run typecheck && npm run lint && npm run test && npm run build"
+  },
+  "dependencies": {
+    "three": "^0.175.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.24.0",
+    "@types/three": "^0.175.0",
+    "eslint": "^9.24.0",
+    "globals": "^16.0.0",
+    "playwright": "^1.52.0",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.29.0",
+    "vite": "^6.2.6",
+    "vitest": "^3.1.1"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true
+  }
+}

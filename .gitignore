@@ -1,0 +1,7 @@
+node_modules/
+dist/
+artifacts/
+formal/states/
+formal/*.jar
+*.log
+.DS_Store
