@@ -11,6 +11,9 @@ interface Voice {
   readonly pan: number;
   readonly envelope: Envelope;
   readonly filter?: { readonly type: string; readonly freqHz: number; readonly q: number };
+  readonly drive?: number;
+  readonly fmRatio?: number;
+  readonly fmIndex?: number;
 }
 
 export function stereoBuffer(durationS: number, sampleRate: number) {
@@ -47,6 +50,10 @@ function filterCoefficients(filter: Voice['filter'], sampleRate: number) {
       const b0 = (1 - cos) / (2 * a0);
       return { b0, b1: 2 * b0, b2: b0, a1, a2 };
     }
+    case 'highpass': {
+      const b0 = (1 + cos) / (2 * a0);
+      return { b0, b1: -2 * b0, b2: b0, a1, a2 };
+    }
     default: throw new Error(`Unsupported audio filter ${filter.type}`);
   }
 }
@@ -78,7 +85,12 @@ export function mixVoice(
   let dst = Math.round(startS * sampleRate);
   const { b0, b1, b2, a1, a2 } = filterCoefficients(voice.filter, sampleRate);
   let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+  const fmRatio = voice.fmRatio ?? 2;
+  const fmIndex = voice.fmIndex ?? 1.5;
+  const drive = voice.drive ?? 0;
+  const driveNorm = Math.tanh(1 + drive);
   let phase = 0;
+  let modPhase = 0;
   let hz = startHz;
   const sweep = (endHz / startHz) ** (1 / (holdS * sampleRate));
 
@@ -88,14 +100,24 @@ export function mixVoice(
       dst = 0;
     }
     const t = i / sampleRate;
-    if (t - holdS >= env.releaseS) break;
-    phase += 2 * Math.PI * hz / sampleRate;
+    const level = t < holdS ? heldLevel(t, env) : releaseLevel * (1 - (t - holdS) / env.releaseS);
+    // A voice that releases from silence stops drawing noise here, as the reference renderer does.
+    if (level <= 0 && t > holdS) break;
+    const step = 2 * Math.PI * hz / sampleRate;
+    phase += step;
     hz = t < holdS ? hz * sweep : endHz;
+    const turns = phase / (2 * Math.PI);
+    const cycle = turns - Math.floor(turns);
     let raw: number;
     switch (voice.waveform) {
       case 'sine': raw = Math.sin(phase); break;
-      case 'saw': raw = 2 * ((phase / (2 * Math.PI)) % 1) - 1; break;
-      case 'triangle': raw = 4 * Math.abs((phase / (2 * Math.PI)) % 1 - 0.5) - 1; break;
+      case 'saw': raw = 2 * cycle - 1; break;
+      case 'triangle': raw = 4 * Math.abs(cycle - 0.5) - 1; break;
+      case 'square': raw = cycle < 0.5 ? 1 : -1; break;
+      case 'fm':
+        modPhase += step * fmRatio;
+        raw = Math.sin(phase + Math.sin(modPhase) * fmIndex);
+        break;
       case 'noise': raw = noise(); break;
       default: throw new Error(`Unsupported audio waveform ${voice.waveform}`);
     }
@@ -105,8 +127,8 @@ export function mixVoice(
     x1 = raw;
     y2 = y1;
     y1 = filtered;
-    const level = t < holdS ? heldLevel(t, env) : releaseLevel * (1 - (t - holdS) / env.releaseS);
-    left[dst] = (left[dst] ?? 0) + filtered * level * gainL;
-    right[dst] = (right[dst] ?? 0) + filtered * level * gainR;
+    const shaped = drive > 0 ? Math.tanh(filtered * (1 + drive)) / driveNorm : filtered;
+    left[dst] = (left[dst] ?? 0) + shaped * level * gainL;
+    right[dst] = (right[dst] ?? 0) + shaped * level * gainR;
   }
 }

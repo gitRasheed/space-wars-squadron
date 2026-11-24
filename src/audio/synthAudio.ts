@@ -2,7 +2,7 @@ import { FLIGHT_TUNING } from '../sim/flight';
 import { len } from '../sim/math';
 import type { SimEvent, WorldState } from '../sim/types';
 import { engineRunup, renderCue, type CueId } from './combatCues';
-import { renderCombatLoopStereo } from './combatScore';
+import { combatLoopRenderer } from './combatScore';
 
 export interface SynthAudio {
   readonly unlock: () => void;
@@ -14,7 +14,9 @@ export interface SynthAudio {
   readonly destroy: () => void;
 }
 
-function audioBuffer(ctx: AudioContext, samples: ReturnType<typeof renderCombatLoopStereo>) {
+const SCORE_SLICE_MS = 4;
+
+function audioBuffer(ctx: AudioContext, samples: ReturnType<typeof renderCue>) {
   const buffer = ctx.createBuffer(2, samples.left.length, ctx.sampleRate);
   buffer.getChannelData(0).set(samples.left);
   buffer.getChannelData(1).set(samples.right);
@@ -57,6 +59,7 @@ type Buses = ReturnType<typeof createBuses>;
 
 export function createSynthAudio(): SynthAudio {
   let buses: Buses | undefined;
+  let scoreRender: ReturnType<typeof combatLoopRenderer> | undefined;
   let musicBuffer: AudioBuffer | undefined;
   let musicSource: AudioBufferSourceNode | undefined;
   const cueBuffers = new Map<CueId, AudioBuffer>();
@@ -110,13 +113,19 @@ export function createSynthAudio(): SynthAudio {
   }
 
   function syncMusic(bus: Buses, active: boolean) {
-    if (!active || !musicEnabled) {
+    if (!musicBuffer) {
+      scoreRender ??= combatLoopRenderer(bus.ctx.sampleRate);
+      if (scoreRender.advance(SCORE_SLICE_MS)) {
+        musicBuffer = audioBuffer(bus.ctx, scoreRender.buffer);
+        scoreRender = undefined;
+      }
+    }
+    if (!active || !musicEnabled || !musicBuffer) {
       stopMusic();
       bus.music.gain.setValueAtTime(0, bus.ctx.currentTime);
       return;
     }
     if (musicSource) return;
-    musicBuffer ??= audioBuffer(bus.ctx, renderCombatLoopStereo(bus.ctx.sampleRate));
     musicSource = bus.ctx.createBufferSource();
     musicSource.buffer = musicBuffer;
     musicSource.loop = true;
@@ -163,13 +172,8 @@ export function createSynthAudio(): SynthAudio {
         // A subsystem kill emits its own larger explosion immediately after the confirmation.
         if (event.isKill && next?.kind !== 'subsystem_destroyed') playCue(bus, 'explosion');
         break;
-      case 'shield_broken':
-        playCue(bus, 'snap-turn', 1);
-        playCue(bus, 'hit-confirm', -1);
-        break;
-      case 'weapon_overheated':
-        playCue(bus, 'snap-turn');
-        break;
+      case 'shield_broken': playCue(bus, 'shield-break'); break;
+      case 'weapon_overheated': playCue(bus, 'weapon-overheat'); break;
       case 'subsystem_destroyed': playCue(bus, 'subsystem-destruction'); break;
       case 'missile_fired': playCue(bus, 'missile-launch'); break;
       case 'target_locked': playCue(bus, 'lock-chirp'); break;
@@ -207,6 +211,7 @@ export function createSynthAudio(): SynthAudio {
       void buses.ctx.close();
       buses = undefined;
     }
+    scoreRender = undefined;
     musicBuffer = undefined;
     cueBuffers.clear();
   }
