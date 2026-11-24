@@ -70,12 +70,12 @@ export const TEXTURE_PALETTE = {
     trim: '#6c6f7d',
   },
   carrier: {
-    base: '#7e889b',
-    alt: '#6d778a',
-    seam: '#3c4354',
-    rivet: '#a4b0c4',
+    base: '#e2d9c8',
+    alt: '#d4c9b4',
+    seam: '#7c7468',
+    rivet: '#f7f1e3',
     light: '#ffd88a',
-    band: '#586276',
+    band: '#c2b59d',
   },
   frigate: {
     base: '#5a5070',
