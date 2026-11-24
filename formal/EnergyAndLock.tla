@@ -47,7 +47,7 @@ OverdriveDrain == 240
 ShieldRecharge == 100
 WeaponRecharge == 180
 OverheatCooldown == 280
-ShotCost == 6600
+ShotCost == 5700
 BoltDamage == 8400
 WeaponEdges == <<0, 0, Full, Full>>
 ShieldEdges == <<0, 0, MinOverdriveShield, Full, Full>>

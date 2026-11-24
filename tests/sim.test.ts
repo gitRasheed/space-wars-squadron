@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { COMBAT_TUNING, isInsideCapitalBox } from '../src/sim/combat';
+import { COMBAT_TUNING, isInsideCapitalBox, selectNextTarget } from '../src/sim/combat';
 import { createInitialEnergy, ENERGY_RULES, spendWeaponCharge, stepEnergy } from '../src/sim/energy';
 import { FLIGHT_TUNING, resolveObstacleClearance } from '../src/sim/flight';
 import { dot, len, nextRandom, normalize, quatFromAxisAngle, vec3 } from '../src/sim/math';
@@ -191,6 +191,26 @@ describe('sortie simulation contracts and enemy shield entities', () => {
     );
     expect(afterSecondMissile.enemies).toHaveLength(0);
     expect(afterSecondMissile.events.some((e) => e.kind === 'hit_confirmed' && e.isKill)).toBe(true);
+  });
+
+  it('auto-focuses whichever hostile is in the center of your view so lead pip and lock-on track who you are actually fighting', () => {
+    const contacts = [
+      { id: 'behind', label: 'VANE-1', position: vec3(0, 0, 260), velocity: vec3(0, 0, 0), kind: 'enemy' as const },
+      { id: 'ahead', label: 'VANE-2', position: vec3(8, 2, -320), velocity: vec3(0, 0, 0), kind: 'enemy' as const },
+    ];
+    // Previously locked onto 'behind', now looking straight at 'ahead' (-Z): automatically switches focus!
+    const selected = selectNextTarget('behind', vec3(0, 0, 0), vec3(0, 0, -1), contacts, false);
+    expect(selected).toBe('ahead');
+
+    // If nobody is in the forward cone, keep tracking the current target so the edge arrow guides you back.
+    const outOfView = selectNextTarget(
+      'behind',
+      vec3(0, 0, 0),
+      vec3(1, 0, 0),
+      contacts,
+      false,
+    );
+    expect(outOfView).toBe('behind');
   });
 
   it('clears lock and rearms missiles after firing', () => {

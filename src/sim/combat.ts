@@ -182,6 +182,35 @@ export function selectNextTarget(
     const nextIndex = (currentIndex + 1) % contacts.length;
     return contacts[nextIndex]?.id ?? null;
   }
+
+  // Center-of-view auto-focus: whichever hostile sits closest to your forward crosshair
+  // inside the ~23 deg forward cone becomes the active target for lead pip and missile lock-on.
+  const fovConeCos = 0.92;
+  const maxAutoFocusDist = COMBAT_TUNING.lockMaxRange;
+  let bestInViewId: string | null = null;
+  let bestInViewScore = -Infinity;
+  for (const contact of contacts) {
+    const toTarget = sub(contact.position, playerPos);
+    const dist = Math.max(len(toTarget), 1);
+    if (dist > maxAutoFocusDist) {
+      continue;
+    }
+    const alignment = dot(playerForward, scale(toTarget, 1 / dist));
+    if (alignment < fovConeCos) {
+      continue;
+    }
+    // Small hysteresis keeps lock steady when two hostiles cross close together.
+    const hysteresis = contact.id === currentId ? 0.015 : 0;
+    const score = alignment + hysteresis - dist / 12000;
+    if (score > bestInViewScore) {
+      bestInViewScore = score;
+      bestInViewId = contact.id;
+    }
+  }
+  if (bestInViewId !== null) {
+    return bestInViewId;
+  }
+
   if (currentIndex >= 0) {
     return currentId;
   }

@@ -8,7 +8,7 @@ export const ENERGY_RULES = {
   shieldRegenDelaySeconds: 3.5,
   weaponRechargePerSecond: 18,
   overheatCooldownPerSecond: 28,
-  primaryShotCost: 11,
+  primaryShotCost: 9.5,
 } as const;
 
 export interface EnergyStepResult {

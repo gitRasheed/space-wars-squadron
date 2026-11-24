@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { COCKPIT_GUN_LOCAL, COMBAT_TUNING } from '../sim/combat';
 import { add, forwardOf, scale } from '../sim/math';
 import { FIXED_DT, type Quat, type Vec3, type WorldState } from '../sim/types';
 import { FRIGATE_SUBSYSTEM_LAYOUT } from '../sim/world';
@@ -560,10 +561,19 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
       }
       mesh.position.set(proj.position.x, proj.position.y, proj.position.z);
       scratchDir.set(proj.velocity.x, proj.velocity.y, proj.velocity.z).normalize();
+      // On a player bolt's spawn tick, bridge its tail directly into the cockpit muzzle tip
+      // so the laser visually erupts out of the gun barrel with zero air gap.
+      if (proj.kind === 'bolt' && proj.owner === 'player') {
+        const age = COMBAT_TUNING.boltTtl - proj.ttl;
+        if (age <= FIXED_DT * 2.2) {
+          const pullBack = age <= FIXED_DT * 1.2 ? 4.4 : 1.6;
+          mesh.position.addScaledVector(scratchDir, -pullBack);
+        }
+      }
       mesh.lookAt(
-        proj.position.x + scratchDir.x,
-        proj.position.y + scratchDir.y,
-        proj.position.z + scratchDir.z,
+        mesh.position.x + scratchDir.x,
+        mesh.position.y + scratchDir.y,
+        mesh.position.z + scratchDir.z,
       );
 
       if (proj.kind === 'missile') {
@@ -758,6 +768,31 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
         cockpitRig.muzzleRight.rotation.z = -world.tick * 0.9;
       }
       cockpitRig.flashLight.intensity = leftFlash || rightFlash ? 2.1 : 0;
+
+      // Diegetic overheat feedback: gun tips glow cherry-hot as heat builds and vent rising smoke on lockout.
+      const heat = 1 - Math.min(1, Math.max(0, player.energy.weaponCharge / 100));
+      const overheated = player.energy.weaponState === 'overheated';
+      const heatPulse = overheated ? 0.85 + 0.15 * Math.sin(world.tick * 0.35) : 1;
+      cockpitRig.barrelHeatMat.emissiveIntensity = overheated
+        ? (1.1 + heat * 1.4) * heatPulse
+        : heat > 0.35
+          ? (heat - 0.35) * 1.35
+          : 0;
+
+      const smokeTime = world.tick * FIXED_DT * 1.45;
+      for (const puff of cockpitRig.overheatPuffs) {
+        puff.mesh.visible = overheated;
+        if (!overheated) continue;
+        const cycle = (smokeTime + puff.phase) % 1;
+        const driftX = puff.side * (0.04 + cycle * 0.16) + Math.sin(smokeTime * 5 + puff.phase * 12) * 0.025;
+        const riseY = 0.04 + cycle * 0.42;
+        const backZ = -(COCKPIT_GUN_LOCAL.forward - 0.25) + cycle * 0.55;
+        puff.mesh.position.set(driftX, riseY, backZ);
+        puff.mesh.rotation.set(cycle * 3.2, cycle * 2.4, puff.phase * 6);
+        puff.mesh.scale.setScalar(0.65 + cycle * 2.1);
+        const mat = puff.mesh.material as THREE.MeshBasicMaterial;
+        mat.opacity = Math.sin(cycle * Math.PI) * (0.28 + heat * 0.36);
+      }
     }
 
     if (shakeIntensity > 0.005) {

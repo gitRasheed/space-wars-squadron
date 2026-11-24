@@ -670,6 +670,8 @@ export interface CockpitRig {
   readonly barrelRight: THREE.Group;
   readonly muzzleLeft: THREE.Group;
   readonly muzzleRight: THREE.Group;
+  readonly barrelHeatMat: THREE.MeshToonMaterial;
+  readonly overheatPuffs: readonly { readonly mesh: THREE.Mesh; readonly side: -1 | 1; readonly phase: number }[];
   readonly flashLight: THREE.PointLight;
 }
 
@@ -689,6 +691,11 @@ function buildMuzzleBurst(scale = 1): THREE.Group {
   streak.rotation.x = -Math.PI / 2;
   streak.position.z = -0.16 * scale;
   burst.add(streak);
+
+  // Forward plasma lance bridges the first 16 ms frame so bolts visibly erupt straight out of the barrel tip.
+  const lance = new THREE.Mesh(new THREE.BoxGeometry(0.032 * scale, 0.032 * scale, 2.4 * scale), coreMat);
+  lance.position.z = -1.2 * scale;
+  burst.add(lance);
 
   burst.visible = false;
   return burst;
@@ -735,6 +742,9 @@ export function buildCockpitRig(): CockpitRig {
   gunShroudGeo.rotateX(Math.PI / 2);
   const gunTipGeo = new THREE.CylinderGeometry(0.016, 0.024, 0.24, 8);
   gunTipGeo.rotateX(Math.PI / 2);
+  const barrelHeatMat = toonMat(0x5c6682, { emissive: 0xff3b18, emissiveIntensity: 0 });
+  const smokePuffGeo = new THREE.IcosahedronGeometry(0.055, 0);
+  const overheatPuffs: { readonly mesh: THREE.Mesh; readonly side: -1 | 1; readonly phase: number }[] = [];
 
   function buildBarrelAssembly(side: -1 | 1): { readonly barrel: THREE.Group; readonly muzzle: THREE.Group } {
     const barrel = new THREE.Group();
@@ -742,12 +752,26 @@ export function buildCockpitRig(): CockpitRig {
     addStyledPart(barrel, gunShroudGeo, barrelMat, {
       position: [0, 0, -(COCKPIT_GUN_LOCAL.forward - 0.76)],
     });
-    addStyledPart(barrel, gunTipGeo, bevelMat, {
+    addStyledPart(barrel, gunTipGeo, barrelHeatMat, {
       position: [0, 0, -(COCKPIT_GUN_LOCAL.forward - 0.12)],
     });
     const muzzle = buildMuzzleBurst(1.15);
     muzzle.position.set(0, 0, -COCKPIT_GUN_LOCAL.forward);
     barrel.add(muzzle);
+
+    for (let i = 0; i < 6; i += 1) {
+      const puffMat = new THREE.MeshBasicMaterial({
+        color: i % 2 === 0 ? 0xffc6a0 : 0xd8dce8,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+      });
+      const puff = new THREE.Mesh(smokePuffGeo, puffMat);
+      puff.visible = false;
+      barrel.add(puff);
+      overheatPuffs.push({ mesh: puff, side, phase: i / 6 });
+    }
+
     root.add(barrel);
     return { barrel, muzzle };
   }
@@ -813,6 +837,8 @@ export function buildCockpitRig(): CockpitRig {
     barrelRight: rightGun.barrel,
     muzzleLeft: leftGun.muzzle,
     muzzleRight: rightGun.muzzle,
+    barrelHeatMat,
+    overheatPuffs,
     flashLight,
   };
 }

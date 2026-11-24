@@ -180,7 +180,14 @@ async function run() {
     await page.screenshot({ path: path.join(OUT_DIR, '03-overheat.png') });
     await page.keyboard.up('KeyJ');
 
-    // 3. Push throttle to 100% high-watermark detent, release W, and tap W again for 120% Overdrive.
+    // 3. Restart fresh (full shields) before pushing throttle to 100% detent and tapping W for 120% Overdrive.
+    await page.keyboard.press('KeyR');
+    await waitForTelemetry(
+      page,
+      (snap, prevTick) => snap.phase === 'active' && snap.tick < prevTick && snap.shieldCharge >= 90,
+      'fresh sortie before overdrive',
+      overheatSnap.tick,
+    );
     await page.keyboard.down('KeyW');
     await waitForTelemetry(page, (snap) => snap.throttle >= 0.995, 'throttle reaching 100% detent');
     await page.keyboard.up('KeyW');
