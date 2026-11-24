@@ -1392,14 +1392,15 @@ export function buildFriendlyCarrierMesh(textures: HullTextureSet): THREE.Group 
       addStyledPart(root, gantryGeo, ivoryArmorMat, {
         position: [side * 37.5, -1, bayZ], rotation: [0, side * Math.PI / 2, 0],
       });
-      addStyledPart(root, new THREE.BoxGeometry(1.5, 15, 44), darkRecessMat, {
-        position: [side * 38.1, -1, bayZ],
+      // Keep hangar back-wall, light bar, and landing deck strictly non-coplanar to prevent z-fighting.
+      addStyledPart(root, new THREE.BoxGeometry(1.0, 14.2, 43), darkRecessMat, {
+        position: [side * 38.6, -1, bayZ],
       });
-      addStyledPart(root, new THREE.BoxGeometry(1, 1.2, 28), bayLight, {
-        position: [side * 38.9, 1.4, bayZ],
+      addStyledPart(root, new THREE.BoxGeometry(1.0, 1.3, 28), bayLight, {
+        position: [side * 40.0, 1.4, bayZ],
       });
-      addStyledPart(root, new THREE.BoxGeometry(7, 2.2, 45), slateKeelMat, {
-        position: [side * 42, -8.1, bayZ],
+      addStyledPart(root, new THREE.BoxGeometry(6.4, 2.0, 44), slateKeelMat, {
+        position: [side * 42.6, -8.5, bayZ],
       });
     }
   }

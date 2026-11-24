@@ -12,7 +12,7 @@
     "test": "vitest run",
     "verify:formal": "node scripts/run-formal-check.mjs",
     "verify:browser": "node scripts/verify-browser.mjs",
-    "check": "npm run typecheck && npm run lint && npm run test && npm run build"
+    "check": "npm run typecheck && npm run lint && npm run test && vite build"
   },
   "dependencies": {
     "three": "^0.175.0"

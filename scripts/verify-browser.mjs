@@ -1,11 +1,11 @@
-import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { stripVTControlCharacters } from 'node:util';
 import { chromium } from 'playwright';
+import { createServer } from 'vite';
 
-const REQUESTED_PORT = process.env.VERIFY_PORT;
+const REQUESTED_PORT = process.env.VERIFY_PORT ? Number(process.env.VERIFY_PORT) : 0;
 const OUT_DIR = path.resolve(process.cwd(), process.env.VERIFY_OUT_DIR ?? path.join('artifacts', 'verify'));
+const WAIT_TIMEOUT_MS = 15_000;
 
 function assertCondition(condition, message) {
   if (!condition) {
@@ -13,62 +13,24 @@ function assertCondition(condition, message) {
   }
 }
 
-function waitForViteUrl(server, getStdout, getAllLogs, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        reject(new Error(`Timed out waiting for Vite to report its listening URL.\n${getAllLogs()}`));
-      }
-    }, timeoutMs);
-
-    const finish = (fn, value) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      fn(value);
-    };
-
-    const inspectStdout = () => {
-      const clean = stripVTControlCharacters(getStdout());
-      const match = clean.match(/Local:\s+(http:\/\/127\.0\.0\.1:\d+)/);
-      if (match !== null && match[1] !== undefined) {
-        finish(resolve, match[1]);
-      }
-    };
-
-    server.stdout.on('data', inspectStdout);
-    server.once('error', (err) => finish(reject, err));
-    server.once('exit', (code, signal) => {
-      finish(
-        reject,
-        new Error(`Vite exited before listening (code=${String(code)}, signal=${String(signal)}).\n${getAllLogs()}`),
-      );
-    });
-    inspectStdout();
+async function waitForTelemetry(page, predicate, description, arg = null, timeoutMs = WAIT_TIMEOUT_MS) {
+  const handle = await page.waitForFunction(
+    ({ fnSource, payload }) => {
+      const telemetry = globalThis.__SWS_TELEMETRY__;
+      if (!telemetry) return false;
+      const snap = telemetry.getSnapshot();
+      const check = new Function('snap', 'arg', `return (${fnSource})(snap, arg);`);
+      return check(snap, payload) ? snap : false;
+    },
+    { fnSource: predicate.toString(), payload: arg },
+    { timeout: timeoutMs },
+  ).catch(async (err) => {
+    const latest = await page.evaluate(() => globalThis.__SWS_TELEMETRY__?.getSnapshot() ?? null).catch(() => null);
+    throw new Error(`Timed out waiting for ${description} (latest=${JSON.stringify(latest)}): ${err.message}`);
   });
-}
-
-async function waitForServer(server, url, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (server.exitCode !== null) {
-      throw new Error(`Vite exited unexpectedly with code ${server.exitCode}`);
-    }
-    try {
-      const response = await fetch(url);
-      if (response.ok) {
-        return;
-      }
-    } catch {
-      // Server still binding HTTP listener.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error(`Timed out waiting for Vite server at ${url}`);
+  const snap = await handle.jsonValue();
+  await handle.dispose();
+  return snap;
 }
 
 async function measureWebglSignal(page) {
@@ -136,44 +98,29 @@ async function run() {
     }
   }
 
-  const viteArgs = ['vite', '--host', '127.0.0.1', '--port', REQUESTED_PORT ?? '0'];
-  if (REQUESTED_PORT !== undefined) {
-    viteArgs.push('--strictPort');
-  }
-  const server = spawn('npx', viteArgs, {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env },
+  const server = await createServer({
+    root: process.cwd(),
+    server: {
+      host: '127.0.0.1',
+      port: REQUESTED_PORT,
+      strictPort: REQUESTED_PORT !== 0,
+    },
+    logLevel: 'error',
   });
-
-  let stdoutLogs = '';
-  let stderrLogs = '';
-  let serverExitInfo = null;
-  server.stdout.on('data', (chunk) => {
-    stdoutLogs += chunk.toString();
-  });
-  server.stderr.on('data', (chunk) => {
-    stderrLogs += chunk.toString();
-  });
-  server.once('exit', (code, signal) => {
-    serverExitInfo = { code, signal };
-  });
-
-  const getAllLogs = () => `${stdoutLogs}${stderrLogs}`;
-  const assertServerAlive = () => {
-    assertCondition(
-      server.exitCode === null && serverExitInfo === null,
-      `Spawned Vite server exited prematurely (${JSON.stringify(serverExitInfo)})`,
-    );
-  };
 
   let browser;
   const consoleErrors = [];
   const pageErrors = [];
+  let exitCode = 0;
 
   try {
-    const baseUrl = await waitForViteUrl(server, () => stdoutLogs, getAllLogs, 15000);
-    await waitForServer(server, baseUrl, 10000);
-    assertServerAlive();
+    await server.listen();
+    const address = server.httpServer?.address();
+    assertCondition(
+      address !== null && address !== undefined && typeof address === 'object',
+      'In-process Vite server did not bind a TCP port',
+    );
+    const baseUrl = `http://127.0.0.1:${address.port}`;
 
     browser = await chromium.launch({
       headless: true,
@@ -196,96 +143,92 @@ async function run() {
     });
 
     await page.goto(baseUrl, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(450);
-
-    const readTelemetry = () =>
-      page.evaluate(() => {
-        const telemetry = globalThis.__SWS_TELEMETRY__;
-        if (!telemetry) {
-          return null;
-        }
-        return telemetry.getSnapshot();
-      });
-
-    const initial = await readTelemetry();
-    assertCondition(initial !== null, 'Telemetry hook missing on window');
-    assertCondition(initial.phase === 'briefing', `Expected briefing phase, got ${initial.phase}`);
+    const initial = await waitForTelemetry(page, (snap) => snap.phase === 'briefing', 'initial briefing phase');
     await page.screenshot({ path: path.join(OUT_DIR, '01-briefing.png') });
 
     await page.keyboard.press('Enter');
-    await page.waitForTimeout(300);
-
-    const active = await readTelemetry();
-    assertCondition(active.phase === 'active', `Expected active phase after Enter, got ${active.phase}`);
-    assertCondition(active.tick > 5, `Expected simulation tick progression, got ${active.tick}`);
+    await waitForTelemetry(
+      page,
+      (snap) => snap.phase === 'active' && snap.tick > 5,
+      'active phase with tick > 5',
+    );
 
     await page.keyboard.down('KeyJ');
-    await page.waitForTimeout(340);
-    const combatSnap = await readTelemetry();
+    const combatSnap = await waitForTelemetry(
+      page,
+      (snap) => snap.projectilesCount > 0 || snap.weaponCharge < 100,
+      'cannons firing in cockpit view',
+    );
     assertCondition(
       combatSnap.wingmateTargetId !== null,
       'Autonomous wingmate should track an active target',
     );
-    assertCondition(
-      combatSnap.projectilesCount > 0 || combatSnap.weaponCharge < 100,
-      'Firing cannons should consume weapon charge or spawn bolts',
-    );
+    await page.screenshot({ path: path.join(OUT_DIR, '02-cockpit-combat.png') });
     const cockpitGlSignal = await measureWebglSignal(page);
     assertCondition(
       cockpitGlSignal.nonBlackRatio >= 0.15 && cockpitGlSignal.uniqueColors >= 24,
       `Cockpit 3D canvas lacks visual signal (${JSON.stringify(cockpitGlSignal)})`,
     );
-    await page.screenshot({ path: path.join(OUT_DIR, '02-cockpit-combat.png') });
     await page.keyboard.up('KeyJ');
 
     await page.keyboard.press('KeyE');
     await page.keyboard.down('Space');
-    await page.mouse.move(930, 310, { steps: 8 });
-    await page.waitForTimeout(420);
-    const driftSnap = await readTelemetry();
-    assertCondition(
-      driftSnap.boostMode === 'drifting' || driftSnap.boostMode === 'recovering',
-      `Expected drifting/recovering state, got ${driftSnap.boostMode}`,
+    await page.mouse.move(930, 310, { steps: 6 });
+    const driftSnap = await waitForTelemetry(
+      page,
+      (snap) =>
+        (snap.boostMode === 'drifting' || snap.boostMode === 'recovering') &&
+        snap.missilesReady < 4,
+      'snap-turn drift and missile launch',
     );
-    assertCondition(driftSnap.missilesReady < 4, 'Missile count should drop after firing with E');
     await page.screenshot({ path: path.join(OUT_DIR, '03-snap-turn.png') });
     await page.keyboard.up('Space');
 
-    await page.waitForTimeout(1050);
+    await waitForTelemetry(
+      page,
+      (snap) => snap.boostMode === 'ready' && snap.engineCharge >= 35,
+      'engine recovery to ready before boost',
+    );
     await page.keyboard.press('KeyV');
+    await waitForTelemetry(page, (snap) => snap.cameraMode === 'chase', 'chase camera mode');
     await page.mouse.move(640, 360, { steps: 4 });
     await page.keyboard.down('ShiftLeft');
     await page.keyboard.down('KeyD');
-    await page.waitForTimeout(380);
-    const chaseSnap = await readTelemetry();
-    assertCondition(chaseSnap.cameraMode === 'chase', `Expected chase camera, got ${chaseSnap.cameraMode}`);
-    assertCondition(chaseSnap.boostMode === 'boosting', `Expected boosting state, got ${chaseSnap.boostMode}`);
+    const chaseSnap = await waitForTelemetry(
+      page,
+      (snap) => snap.cameraMode === 'chase' && snap.boostMode === 'boosting',
+      'active boost in chase view',
+    );
+    // Capture screenshot immediately while boosting, before measureWebglSignal advances frames.
+    await page.screenshot({ path: path.join(OUT_DIR, '04-chase-boost.png') });
     const chaseGlSignal = await measureWebglSignal(page);
     assertCondition(
       chaseGlSignal.nonBlackRatio >= 0.15 && chaseGlSignal.uniqueColors >= 24,
       `Chase 3D canvas lacks visual signal (${JSON.stringify(chaseGlSignal)})`,
     );
-    await page.screenshot({ path: path.join(OUT_DIR, '04-chase-boost.png') });
     await page.keyboard.up('ShiftLeft');
     await page.keyboard.up('KeyD');
 
     await page.keyboard.press('KeyR');
-    await page.waitForTimeout(260);
-    const afterRestart = await readTelemetry();
+    const afterRestart = await waitForTelemetry(
+      page,
+      (snap, prevTick) => snap.phase === 'active' && snap.tick < prevTick,
+      'sortie restart',
+      chaseSnap.tick,
+    );
     if (afterRestart.cameraMode !== 'chase') {
       await page.keyboard.press('KeyV');
-      await page.waitForTimeout(100);
+      await waitForTelemetry(page, (snap) => snap.cameraMode === 'chase', 'chase camera after restart');
     }
     await page.keyboard.down('KeyJ');
-    await page.waitForTimeout(360);
-    const finalSnap = await readTelemetry();
-    assertCondition(
-      finalSnap.cameraMode === 'chase',
-      `Expected chase camera for 05-chase-combat.png, got ${finalSnap.cameraMode}`,
+    const finalSnap = await waitForTelemetry(
+      page,
+      (snap) => snap.cameraMode === 'chase' && snap.projectilesCount > 0,
+      'chase combat bolts in flight',
     );
     await page.screenshot({ path: path.join(OUT_DIR, '05-chase-combat.png') });
     await page.keyboard.up('KeyJ');
-    assertServerAlive();
+
     assertCondition(consoleErrors.length === 0, `Console errors: ${consoleErrors.join('; ')}`);
     assertCondition(pageErrors.length === 0, `Page errors: ${pageErrors.join('; ')}`);
 
@@ -315,17 +258,14 @@ async function run() {
     console.log(JSON.stringify(report, null, 2));
   } catch (error) {
     console.error(error);
-    const logs = getAllLogs().trim();
-    if (logs.length > 0) {
-      console.error('Vite output:\n', logs);
-    }
-    process.exitCode = 1;
+    exitCode = 1;
   } finally {
     if (browser) {
-      await browser.close();
+      await browser.close().catch(() => undefined);
     }
-    server.kill('SIGTERM');
+    await server.close().catch(() => undefined);
   }
+  process.exit(exitCode);
 }
 
 void run();

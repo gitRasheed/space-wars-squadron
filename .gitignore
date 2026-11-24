@@ -6,3 +6,4 @@ formal/states/
 formal/*.jar
 *.log
 .DS_Store
+IMPLEMENTATION_JOURNAL.md

@@ -22,3 +22,6 @@ Run the gates matching what you changed before claiming done or committing:
 
 ## Tooling Feedback
 - If any local tool or verification gate (`tools/agent-audio`, `tools/agent-3d`, `verify:browser`, `verify:formal`, or `npm run check`) gets in your way, produces confusing output, or has false positives/negatives, include a brief **Tooling Feedback** section in your report describing what happened.
+
+## Implementation Journal
+- Keep a local, git-ignored, append-only `IMPLEMENTATION_JOURNAL.md` at the repo root for design principles, live playtest reactions, and milestone retrospectives. Always append new dated entries; never rewrite or delete earlier entries.
