@@ -1,6 +1,7 @@
 import * as THREE from 'three';
-import { add, forwardOf, rightOf, scale, upOf } from '../sim/math';
+import { add, forwardOf, rightOf, scale } from '../sim/math';
 import type { Quat, Vec3, WorldState } from '../sim/types';
+import { computeCameraPose } from './cameraPose';
 import {
   buildAsteroidMesh,
   buildCockpitRig,
@@ -552,9 +553,9 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   function updateCamera(world: WorldState): void {
     const player = world.player;
     const boostKind = player.energy.boostMode.kind;
-    const targetFov = boostKind === 'boosting' ? 82 : boostKind === 'drifting' ? 76 : 68;
-    if (Math.abs(camera.fov - targetFov) > 0.1) {
-      camera.fov += (targetFov - camera.fov) * 0.16;
+    const pose = computeCameraPose(player, world.cameraMode);
+    if (Math.abs(camera.fov - pose.targetFov) > 0.1) {
+      camera.fov += (pose.targetFov - camera.fov) * 0.16;
       camera.updateProjectionMatrix();
     }
 
@@ -564,18 +565,13 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     playerLeftTrail.line.visible = !isCockpit;
     playerRightTrail.line.visible = !isCockpit;
 
-    const fwd = forwardOf(player.orientation);
-    const up = upOf(player.orientation);
-    const right = rightOf(player.orientation);
-
-    if (isCockpit) {
-      const eyePos = add(add(player.position, scale(up, 1.35)), scale(fwd, 1.8));
-      camera.position.set(eyePos.x, eyePos.y, eyePos.z);
+    camera.position.set(pose.position.x, pose.position.y, pose.position.z);
+    if (pose.orientation !== null) {
       camera.quaternion.set(
-        player.orientation.x,
-        player.orientation.y,
-        player.orientation.z,
-        player.orientation.w,
+        pose.orientation.x,
+        pose.orientation.y,
+        pose.orientation.z,
+        pose.orientation.w,
       );
       cockpitRig.root.position.set(
         -player.angularVelocity.y * 0.03,
@@ -596,17 +592,10 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
       cockpitRig.muzzleLeft.rotation.z = world.tick * 0.9;
       cockpitRig.muzzleRight.rotation.z = -world.tick * 0.9;
       cockpitRig.flashLight.intensity = firingGlow ? 1.8 : 0;
-    } else {
-      const chaseDist = boostKind === 'boosting' ? 27 : 23;
-      const chasePos = add(
-        add(player.position, scale(fwd, -chaseDist)),
-        add(scale(up, 9.4), scale(right, -player.angularVelocity.y * 1.3)),
-      );
-      const lookPos = add(player.position, scale(fwd, 36));
-      camera.position.set(chasePos.x, chasePos.y, chasePos.z);
-      scratchUp.set(up.x, up.y, up.z);
+    } else if (pose.lookAt !== null) {
+      scratchUp.set(pose.up.x, pose.up.y, pose.up.z);
       camera.up.copy(scratchUp);
-      camera.lookAt(lookPos.x, lookPos.y, lookPos.z);
+      camera.lookAt(pose.lookAt.x, pose.lookAt.y, pose.lookAt.z);
     }
   }
 

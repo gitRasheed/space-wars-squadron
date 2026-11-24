@@ -81,6 +81,7 @@ describe('synthAudio master bus mute', () => {
           kind: 'filter',
           type: 'lowpass',
           frequency: { value: 0 },
+          Q: { value: 1 },
           connections: [] as MockAudioNode[],
           connect(dest: MockAudioNode) {
             this.connections.push(dest);
@@ -117,22 +118,44 @@ describe('synthAudio master bus mute', () => {
 
     try {
       const audio = createSynthAudio();
-      expect(audio.toggleMute()).toBe(false);
+      expect(audio.isMuted()).toBe(false);
+      expect(audio.isMusicEnabled()).toBe(true);
+      audio.unlock();
 
-      const world = {
+      const activeWorld = {
         ...createInitialWorld(DEFAULT_SORTIE_SEED, true),
         events: [{ kind: 'subsystem_destroyed' as const, label: 'SHIELD DOME' }],
       };
-      audio.sync(world);
+      audio.sync(activeWorld);
 
       const masterGain = gainNodes[0];
-      const effectGain = gainNodes[gainNodes.length - 1];
+      const musicGain = gainNodes[1];
+      const engineGain = gainNodes[2];
       expect(masterGain).toBeDefined();
-      expect(effectGain).toBeDefined();
+      expect(musicGain).toBeDefined();
+      expect(engineGain).toBeDefined();
       expect(masterGain?.connections).toContain(destination);
-      expect(effectGain?.connections).toContain(masterGain);
-      expect(effectGain?.connections).not.toContain(destination);
+      expect(musicGain?.connections).toContain(masterGain);
+      expect(engineGain?.connections).toContain(masterGain);
+      // Both soundtrack notes and SFX route strictly behind masterGain, never directly to destination.
+      expect(gainNodes.length).toBeGreaterThan(4);
+      for (let i = 1; i < gainNodes.length; i += 1) {
+        expect(gainNodes[i]?.connections).not.toContain(destination);
+      }
 
+      // Pausing silences both engine hum and soundtrack.
+      const pausedWorld = {
+        ...activeWorld,
+        phase: { kind: 'paused' as const, elapsedSeconds: 3 },
+        events: [],
+      };
+      audio.sync(pausedWorld);
+      expect(engineGain?.gain.targets[engineGain.gain.targets.length - 1]).toBe(0);
+      expect(musicGain?.gain.targets[musicGain.gain.targets.length - 1]).toBe(0);
+
+      // Toggling music off keeps sound unmuted while muting musicGain; toggleMute silences masterGain.
+      expect(audio.toggleMusic()).toBe(false);
+      expect(audio.isMuted()).toBe(false);
       expect(audio.toggleMute()).toBe(true);
       expect(masterGain?.gain.targets[masterGain.gain.targets.length - 1]).toBe(0);
       audio.destroy();

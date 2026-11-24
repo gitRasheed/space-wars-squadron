@@ -1,9 +1,23 @@
 import {
   COMBAT_TUNING,
+  findTargetContact,
   listHostileContacts,
   subsystemWorldPosition,
 } from '../sim/combat';
-import { add, clamp, computeLeadPoint, distance, dot, forwardOf, len, rightOf, scale, sub, upOf } from '../sim/math';
+import {
+  add,
+  clamp,
+  computeGunBoresightPoint,
+  computeLeadPoint,
+  distance,
+  dot,
+  forwardOf,
+  len,
+  rightOf,
+  scale,
+  sub,
+  upOf,
+} from '../sim/math';
 import type { Vec3, WorldState } from '../sim/types';
 import { HUD_PALETTE } from './palette';
 import type { ProjectedPoint } from './sceneRenderer';
@@ -14,6 +28,7 @@ export interface CockpitHud {
     world: WorldState,
     project: (point: Vec3, width: number, height: number) => ProjectedPoint,
     audioMuted: boolean,
+    musicEnabled: boolean,
   ) => void;
 }
 
@@ -132,12 +147,44 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     }
   }
 
+  function resolveReticleScreenPos(
+    world: WorldState,
+    project: (point: Vec3, width: number, height: number) => ProjectedPoint,
+  ): { readonly x: number; readonly y: number } {
+    const selected = findTargetContact(
+      world.player.selectedTargetId,
+      world.enemies,
+      world.hostileFrigate,
+    );
+    const referenceLead =
+      selected !== null
+        ? computeLeadPoint(
+            world.player.position,
+            world.player.velocity,
+            selected.position,
+            selected.velocity,
+            COMBAT_TUNING.boltSpeed,
+          )
+        : null;
+    const boresight = computeGunBoresightPoint(
+      world.player.position,
+      world.player.orientation,
+      referenceLead,
+    );
+    const projected = project(boresight, cssWidth, cssHeight);
+    if (!projected.inFront) {
+      return { x: cssWidth * 0.5, y: cssHeight * 0.5 };
+    }
+    return { x: projected.x, y: projected.y };
+  }
+
   function drawReticleCluster(
     world: WorldState,
     project: (point: Vec3, width: number, height: number) => ProjectedPoint,
+    reticle: { readonly x: number; readonly y: number },
   ): void {
-    const cx = cssWidth * 0.5;
-    const cy = cssHeight * 0.5;
+    const cx = reticle.x;
+    const cy = reticle.y;
     const p = world.player;
     const boostKind = p.energy.boostMode.kind;
     const isDrifting = boostKind === 'drifting';
@@ -267,6 +314,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
   function drawTargets(
     world: WorldState,
     project: (point: Vec3, width: number, height: number) => ProjectedPoint,
+    reticle: { readonly x: number; readonly y: number },
   ): void {
     const contacts = listHostileContacts(world.enemies, world.hostileFrigate);
     const selectedId = world.player.selectedTargetId;
@@ -340,6 +388,9 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
           projLead.y <= bounds.bottom;
 
         if (leadInCanopy && leadDist > 12) {
+          const onSolution = Math.hypot(projLead.x - reticle.x, projLead.y - reticle.y) < 16;
+          const pipColor = onSolution ? HUD_PALETTE.boostGold : EMERALD;
+
           ctx.strokeStyle = 'rgba(244, 180, 89, 0.36)';
           ctx.lineWidth = 1;
           ctx.setLineDash([3, 4]);
@@ -355,13 +406,13 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
           ctx.arc(projLead.x, projLead.y, 7.5, 0, Math.PI * 2);
           ctx.stroke();
 
-          ctx.strokeStyle = EMERALD;
-          ctx.lineWidth = 1.8;
+          ctx.strokeStyle = pipColor;
+          ctx.lineWidth = onSolution ? 2.2 : 1.8;
           ctx.beginPath();
           ctx.arc(projLead.x, projLead.y, 7.5, 0, Math.PI * 2);
           ctx.stroke();
 
-          ctx.fillStyle = EMERALD;
+          ctx.fillStyle = pipColor;
           ctx.fillRect(projLead.x - 1.5, projLead.y - 1.5, 3, 3);
         }
       } else if (isSelected) {
@@ -495,7 +546,11 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
   }
 
-  function drawMinimalBottomHud(world: WorldState, audioMuted: boolean): void {
+  function drawMinimalBottomHud(
+    world: WorldState,
+    audioMuted: boolean,
+    musicEnabled: boolean,
+  ): void {
     const cx = cssWidth * 0.5;
     const radarY = cssHeight - RADAR_RADIUS - 16;
     const p = world.player;
@@ -550,11 +605,12 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     ctx.fillStyle = p.hull < 35 ? CRIMSON : EMERALD;
     ctx.fillText('HUL', rightBarX + barW + 6, radarY + 9);
 
+    const audioLabel = audioMuted ? 'MUTED' : musicEnabled ? 'SFX+BGM' : 'SFX';
     ctx.font = '10px "Courier New", monospace';
-    ctx.fillStyle = 'rgba(216, 224, 245, 0.45)';
+    ctx.fillStyle = 'rgba(216, 224, 245, 0.5)';
     ctx.textAlign = 'right';
     ctx.fillText(
-      `[V] ${world.cameraMode.toUpperCase()}  [M] ${audioMuted ? 'MUTED' : 'SFX'}`,
+      `[V] ${world.cameraMode.toUpperCase()}  [ESC] PAUSE  [M] ${audioLabel}  [N] BGM`,
       cssWidth - 16,
       cssHeight - 14,
     );
@@ -628,11 +684,33 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       ctx.fillStyle = CYAN;
       ctx.fillText('SHIFT: Boost  |  SPACE: Snap-Turn  |  W/S: Speed  |  A/D: Roll', cssWidth * 0.5, cardY + 152);
       ctx.fillStyle = 'rgba(244, 180, 89, 0.78)';
-      ctx.fillText('T: Target  |  V: Cockpit/Chase  |  R: Retry  |  M: Sound', cssWidth * 0.5, cardY + 174);
+      ctx.fillText('T: Target  |  V: Cockpit/Chase  |  ESC: Pause  |  M/N: Audio', cssWidth * 0.5, cardY + 174);
 
       ctx.font = 'bold 15px "Courier New", monospace';
       ctx.fillStyle = EMERALD;
       ctx.fillText('PRESS [ENTER] OR CLICK TO LAUNCH', cssWidth * 0.5, cardY + 214);
+    } else if (world.phase.kind === 'paused') {
+      ctx.font = 'bold 26px "Courier New", monospace';
+      ctx.fillStyle = AMBER;
+      ctx.fillText('SORTIE PAUSED', cssWidth * 0.5, cardY + 56);
+
+      ctx.font = '13px "Courier New", monospace';
+      ctx.fillStyle = '#f6e8cf';
+      ctx.fillText(
+        `Flight Time: ${world.phase.elapsedSeconds.toFixed(1)}s   ·   Raiders Left: ${world.enemies.length}`,
+        cssWidth * 0.5,
+        cardY + 102,
+      );
+
+      ctx.font = '12px "Courier New", monospace';
+      ctx.fillStyle = CYAN;
+      ctx.fillText('[ESC] / [P] / [ENTER] or CLICK: Resume   |   [R]: Restart', cssWidth * 0.5, cardY + 148);
+      ctx.fillStyle = 'rgba(244, 180, 89, 0.8)';
+      ctx.fillText('[V]: Camera   |   [M]: Mute All   |   [N]: Toggle Soundtrack', cssWidth * 0.5, cardY + 172);
+
+      ctx.font = 'bold 15px "Courier New", monospace';
+      ctx.fillStyle = EMERALD;
+      ctx.fillText('CLICK OR PRESS [ESC] TO RESUME', cssWidth * 0.5, cardY + 212);
     } else if (world.phase.kind === 'victory') {
       ctx.font = 'bold 26px "Courier New", monospace';
       ctx.fillStyle = EMERALD;
@@ -669,6 +747,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     world: WorldState,
     project: (point: Vec3, width: number, height: number) => ProjectedPoint,
     audioMuted: boolean,
+    musicEnabled: boolean,
   ): void {
     ctx.clearRect(0, 0, cssWidth, cssHeight);
 
@@ -677,10 +756,11 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       ctx.fillRect(0, 0, cssWidth, cssHeight);
     }
 
-    drawReticleCluster(world, project);
-    drawTargets(world, project);
+    const reticle = resolveReticleScreenPos(world, project);
+    drawReticleCluster(world, project, reticle);
+    drawTargets(world, project, reticle);
     drawTopStrip(world);
-    drawMinimalBottomHud(world, audioMuted);
+    drawMinimalBottomHud(world, audioMuted, musicEnabled);
     drawOverlay(world);
   }
 

@@ -268,6 +268,24 @@ export function stepWorld(
     return { ...world, cameraMode, events: [] };
   }
 
+  if (world.phase.kind === 'paused') {
+    if (input.restartSortie) {
+      return {
+        ...createInitialWorld(world.rngState, true, world.sortie),
+        cameraMode,
+      };
+    }
+    if (input.togglePause || input.launchBriefing) {
+      return {
+        ...world,
+        cameraMode,
+        phase: { kind: 'active', elapsedSeconds: world.phase.elapsedSeconds },
+        events: [],
+      };
+    }
+    return { ...world, cameraMode, events: [] };
+  }
+
   if (world.phase.kind === 'victory' || world.phase.kind === 'failed') {
     if (input.launchBriefing || input.restartSortie) {
       return {
@@ -282,6 +300,15 @@ export function stepWorld(
     return {
       ...createInitialWorld(world.rngState, true, world.sortie),
       cameraMode,
+    };
+  }
+
+  if (input.togglePause) {
+    return {
+      ...world,
+      cameraMode,
+      phase: { kind: 'paused', elapsedSeconds: world.phase.elapsedSeconds },
+      events: [],
     };
   }
 

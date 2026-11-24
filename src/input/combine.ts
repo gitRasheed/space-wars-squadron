@@ -26,5 +26,7 @@ export function mergeFlightInputs(primary: FlightInput, secondary: FlightInput):
     launchBriefing: primary.launchBriefing || secondary.launchBriefing,
     restartSortie: primary.restartSortie || secondary.restartSortie,
     toggleMute: primary.toggleMute || secondary.toggleMute,
+    toggleMusic: primary.toggleMusic || secondary.toggleMusic,
+    togglePause: primary.togglePause || secondary.togglePause,
   };
 }

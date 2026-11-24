@@ -50,6 +50,7 @@ export type EnemyManeuver =
 export type SortiePhase =
   | { readonly kind: 'briefing' }
   | { readonly kind: 'active'; readonly elapsedSeconds: number }
+  | { readonly kind: 'paused'; readonly elapsedSeconds: number }
   | {
       readonly kind: 'victory';
       readonly elapsedSeconds: number;
@@ -74,6 +75,8 @@ export interface FlightInput {
   readonly cycleTarget: boolean;
   readonly toggleCamera: boolean;
   readonly toggleMute: boolean;
+  readonly toggleMusic: boolean;
+  readonly togglePause: boolean;
   readonly launchBriefing: boolean;
   readonly restartSortie: boolean;
 }
@@ -243,6 +246,8 @@ export const NEUTRAL_INPUT: FlightInput = {
   cycleTarget: false,
   toggleCamera: false,
   toggleMute: false,
+  toggleMusic: false,
+  togglePause: false,
   launchBriefing: false,
   restartSortie: false,
 };

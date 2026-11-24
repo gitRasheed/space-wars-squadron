@@ -60,6 +60,9 @@ function boot(): void {
   glCanvas.addEventListener('mousedown', () => {
     audio.unlock();
   });
+  window.addEventListener('keydown', () => {
+    audio.unlock();
+  });
 
   window.__SWS_TELEMETRY__ = {
     getSnapshot: () => ({
@@ -92,13 +95,20 @@ function boot(): void {
       if (sampled.toggleMute) {
         audio.toggleMute();
       }
+      if (sampled.toggleMusic) {
+        audio.toggleMusic();
+      }
+      const wasActive = world.phase.kind === 'active';
       world = stepWorld(world, sampled, FIXED_DT);
+      if (wasActive && world.phase.kind === 'paused' && document.pointerLockElement === glCanvas) {
+        document.exitPointerLock();
+      }
       audio.sync(world);
       accumulator -= FIXED_DT;
     }
 
     renderer.render(world);
-    hud.render(world, renderer.projectWorldPoint, audio.isMuted());
+    hud.render(world, renderer.projectWorldPoint, audio.isMuted(), audio.isMusicEnabled());
     requestAnimationFrame(frame);
   }
 

@@ -214,6 +214,45 @@ export function slerpQuat(a: Quat, b: Quat, t: number): Quat {
   });
 }
 
+export function solveInterceptTime(
+  relPos: Vec3,
+  relVel: Vec3,
+  projectileSpeed: number,
+  maxSeconds = 2.5,
+): number {
+  const s = Math.max(projectileSpeed, 1);
+  const rDotR = dot(relPos, relPos);
+  if (rDotR <= 1e-8) {
+    return 0;
+  }
+  const a = dot(relVel, relVel) - s * s;
+  const b = 2 * dot(relPos, relVel);
+  const c = rDotR;
+
+  let t: number | null = null;
+  if (Math.abs(a) < 1e-6) {
+    if (b < -1e-6) {
+      t = -c / b;
+    }
+  } else {
+    const disc = b * b - 4 * a * c;
+    if (disc >= 0) {
+      const sqrtDisc = Math.sqrt(disc);
+      const t1 = (-b - sqrtDisc) / (2 * a);
+      const t2 = (-b + sqrtDisc) / (2 * a);
+      const pos1 = t1 > 0 ? t1 : Infinity;
+      const pos2 = t2 > 0 ? t2 : Infinity;
+      const best = Math.min(pos1, pos2);
+      if (Number.isFinite(best)) {
+        t = best;
+      }
+    }
+  }
+
+  const fallback = Math.sqrt(rDotR) / s;
+  return clamp(t ?? fallback, 0, maxSeconds);
+}
+
 export function computeLeadPoint(
   shooterPos: Vec3,
   shooterVel: Vec3,
@@ -223,9 +262,22 @@ export function computeLeadPoint(
 ): Vec3 {
   const relPos = sub(targetPos, shooterPos);
   const relVel = sub(targetVel, shooterVel);
-  const dist = len(relPos);
-  const timeToImpact = clamp(dist / Math.max(projectileSpeed, 1), 0, 2.5);
+  const timeToImpact = solveInterceptTime(relPos, relVel, projectileSpeed, 2.5);
   return add(targetPos, scale(relVel, timeToImpact));
+}
+
+export function computeGunBoresightPoint(
+  shooterPos: Vec3,
+  shooterOrientation: Quat,
+  referenceAimPoint: Vec3 | null,
+  defaultRange = 420,
+): Vec3 {
+  const fwd = forwardOf(shooterOrientation);
+  const range =
+    referenceAimPoint !== null
+      ? clamp(distance(shooterPos, referenceAimPoint), 15, 2000)
+      : defaultRange;
+  return add(shooterPos, scale(fwd, range));
 }
 
 export function nextRandom(state: number): { readonly nextState: number; readonly value: number } {
