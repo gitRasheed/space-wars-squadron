@@ -536,6 +536,26 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     ctx.lineTo(cx, cy + radius);
     ctx.stroke();
 
+    // Phosphor sweep and bezel ticks: scope dressing only, the blips stay live every frame.
+    const sweepAngle = (world.tick * 0.045) % (Math.PI * 2);
+    const sweep = ctx.createConicGradient(sweepAngle, cx, cy);
+    sweep.addColorStop(0, 'rgba(244, 180, 89, 0)');
+    sweep.addColorStop(0.8, 'rgba(244, 180, 89, 0)');
+    sweep.addColorStop(1, 'rgba(244, 180, 89, 0.2)');
+    ctx.fillStyle = sweep;
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(244, 180, 89, 0.55)';
+    ctx.beginPath();
+    for (let i = 0; i < 12; i += 1) {
+      const angle = (i / 12) * Math.PI * 2;
+      const inner = radius * (i % 3 === 0 ? 0.86 : 0.93);
+      ctx.moveTo(cx + Math.cos(angle) * inner, cy + Math.sin(angle) * inner);
+      ctx.lineTo(cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius);
+    }
+    ctx.stroke();
+
     const fwd = forwardOf(world.player.orientation);
     const right = rightOf(world.player.orientation);
     const up = upOf(world.player.orientation);

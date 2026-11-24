@@ -5,13 +5,20 @@ export const SUN_DIRECTION = {
 } as const;
 
 export const LIGHT_PALETTE = {
-  sunColor: 0xffcb99,
+  sunColor: 0xffdfbd,
   sunIntensity: 2.4,
   rimColor: 0x6b88ff,
   rimIntensity: 1.05,
   hemiSky: 0x7c88b8,
   hemiGround: 0x1b172c,
   hemiIntensity: 0.78,
+} as const;
+
+// Light multipliers per toon step: violet shadow, cool core, warm terminator, then full light.
+export const TOON_BANDS = {
+  shadow: [0.06, 0.065, 0.13],
+  core: [0.3, 0.31, 0.45],
+  terminator: [0.82, 0.7, 0.64],
 } as const;
 
 export const SCENE_PALETTE = {

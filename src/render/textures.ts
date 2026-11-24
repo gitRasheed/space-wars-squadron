@@ -69,6 +69,21 @@ function hullTile(colors: HullPaint): THREE.CanvasTexture {
     ctx.strokeStyle = colors.seam;
     ctx.stroke(seams);
 
+    // Bolted access hatch and a worn scuff give each tile a hand-serviced look.
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = colors.seam;
+    ctx.strokeRect(100, 66, 44, 60);
+    ctx.fillStyle = colors.band;
+    ctx.fillRect(104, 70, 36, 52);
+    ctx.fillStyle = colors.rivet;
+    for (const [x, y] of [[106, 72], [134, 72], [106, 116], [134, 116], [20, 150], [50, 150], [20, 180], [230, 60], [230, 130]] as const) {
+      ctx.fillRect(x, y, 4, 4);
+    }
+    ctx.fillStyle = colors.seam;
+    ctx.fillRect(112, 92, 20, 3);
+    ctx.fillRect(22, 222, 40, 3);
+    ctx.fillRect(30, 230, 22, 2);
+
     ctx.fillStyle = colors.band;
     ctx.fillRect(12, 31, 57, 4);
     ctx.fillRect(12, 38, 30, 2);

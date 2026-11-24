@@ -137,18 +137,20 @@ export function createStylizedPostPass(): StylizedPostPass {
         return ${CAMERA_CLIP.near} / mix(1.0, ${CAMERA_CLIP.near / CAMERA_CLIP.far}, depth);
       }
 
+      // Emissives are HDR-boosted well past 1.0, so only they escape the outline; sunlit hull keeps its ink.
       float inkCoverage(float peak) {
         float center = viewDistance(vUv);
-        if (center > 1600.0 || peak >= 0.95) return 0.0;
+        if (center > 1600.0 || peak >= 1.5) return 0.0;
 
-        vec2 dx = vec2(uInkStep.x, 0.0);
-        vec2 dy = vec2(0.0, uInkStep.y);
+        float taper = mix(1.0, 0.5, smoothstep(40.0, 520.0, center));
+        vec2 dx = vec2(uInkStep.x * taper, 0.0);
+        vec2 dy = vec2(0.0, uInkStep.y * taper);
         float acrossX = max(viewDistance(vUv - dx), viewDistance(vUv + dx));
         float acrossY = max(viewDistance(vUv - dy), viewDistance(vUv + dy));
         float depthJump = (max(acrossX, acrossY) - center) / center;
         return smoothstep(0.035, 0.12, depthJump)
              * (1.0 - smoothstep(450.0, 1600.0, center))
-             * (1.0 - smoothstep(0.68, 0.95, peak));
+             * (1.0 - smoothstep(1.05, 1.5, peak));
       }
 
       vec3 neutralToneMap(vec3 color) {
@@ -174,14 +176,22 @@ export function createStylizedPostPass(): StylizedPostPass {
         vec3 baseLinear = texture2D(tDiffuse, vUv).rgb;
         vec3 bloomLinear = texture2D(tBloom, vUv).rgb;
         float ink = inkCoverage(max(baseLinear.r, max(baseLinear.g, baseLinear.b)));
-        vec3 inkColor = min(baseLinear, vec3(0.009, 0.011, 0.022));
-        vec3 combined = mix(baseLinear, inkColor, ink * 0.88) + bloomLinear * 0.42;
+        vec3 inkColor = min(baseLinear, baseLinear * 0.1 + vec3(0.007, 0.008, 0.02));
+        vec3 combined = mix(baseLinear, inkColor, ink * 0.9) + bloomLinear * 0.5;
 
         vec2 centered = vUv * 2.0 - 1.0;
-        float vignette = clamp(1.0 - dot(centered, centered) * 0.14, 0.78, 1.0);
-        combined *= vignette;
+        float vignette = clamp(1.0 - dot(centered, centered) * 0.16, 0.74, 1.0);
+        combined *= mix(vec3(0.78, 0.74, 1.0), vec3(1.0), vignette) * vignette;
 
         vec3 displayColor = linearToSrgb(neutralToneMap(combined));
+
+        // Print-style grade: indigo in the shadows, warmth in the highlights, a touch more chroma and contrast.
+        float luma = dot(displayColor, vec3(0.299, 0.587, 0.114));
+        float shadows = 1.0 - smoothstep(0.0, 0.42, luma);
+        displayColor = mix(displayColor, displayColor * vec3(0.92, 0.97, 1.12) + vec3(0.008, 0.004, 0.024), shadows * 0.6);
+        displayColor = mix(displayColor, displayColor * vec3(1.05, 1.0, 0.93), smoothstep(0.55, 1.0, luma) * 0.5);
+        displayColor = mix(vec3(luma), displayColor, 1.12);
+        displayColor = mix(displayColor, displayColor * displayColor * (3.0 - 2.0 * displayColor), 0.22);
 
         float grain = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
         gl_FragColor = vec4(displayColor + (grain - 0.5) / 255.0, 1.0);
@@ -213,7 +223,7 @@ export function createStylizedPostPass(): StylizedPostPass {
 
     extractUniforms.uTexel.value.set(1 / halfW, 1 / halfH);
     blurVUniforms.uTexel.value.set(1 / halfW, 1 / halfH);
-    const inkWidth = Math.max(1, internalH / 800);
+    const inkWidth = Math.max(1, internalH / 560);
     compositeUniforms.uInkStep.value.set(inkWidth / internalW, inkWidth / internalH);
   }
 

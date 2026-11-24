@@ -13,6 +13,7 @@ import {
   buildOrbitalBackdrop,
   buildPlayerFighterMesh,
   createSoftDotTexture,
+  gaugeNeedleAngle,
   SHARED_MODEL_MATERIALS,
   type CockpitRig,
   type FighterMeshRig,
@@ -401,6 +402,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   let lastPlayerIntegrity = 0;
   let lastRenderTimeMs = 0;
   let shakeIntensity = 0;
+  const charmSwing = { x: 0, z: 0, vx: 0, vz: 0 };
 
   function updateDustField(center: Vec3): void {
     const posAttr = dustGeo.getAttribute('position') as THREE.BufferAttribute;
@@ -778,6 +780,18 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
         : heat > 0.35
           ? (heat - 0.35) * 1.35
           : 0;
+
+      cockpitRig.throttleNeedle.rotation.z = gaugeNeedleAngle(player.throttle / 1.2);
+      cockpitRig.heatNeedle.rotation.z = gaugeNeedleAngle(heat);
+
+      // Underdamped pendulum driven by yaw, roll and recoil.
+      const swingTargetZ = THREE.MathUtils.clamp(player.angularVelocity.y * 0.5 + player.angularVelocity.z * 0.35, -0.9, 0.9);
+      const swingTargetX = THREE.MathUtils.clamp(player.angularVelocity.x * 0.5 - player.recoilKick * 0.4, -0.9, 0.9);
+      charmSwing.vz += ((swingTargetZ - charmSwing.z) * 46 - charmSwing.vz * 2.6) * dt;
+      charmSwing.vx += ((swingTargetX - charmSwing.x) * 46 - charmSwing.vx * 2.6) * dt;
+      charmSwing.z += charmSwing.vz * dt;
+      charmSwing.x += charmSwing.vx * dt;
+      cockpitRig.charm.rotation.set(charmSwing.x, 0, charmSwing.z);
 
       const smokeTime = world.tick * FIXED_DT * 1.45;
       for (const puff of cockpitRig.overheatPuffs) {

@@ -2,26 +2,9 @@ import * as THREE from 'three';
 import { COCKPIT_GUN_LOCAL, FIGHTER_WEAPON_LAYOUT } from '../sim/combat';
 import type { AsteroidState, EnemyKind } from '../sim/types';
 import { FRIGATE_SUBSYSTEM_LAYOUT } from '../sim/world';
-import { SCENE_PALETTE, SUN_DIRECTION } from './palette';
+import { SCENE_PALETTE, SUN_DIRECTION, TOON_BANDS } from './palette';
 import type { HullTextureSet } from './textures';
 
-function createToonGradientRamp(): THREE.DataTexture {
-  // 4-band stepped luminance ramp with deep shadow floor for crisp cel-shaded tone breaks.
-  const bands = new Uint8Array([
-    26, 26, 26, 255,
-    102, 102, 102, 255,
-    188, 188, 188, 255,
-    255, 255, 255, 255,
-  ]);
-  const tex = new THREE.DataTexture(bands, 4, 1, THREE.RGBAFormat);
-  tex.minFilter = THREE.NearestFilter;
-  tex.magFilter = THREE.NearestFilter;
-  tex.generateMipmaps = false;
-  tex.needsUpdate = true;
-  return tex;
-}
-
-const TOON_RAMP = createToonGradientRamp();
 const INK_SHELL_MAT = new THREE.MeshBasicMaterial({
   color: SCENE_PALETTE.inkOutline,
   side: THREE.BackSide,
@@ -37,47 +20,124 @@ export const SHARED_MODEL_MATERIALS: ReadonlySet<THREE.Material> = new Set([
   SUBTLE_EDGE_MAT,
 ]);
 
-function toonMat(
-  color: number,
-  options?: {
-    readonly map?: THREE.Texture;
-    readonly emissive?: number;
-    readonly emissiveIntensity?: number;
-    readonly rimColor?: number;
-    readonly rimStrength?: number;
-  },
-): THREE.MeshToonMaterial {
+// Band edges are widened by fwidth so curved hulls step cleanly instead of crawling at one sample per pixel.
+const TOON_RAMP_GLSL = `
+vec3 getGradientIrradiance( vec3 normal, vec3 lightDirection ) {
+  float t = dot( normal, lightDirection );
+  float fw = fwidth( t ) * 0.75 + 0.0015;
+  vec3 band = vec3( ${TOON_BANDS.shadow.join(', ')} );
+  band = mix( band, vec3( ${TOON_BANDS.core.join(', ')} ), smoothstep( -0.42 - fw, -0.42 + fw, t ) );
+  band = mix( band, vec3( ${TOON_BANDS.terminator.join(', ')} ), smoothstep( 0.04 - fw, 0.04 + fw, t ) );
+  band = mix( band, vec3( 1.0 ), smoothstep( 0.52 - fw, 0.52 + fw, t ) );
+  return band;
+}
+`;
+
+const TOON_PARS_GLSL = `
+uniform vec3 uRimColor;
+uniform float uRimStrength;
+uniform float uPanelSize;
+uniform float uGloss;
+varying vec3 vSwsLocal;
+varying vec3 vSwsLocalNormal;
+
+float swsHash( vec2 p ) {
+  return fract( sin( dot( p, vec2( 127.1, 311.7 ) ) ) * 43758.5453 );
+}
+
+// Staggered armor plates projected along the dominant local axis, so untextured parts get seams without UVs.
+float swsPlateTone( vec2 cell ) {
+  return floor( swsHash( cell ) * 3.0 );
+}
+
+vec3 swsPlating( vec3 albedo ) {
+  vec3 an = abs( vSwsLocalNormal );
+  vec2 p = an.x >= an.y && an.x >= an.z ? vSwsLocal.zy : ( an.y >= an.z ? vSwsLocal.zx : vSwsLocal.xy );
+  p /= uPanelSize * vec2( 2.4, 1.0 );
+  vec2 fw = fwidth( p );
+  float fade = 1.0 - smoothstep( 0.04, 0.16, max( fw.x, fw.y ) );
+  if ( fade <= 0.0 ) return albedo;
+  p.x += swsHash( vec2( floor( p.y ), 7.0 ) );
+  vec2 cell = floor( p );
+  vec2 f = fract( p );
+  float tone = swsPlateTone( cell );
+  // A butt joint only shows where neighbouring plates differ in tone, so equal neighbours merge into long strakes.
+  float jointL = step( 0.5, abs( tone - swsPlateTone( cell - vec2( 1.0, 0.0 ) ) ) );
+  float jointR = step( 0.5, abs( tone - swsPlateTone( cell + vec2( 1.0, 0.0 ) ) ) );
+  vec2 width = vec2( 0.008, 0.02 );
+  vec2 aa = fw * 1.5;
+  float seam = max(
+    max( jointL * ( 1.0 - smoothstep( width.x, width.x + aa.x, f.x ) ), jointR * ( 1.0 - smoothstep( width.x, width.x + aa.x, 1.0 - f.x ) ) ),
+    1.0 - smoothstep( width.y, width.y + aa.y, min( f.y, 1.0 - f.y ) )
+  );
+  float lip = ( 1.0 - smoothstep( width.y * 2.8, width.y * 2.8 + aa.y, 1.0 - f.y ) ) * ( 1.0 - seam );
+  vec3 plate = albedo * ( 0.96 + 0.035 * tone );
+  plate = mix( plate, albedo * 1.14, lip * 0.5 );
+  plate = mix( plate, albedo * vec3( 0.46, 0.48, 0.6 ), seam * 0.7 );
+  return mix( albedo, plate, fade );
+}
+`;
+
+const TOON_SHADE_GLSL = `
+float swsRimDot = 1.0 - max( dot( normalize( normal ), normalize( vViewPosition ) ), 0.0 );
+float swsRimBand = smoothstep( 0.52, 0.72, pow( swsRimDot, 2.0 ) );
+outgoingLight += uRimColor * ( swsRimBand * uRimStrength );
+#if NUM_DIR_LIGHTS > 0
+  vec3 swsHalf = normalize( directionalLights[ 0 ].direction + normalize( vViewPosition ) );
+  float swsSpec = pow( max( dot( normalize( normal ), swsHalf ), 0.0 ), 40.0 );
+  float swsSpecFw = fwidth( swsSpec ) + 0.002;
+  float swsGlint = smoothstep( 0.5 - swsSpecFw, 0.5 + swsSpecFw, swsSpec );
+  outgoingLight += directionalLights[ 0 ].color * ( swsGlint * uGloss ) * ( 0.3 + 0.7 * diffuseColor.rgb );
+#endif
+`;
+
+interface ToonOptions {
+  readonly map?: THREE.Texture;
+  readonly emissive?: number;
+  readonly emissiveIntensity?: number;
+  readonly rimColor?: number;
+  readonly rimStrength?: number;
+  /** Armor plate height in local units; 0 leaves the albedo flat. */
+  readonly panel?: number;
+  readonly gloss?: number;
+}
+
+function toonMat(color: number, options?: ToonOptions): THREE.MeshToonMaterial {
   const params: THREE.MeshToonMaterialParameters = {
     color,
     emissive: options?.emissive ?? 0x000000,
     emissiveIntensity: options?.emissiveIntensity ?? 0,
-    gradientMap: TOON_RAMP,
   };
   if (options?.map !== undefined) {
     params.map = options.map;
   }
   const mat = new THREE.MeshToonMaterial(params);
+  const rimColor = new THREE.Color(options?.rimColor ?? 0x7c96d8);
   const rimStrength = options?.rimStrength ?? 0.18;
-  if (rimStrength > 0) {
-    const rimColor = new THREE.Color(options?.rimColor ?? 0x7c96d8);
-    mat.customProgramCacheKey = () => 'sws-toon-rim-v1';
-    mat.onBeforeCompile = (shader) => {
-      shader.uniforms.uRimColor = { value: rimColor };
-      shader.uniforms.uRimStrength = { value: rimStrength };
-      shader.fragmentShader = shader.fragmentShader
-        .replace(
-          'uniform float opacity;',
-          'uniform float opacity;\nuniform vec3 uRimColor;\nuniform float uRimStrength;',
-        )
-        .replace(
-          '#include <opaque_fragment>',
-          `float swsRimDot = 1.0 - max(dot(normalize(normal), normalize(vViewPosition)), 0.0);
-          float swsRimBand = smoothstep(0.52, 0.72, pow(swsRimDot, 2.0));
-          outgoingLight += uRimColor * (swsRimBand * uRimStrength);
-          #include <opaque_fragment>`,
-        );
-    };
-  }
+  const panel = options?.panel ?? 0;
+  const gloss = options?.gloss ?? 0.1;
+  mat.customProgramCacheKey = () => `sws-toon-v2-${panel > 0 ? 'plated' : 'plain'}`;
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uRimColor = { value: rimColor };
+    shader.uniforms.uRimStrength = { value: rimStrength };
+    shader.uniforms.uPanelSize = { value: panel };
+    shader.uniforms.uGloss = { value: gloss };
+    shader.vertexShader = shader.vertexShader
+      .replace('void main() {', 'varying vec3 vSwsLocal;\nvarying vec3 vSwsLocalNormal;\nvoid main() {')
+      .replace(
+        '#include <begin_vertex>',
+        '#include <begin_vertex>\nvSwsLocal = position;\nvSwsLocalNormal = normal;',
+      );
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <gradientmap_pars_fragment>', TOON_RAMP_GLSL + TOON_PARS_GLSL)
+      .replace(
+        '#include <color_fragment>',
+        panel > 0
+          ? '#include <color_fragment>\nvec3 swsPlate = swsPlating( vec3( 1.0 ) );\ndiffuseColor.rgb *= swsPlate;\ntotalEmissiveRadiance *= swsPlate;'
+          : '#include <color_fragment>',
+      )
+      .replace('#include <opaque_fragment>', `${TOON_SHADE_GLSL}\n#include <opaque_fragment>`);
+  };
   return mat;
 }
 
@@ -204,8 +264,8 @@ function createTaperedBoxGeometry(spec: TaperedBoxSpec): THREE.BoxGeometry {
   return geo;
 }
 
-function createDiamondPrismGeometry(spec: TaperedBoxSpec): THREE.CylinderGeometry {
-  const geo = new THREE.CylinderGeometry(1, 1, spec.length, 4, 1);
+function createDiamondPrismGeometry(spec: TaperedBoxSpec): THREE.BufferGeometry {
+  const geo = new THREE.CylinderGeometry(1, 1, spec.length, 4, 1).toNonIndexed();
   geo.rotateX(Math.PI / 2);
   const pos = geo.getAttribute('position') as THREE.BufferAttribute;
   const frontY = spec.frontYOffset ?? 0;
@@ -327,10 +387,10 @@ export function buildPlayerFighterMesh(
 ): FighterMeshRig {
   const root = new THREE.Group();
   const hullMat = toonMat(0xffffff, { map: textures.fighterHull });
-  const ivoryMat = toonMat(0xf4efe4);
-  const warmPlateMat = toonMat(0xe2d9ca);
-  const slateMat = toonMat(0x525c74);
-  const gunmetalMat = toonMat(0x3f4860);
+  const ivoryMat = toonMat(0xf4efe4, { panel: 1.05 });
+  const warmPlateMat = toonMat(0xe2d9ca, { panel: 1.05 });
+  const slateMat = toonMat(0x525c74, { panel: 1.05, gloss: 0.16 });
+  const gunmetalMat = toonMat(0x3f4860, { gloss: 0.2 });
   const darkMat = toonMat(0x232838);
   const stripeMat = toonMat(stripeColor);
   const canopyMat = toonMat(0xffbe59, { emissive: 0x8a480a, emissiveIntensity: 0.55 });
@@ -532,6 +592,26 @@ export function buildPlayerFighterMesh(
     position: [0, 1.42, 1.1],
   });
 
+  // Forward canards and a comms blade break up the dart outline.
+  for (const side of [-1, 1] as const) {
+    addStyledPart(
+      root,
+      createTaperedBoxGeometry({
+        frontWidth: 0.22, frontHeight: 0.07, backWidth: 1.25, backHeight: 0.12, length: 1.7,
+      }),
+      stripeMat,
+      { position: [side * 1.5, -0.12, -3.3], rotation: [0, side * -0.5, side * -0.1] },
+    );
+  }
+  addStyledPart(
+    root,
+    createTaperedBoxGeometry({
+      frontWidth: 0.05, frontHeight: 0.12, backWidth: 0.07, backHeight: 0.85, length: 1.0, backYOffset: 0.36,
+    }),
+    gunmetalMat,
+    { position: [0, 1.5, 2.1] },
+  );
+
   // Swept orange center dorsal finlet.
   addStyledPart(
     root,
@@ -673,6 +753,9 @@ export interface CockpitRig {
   readonly barrelHeatMat: THREE.MeshToonMaterial;
   readonly overheatPuffs: readonly { readonly mesh: THREE.Mesh; readonly side: -1 | 1; readonly phase: number }[];
   readonly flashLight: THREE.PointLight;
+  readonly throttleNeedle: THREE.Group;
+  readonly heatNeedle: THREE.Group;
+  readonly charm: THREE.Group;
 }
 
 function buildMuzzleBurst(scale = 1): THREE.Group {
@@ -701,11 +784,49 @@ function buildMuzzleBurst(scale = 1): THREE.Group {
   return burst;
 }
 
+const GAUGE_SWEEP = 2.2;
+
+function buildDashGauge(needleColor: number, bezelMat: THREE.Material): {
+  readonly gauge: THREE.Group;
+  readonly needle: THREE.Group;
+} {
+  const gauge = new THREE.Group();
+  const bezel = new THREE.CylinderGeometry(0.078, 0.088, 0.034, 12);
+  bezel.rotateX(Math.PI / 2);
+  addStyledPart(gauge, bezel, bezelMat);
+  addStyledPart(gauge, new THREE.CircleGeometry(0.066, 12), new THREE.MeshBasicMaterial({ color: 0x0b1524 }), {
+    position: [0, 0, 0.018],
+  });
+  const tickMat = glowMat(0xcfd8ee, 1, { hdrBoost: 0.55 });
+  const tickGeo = new THREE.BoxGeometry(0.006, 0.016, 0.002);
+  for (let i = 0; i < 7; i += 1) {
+    const angle = GAUGE_SWEEP * (1 - i / 3);
+    addStyledPart(gauge, tickGeo, i >= 5 ? glowMat(0xff5a48, 1, { hdrBoost: 1.1 }) : tickMat, {
+      position: [-Math.sin(angle) * 0.052, Math.cos(angle) * 0.052, 0.02],
+      rotation: [0, 0, angle],
+    });
+  }
+  const needle = new THREE.Group();
+  needle.position.z = 0.024;
+  addStyledPart(needle, new THREE.BoxGeometry(0.007, 0.056, 0.003), glowMat(needleColor, 1, { hdrBoost: 1.5 }), {
+    position: [0, 0.02, 0],
+  });
+  addStyledPart(needle, new THREE.CircleGeometry(0.011, 8), bezelMat, { position: [0, 0, 0.002] });
+  gauge.add(needle);
+  return { gauge, needle };
+}
+
+/** Needle rotation for a 0..1 reading; the dial sweeps clockwise from lower left to lower right. */
+export function gaugeNeedleAngle(reading: number): number {
+  return GAUGE_SWEEP * (1 - 2 * Math.min(1, Math.max(0, reading)));
+}
+
 export function buildCockpitRig(): CockpitRig {
   const root = new THREE.Group();
-  const frameMat = toonMat(0x2d3245);
-  const bevelMat = toonMat(0x5c6682);
-  const barrelMat = toonMat(0x424a62);
+  const interior = { emissive: 0x161c34, emissiveIntensity: 1, rimColor: 0x6f8fe0, rimStrength: 0.22 } as const;
+  const frameMat = toonMat(0x464e6c, { ...interior, panel: 0.17 });
+  const bevelMat = toonMat(0x7683a6, { ...interior, gloss: 0.2 });
+  const barrelMat = toonMat(0x4d5672, { ...interior, gloss: 0.26 });
   const accentMat = toonMat(0xd98332, { emissive: 0x4f2304, emissiveIntensity: 0.3 });
   const ledAmber = glowMat(0xf4b459, 1, { hdrBoost: 1.5 });
   const ledCyan = glowMat(0x6be5ff, 1, { hdrBoost: 1.5 });
@@ -714,11 +835,18 @@ export function buildCockpitRig(): CockpitRig {
   cockpitFill.position.set(0, -0.25, -0.45);
   root.add(cockpitFill);
 
+  // Instrument glow warms the dash and gun breeches from below against the cool canopy fill.
+  const dashGlow = new THREE.PointLight(0xffa55c, 0.32, 2.2);
+  dashGlow.position.set(0, -0.52, -1.2);
+  root.add(dashGlow);
+
   const flashLight = new THREE.PointLight(0xffbb55, 0, 5.5);
   flashLight.position.set(0, -0.2, -1.9);
   root.add(flashLight);
 
   const strutProfile = new THREE.BoxGeometry(0.048, 1.76, 0.1);
+  const hazardGeo = new THREE.BoxGeometry(0.008, 0.028, 0.104);
+  const strutLedGeo = new THREE.BoxGeometry(0.008, 0.02, 0.02);
   for (const side of [-1, 1] as const) {
     const strut = addStyledPart(root, strutProfile, frameMat, {
       position: [side * 1.24, 0.1, -1.1],
@@ -731,6 +859,17 @@ export function buildCockpitRig(): CockpitRig {
     addStyledPart(strut, new THREE.BoxGeometry(0.069, 0.1, 0.12), barrelMat, {
       position: [0, -0.18, 0],
     });
+    for (let i = 0; i < 3; i += 1) {
+      addStyledPart(strut, hazardGeo, accentMat, {
+        position: [-side * 0.022, -0.36 - i * 0.055, 0],
+        rotation: [side * 0.5, 0, 0],
+      });
+    }
+    for (let i = 0; i < 4; i += 1) {
+      addStyledPart(strut, strutLedGeo, i === 3 ? ledAmber : ledCyan, {
+        position: [-side * 0.024, 0.02 + i * 0.045, -0.02],
+      });
+    }
 
     addStyledPart(root, new THREE.BoxGeometry(0.22, 0.13, 1.08), frameMat, {
       position: [side * 1.12, -0.72, -0.92],
@@ -738,8 +877,12 @@ export function buildCockpitRig(): CockpitRig {
     });
   }
 
-  const gunShroudGeo = new THREE.CylinderGeometry(0.024, 0.048, 1.08, 8);
-  gunShroudGeo.rotateX(Math.PI / 2);
+  const jacketGeo = new THREE.CylinderGeometry(0.03, 0.042, 1.08, 8);
+  jacketGeo.rotateX(-Math.PI / 2);
+  const finGeo = new THREE.CylinderGeometry(0.052, 0.052, 0.022, 8);
+  finGeo.rotateX(Math.PI / 2);
+  const brakeGeo = new THREE.CylinderGeometry(0.036, 0.04, 0.09, 6);
+  brakeGeo.rotateX(Math.PI / 2);
   const gunTipGeo = new THREE.CylinderGeometry(0.016, 0.024, 0.24, 8);
   gunTipGeo.rotateX(Math.PI / 2);
   const barrelHeatMat = toonMat(0x5c6682, { emissive: 0xff3b18, emissiveIntensity: 0 });
@@ -749,9 +892,15 @@ export function buildCockpitRig(): CockpitRig {
   function buildBarrelAssembly(side: -1 | 1): { readonly barrel: THREE.Group; readonly muzzle: THREE.Group } {
     const barrel = new THREE.Group();
     barrel.position.set(side * COCKPIT_GUN_LOCAL.x, COCKPIT_GUN_LOCAL.y, 0);
-    addStyledPart(barrel, gunShroudGeo, barrelMat, {
-      position: [0, 0, -(COCKPIT_GUN_LOCAL.forward - 0.76)],
+    const jacketZ = -(COCKPIT_GUN_LOCAL.forward - 0.76);
+    addStyledPart(barrel, jacketGeo, barrelMat, { position: [0, 0, jacketZ] });
+    for (const dz of [0.3, 0.2, 0.1]) {
+      addStyledPart(barrel, finGeo, bevelMat, { position: [0, 0, jacketZ + dz] });
+    }
+    addStyledPart(barrel, new THREE.BoxGeometry(0.014, 0.012, 0.62), accentMat, {
+      position: [0, 0.04, jacketZ - 0.12],
     });
+    addStyledPart(barrel, brakeGeo, bevelMat, { position: [0, 0, jacketZ - 0.5] });
     addStyledPart(barrel, gunTipGeo, barrelHeatMat, {
       position: [0, 0, -(COCKPIT_GUN_LOCAL.forward - 0.12)],
     });
@@ -796,15 +945,38 @@ export function buildCockpitRig(): CockpitRig {
     bevelSize: 0.025,
     bevelSegments: 2,
   });
-  addStyledPart(root, hoodGeo, frameMat, {
+  const hood = addStyledPart(root, hoodGeo, frameMat, {
     position: [0, -0.79, -1.48],
     rotation: [0.1, 0, 0],
     edgeAngle: 35,
   });
 
+  // Dark scope glass seats the 2D radar and status bars in a physical instrument bay.
+  addStyledPart(hood, new THREE.BoxGeometry(0.98, 0.012, 0.4), new THREE.MeshBasicMaterial({ color: 0x08121c }), {
+    position: [0, 0.117, 0.24],
+  });
+  const trimGeo = new THREE.BoxGeometry(1.02, 0.02, 0.016);
+  addStyledPart(hood, trimGeo, bevelMat, { position: [0, 0.122, 0.03] });
+  addStyledPart(hood, trimGeo, accentMat, { position: [0, 0.122, 0.45] });
+  for (const side of [-1, 1] as const) {
+    addStyledPart(hood, new THREE.BoxGeometry(0.016, 0.02, 0.42), bevelMat, {
+      position: [side * 0.5, 0.122, 0.24],
+    });
+  }
+
+  const throttleGauge = buildDashGauge(0xffb04a, bevelMat);
+  throttleGauge.gauge.position.set(-0.9, -0.6, -1.36);
+  throttleGauge.gauge.rotation.set(-0.3, 0.42, 0);
+  root.add(throttleGauge.gauge);
+  const heatGauge = buildDashGauge(0x7deaff, bevelMat);
+  heatGauge.gauge.position.set(0.9, -0.6, -1.36);
+  heatGauge.gauge.rotation.set(-0.3, -0.42, 0);
+  root.add(heatGauge.gauge);
+
   const annunciator = createTaperedBoxGeometry({
     frontWidth: 0.32, backWidth: 0.42, frontHeight: 0.034, backHeight: 0.08, length: 0.24,
   });
+  const knobGeo = new THREE.CylinderGeometry(0.014, 0.018, 0.03, 6);
   for (const side of [-1, 1]) {
     const bank = addStyledPart(root, annunciator, bevelMat, {
       position: [side * 0.65, -0.7, -1.12], rotation: [-0.16, side * -0.09, 0],
@@ -816,6 +988,7 @@ export function buildCockpitRig(): CockpitRig {
       addStyledPart(bank, new THREE.BoxGeometry(0.064, 0.014, 0.052), side < 0 ? ledAmber : ledCyan, {
         position: [x, 0.048, 0.022],
       });
+      addStyledPart(bank, knobGeo, x === 0 ? accentMat : barrelMat, { position: [x, 0.05, -0.07] });
     }
   }
 
@@ -830,6 +1003,47 @@ export function buildCockpitRig(): CockpitRig {
   });
   root.add(throttleHandle);
 
+  // Lucky crystal on a cord: the renderer swings it with the ship's rotation.
+  addStyledPart(root, new THREE.BoxGeometry(0.2, 0.012, 0.012), bevelMat, { position: [-1.1, 0.585, -1.16] });
+  const charm = new THREE.Group();
+  charm.position.set(-1.0, 0.58, -1.16);
+  addStyledPart(charm, new THREE.BoxGeometry(0.004, 0.1, 0.004), barrelMat, { position: [0, -0.05, 0] });
+  addStyledPart(charm, new THREE.OctahedronGeometry(0.008, 0), bevelMat, { position: [0, -0.1, 0] });
+  addStyledPart(charm, new THREE.OctahedronGeometry(0.024, 0), toonMat(0xffb347, {
+    emissive: 0xc8641a, emissiveIntensity: 0.7, gloss: 0.5,
+  }), { position: [0, -0.132, 0], scale: [0.72, 1.25, 0.72] });
+  root.add(charm);
+
+  // Faint canopy reflections past the gun tips, so frame and guns occlude them like real glazing.
+  const glass = new THREE.Mesh(
+    new THREE.PlaneGeometry(12, 5.4),
+    new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        varying vec2 vUv;
+        void main() {
+          float diagonal = vUv.x * 1.5 + vUv.y;
+          float streaks = smoothstep(0.07, 0.0, abs(diagonal - 1.02)) * 0.6
+            + smoothstep(0.02, 0.0, abs(diagonal - 1.16))
+            + smoothstep(0.045, 0.0, abs(diagonal - 1.62)) * 0.45;
+          vec2 centered = vUv * 2.0 - 1.0;
+          float edge = smoothstep(0.5, 1.15, length(centered * vec2(1.0, 0.7)));
+          gl_FragColor = vec4(vec3(0.5, 0.78, 1.0), streaks * 0.04 * (0.35 + edge) + edge * 0.045);
+        }
+      `,
+    }),
+  );
+  glass.position.z = -2.6;
+  root.add(glass);
+
   return {
     root,
     throttleHandle,
@@ -840,12 +1054,15 @@ export function buildCockpitRig(): CockpitRig {
     barrelHeatMat,
     overheatPuffs,
     flashLight,
+    throttleNeedle: throttleGauge.needle,
+    heatNeedle: heatGauge.needle,
+    charm,
   };
 }
 
 export function buildEnemyMesh(kind: EnemyKind, textures: HullTextureSet): THREE.Group {
   const root = new THREE.Group();
-  const enemyRim = { rimColor: 0xa4c8ff, rimStrength: 0.7 } as const;
+  const enemyRim = { rimColor: 0xa4c8ff, rimStrength: 0.7, panel: 1.3, gloss: 0.18 } as const;
   const hullMat = toonMat(0x67708d, enemyRim);
   const darkSlateMat = toonMat(0x2b3246, enemyRim);
   const gunmetalMat = toonMat(0x3e4760, enemyRim);
@@ -904,6 +1121,16 @@ export function buildEnemyMesh(kind: EnemyKind, textures: HullTextureSet): THREE
       });
     }
 
+    // Sensor blades and forward vane prongs give the raider a predatory outline.
+    const bladeGeo = createTaperedBoxGeometry({
+      frontWidth: 0.14, frontHeight: 0.3, backWidth: 0.2, backHeight: 1.7, length: 2.8, backYOffset: 0.7,
+    });
+    addStyledPart(root, bladeGeo, crimsonMat, { position: [0, 2.55, 0.5] });
+    addStyledPart(root, bladeGeo, darkSlateMat, { position: [0, -2.55, 0.5], rotation: [0, 0, Math.PI] });
+    const prongGeo = createTaperedBoxGeometry({
+      frontWidth: 0.16, frontHeight: 0.22, backWidth: 0.6, backHeight: 0.95, length: 3.4,
+    });
+
     const vaneGeo = createHexSolarVaneGeometry();
     const outerHubGeo = new THREE.CylinderGeometry(1.55, 2.25, 0.75, 6);
     for (const side of [-1, 1] as const) {
@@ -926,6 +1153,12 @@ export function buildEnemyMesh(kind: EnemyKind, textures: HullTextureSet): THREE
       addStyledPart(vaneGroup, new THREE.BoxGeometry(0.8, 4.9, 0.58), rimMat, {
         position: [0, 0, 3.45],
       });
+      for (const tip of [-1, 1] as const) {
+        addStyledPart(vaneGroup, prongGeo, rimMat, {
+          position: [0, tip * 4.7, -3.5],
+          rotation: [tip * 0.14, 0, 0],
+        });
+      }
       root.add(vaneGroup);
     }
 
@@ -1079,6 +1312,14 @@ export function buildEnemyMesh(kind: EnemyKind, textures: HullTextureSet): THREE
       addStyledPart(root, new THREE.BoxGeometry(0.32, 0.68, 4.2), darkSlateMat, {
         position: [side * 2.7, 0.02, 0.3],
       });
+      addStyledPart(
+        root,
+        createTaperedBoxGeometry({
+          frontWidth: 0.2, frontHeight: 0.08, backWidth: 1.5, backHeight: 0.16, length: 2.3,
+        }),
+        crimsonMat,
+        { position: [side * 1.75, -0.3, -6.1], rotation: [0, side * -0.55, side * 0.2] },
+      );
       addStyledPart(root, new THREE.BoxGeometry(0.18, 0.16, 2.6), visorGlowMat, {
         position: [side * 2.82, 0.02, -0.2],
       });
@@ -1119,6 +1360,7 @@ export function buildEnemyMesh(kind: EnemyKind, textures: HullTextureSet): THREE
         crimsonMat,
         { position: [2.25, 0.05, -2.3], rotation: [0, -0.52, 0] },
       );
+      addStyledPart(wingPivot, new THREE.BoxGeometry(0.22, 0.22, 0.6), coreMat, { position: [4.24, 0.17, -6.2] });
       // Thickened stubby gun pod seated directly onto the wing root (no thin floating sticks).
       const rootGun = new THREE.CylinderGeometry(0.24, 0.32, 2.1, 8);
       rootGun.rotateX(Math.PI / 2);
@@ -1168,9 +1410,9 @@ export function buildEnemyMesh(kind: EnemyKind, textures: HullTextureSet): THREE
 export function buildFriendlyCarrierMesh(textures: HullTextureSet): THREE.Group {
   const root = new THREE.Group();
   const hullMat = toonMat(0xffffff, { map: textures.carrierHull });
-  const ivoryArmorMat = toonMat(0xf3ede0);
-  const warmMidMat = toonMat(0xd9cfbc);
-  const slateKeelMat = toonMat(0x465068);
+  const ivoryArmorMat = toonMat(0xf3ede0, { panel: 11 });
+  const warmMidMat = toonMat(0xd9cfbc, { panel: 11 });
+  const slateKeelMat = toonMat(0x465068, { panel: 11, gloss: 0.16 });
   const darkRecessMat = toonMat(0x212736);
   const accentMat = toonMat(0xe59238);
   const bayLight = glowMat(0xffd27a, 1, { hdrBoost: 2.0 });
@@ -1228,6 +1470,30 @@ export function buildFriendlyCarrierMesh(textures: HullTextureSet): THREE.Group 
     accentMat,
     { position: [0, 21.6, -138] },
   );
+
+  // Bow catapult prongs, port deck batteries and a comms dish act as scale landmarks.
+  const bowProngGeo = createTaperedBoxGeometry({
+    frontWidth: 2.2, frontHeight: 2.2, backWidth: 6, backHeight: 5.5, length: 30, backYOffset: -1,
+  });
+  for (const side of [-1, 1] as const) {
+    addStyledPart(root, bowProngGeo, ivoryArmorMat, { position: [side * 10.5, 9, -184], edgeAngle: 35 });
+    addStyledPart(root, new THREE.BoxGeometry(1.2, 1.2, 5), bayLight, { position: [side * 10.5, 9.6, -197] });
+  }
+  const deckBatteryGeo = createTaperedBoxGeometry({
+    frontWidth: 5.5, frontHeight: 3, backWidth: 7.5, backHeight: 4.6, length: 9,
+  });
+  const deckBarrelGeo = new THREE.BoxGeometry(0.9, 0.9, 9);
+  for (const z of [-66, -8, 62]) {
+    const battery = addStyledPart(root, deckBatteryGeo, slateKeelMat, { position: [-27.5, 28.2, z] });
+    for (const dx of [-1.5, 1.5]) {
+      addStyledPart(battery, deckBarrelGeo, darkRecessMat, { position: [dx, 0.4, -8] });
+    }
+  }
+  const dishGeo = new THREE.ConeGeometry(6.5, 3.4, 10);
+  addStyledPart(root, dishGeo, ivoryArmorMat, { position: [21, 70.5, 56], rotation: [-2.2, 0, 0] });
+  addStyledPart(root, new THREE.CylinderGeometry(0.5, 0.5, 6, 5), accentMat, {
+    position: [21, 72.6, 58.8], rotation: [0.94, 0, 0],
+  });
 
   // 2. Full-width mid-hull hangar block + raised ivory flight deck + flush dark runway strip + flush ventral keel.
   addStyledPart(
@@ -1524,7 +1790,7 @@ export interface HostileFrigateRig {
 
 export function buildHostileFrigateMesh(textures: HullTextureSet): HostileFrigateRig {
   const root = new THREE.Group();
-  const frigateRim = { rimColor: 0xa68ce8, rimStrength: 0.34 } as const;
+  const frigateRim = { rimColor: 0xa68ce8, rimStrength: 0.34, panel: 9, gloss: 0.18 } as const;
   const hullMat = toonMat(0xffffff, {
     map: textures.frigateHull,
     emissive: 0x161026,
@@ -1624,6 +1890,22 @@ export function buildHostileFrigateMesh(textures: HullTextureSet): HostileFrigat
     armorMat,
     { position: [0, 20, 22], edgeAngle: 35 },
   );
+
+  // Spine blades and bow mandibles sharpen the dreadnought profile.
+  const spineBladeGeo = createTaperedBoxGeometry({
+    frontWidth: 1.6, frontHeight: 3, backWidth: 2.6, backHeight: 13, length: 17, backYOffset: 4.5,
+  });
+  for (const z of [0, 21, 42]) {
+    addStyledPart(root, spineBladeGeo, crimsonAccent, { position: [0, 28, z] });
+  }
+  const mandibleGeo = createTaperedBoxGeometry({
+    frontWidth: 1.4, frontHeight: 2.2, backWidth: 5, backHeight: 7, length: 38, frontYOffset: -1.5,
+  });
+  for (const side of [-1, 1] as const) {
+    addStyledPart(root, mandibleGeo, armorMat, {
+      position: [side * 9.5, 6.5, -146], rotation: [0, side * 0.12, 0], edgeAngle: 35,
+    });
+  }
 
   // 3-tier stepped armored conning tower with recessed crimson visor slit.
   addStyledPart(
@@ -1838,6 +2120,43 @@ export function buildAsteroidMesh(
   return group;
 }
 
+const AA_STEP_GLSL = `
+float aaStep(float threshold, float value) {
+  float w = fwidth(value) * 0.9 + 1e-4;
+  return smoothstep(threshold - w, threshold + w, value);
+}
+`;
+
+function createSparkleTexture(): THREE.CanvasTexture {
+  const size = 64;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  if (ctx !== null) {
+    const half = size / 2;
+    ctx.translate(half, half);
+    const core = ctx.createRadialGradient(0, 0, 0, 0, 0, half * 0.34);
+    core.addColorStop(0, 'rgba(255, 255, 255, 1)');
+    core.addColorStop(1, 'rgba(255, 255, 255, 0)');
+    ctx.fillStyle = core;
+    ctx.fillRect(-half, -half, size, size);
+    for (let arm = 0; arm < 4; arm += 1) {
+      const ray = ctx.createLinearGradient(0, 0, half, 0);
+      ray.addColorStop(0, 'rgba(255, 255, 255, 0.95)');
+      ray.addColorStop(1, 'rgba(255, 255, 255, 0)');
+      ctx.fillStyle = ray;
+      ctx.beginPath();
+      ctx.moveTo(0, -1.6);
+      ctx.lineTo(half, 0);
+      ctx.lineTo(0, 1.6);
+      ctx.fill();
+      ctx.rotate(Math.PI / 2);
+    }
+  }
+  return new THREE.CanvasTexture(canvas);
+}
+
 export function buildOrbitalBackdrop(dotTexture: THREE.CanvasTexture): THREE.Group {
   const group = new THREE.Group();
   // Keep the star off to the far right flank so it rim-lights ships cleanly without glaring in the player's eyes.
@@ -1860,8 +2179,43 @@ export function buildOrbitalBackdrop(dotTexture: THREE.CanvasTexture): THREE.Gro
     fragmentShader: `
       uniform vec3 uSunDir;
       varying vec3 vDir;
+
+      float hash3(vec3 p) {
+        p = fract(p * 0.3183099 + 0.1);
+        p *= 17.0;
+        return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+      }
+
+      float noise3(vec3 x) {
+        vec3 i = floor(x);
+        vec3 f = fract(x);
+        f = f * f * (3.0 - 2.0 * f);
+        return mix(
+          mix(mix(hash3(i), hash3(i + vec3(1, 0, 0)), f.x), mix(hash3(i + vec3(0, 1, 0)), hash3(i + vec3(1, 1, 0)), f.x), f.y),
+          mix(mix(hash3(i + vec3(0, 0, 1)), hash3(i + vec3(1, 0, 1)), f.x), mix(hash3(i + vec3(0, 1, 1)), hash3(i + vec3(1, 1, 1)), f.x), f.y),
+          f.z);
+      }
+
+      float fbm(vec3 p) {
+        float sum = 0.0;
+        float amp = 0.5;
+        for (int i = 0; i < 4; i++) {
+          sum += amp * noise3(p);
+          p = p * 2.03 + 11.7;
+          amp *= 0.5;
+        }
+        return sum;
+      }
+
+      // Three soft-edged tiers read as painted cloud cels; the wide edges cannot alias.
+      float tiers(float n, float base) {
+        return (smoothstep(base, base + 0.035, n) + smoothstep(base + 0.1, base + 0.135, n)
+          + smoothstep(base + 0.2, base + 0.235, n)) / 3.0;
+      }
+
       void main() {
-        float y = clamp(vDir.y, -1.0, 1.0);
+        vec3 dir = normalize(vDir);
+        float y = clamp(dir.y, -1.0, 1.0);
         vec3 zenith = vec3(0.005, 0.008, 0.026);
         vec3 horizon = vec3(0.028, 0.016, 0.044);
         vec3 nadir = vec3(0.006, 0.005, 0.018);
@@ -1869,17 +2223,27 @@ export function buildOrbitalBackdrop(dotTexture: THREE.CanvasTexture): THREE.Gro
           ? mix(horizon, zenith, pow(y, 0.55))
           : mix(horizon, nadir, pow(-y, 0.65));
 
-        float sunAlign = max(dot(normalize(vDir), uSunDir), 0.0);
+        float sunAlign = max(dot(dir, uSunDir), 0.0);
         vec3 duskGlow = vec3(0.30, 0.10, 0.035) * pow(sunAlign, 13.5);
         vec3 sunHalo = vec3(0.88, 0.46, 0.18) * pow(sunAlign, 54.0) * 0.65;
         vec3 sunCore = vec3(2.2, 1.7, 1.15) * smoothstep(0.9988, 0.9996, sunAlign);
-        float latitude = vDir.y + vDir.x * 0.14 + 0.045 * sin(vDir.z * 5.0);
-        float belt = 1.0 - smoothstep(0.035, 0.19, abs(latitude));
-        float farBank = 1.0 - smoothstep(0.02, 0.1, abs(latitude + 0.14));
-        vec3 nebulaBand = vec3(0.033, 0.019, 0.05) * belt + vec3(0.011, 0.014, 0.03) * farBank;
+        vec3 sunRight = normalize(cross(uSunDir, vec3(0.0, 1.0, 0.0)));
+        vec3 sunUp = cross(sunRight, uSunDir);
+        float spoke = pow(abs(cos(atan(dot(dir, sunUp), dot(dir, sunRight)) * 3.0)), 18.0);
+        vec3 sunRays = vec3(1.0, 0.62, 0.3) * spoke * pow(sunAlign, 220.0) * 0.55
+          + vec3(0.5, 0.2, 0.08) * (smoothstep(0.9952, 0.9956, sunAlign) + smoothstep(0.9974, 0.9978, sunAlign)) * 0.22;
 
-        vec3 color = base + duskGlow + sunHalo + nebulaBand + sunCore;
-        gl_FragColor = vec4(color, 1.0);
+        float latitude = dir.y + dir.x * 0.14 + 0.045 * sin(dir.z * 5.0);
+        float belt = 1.0 - smoothstep(0.035, 0.3, abs(latitude));
+        float farBank = 1.0 - smoothstep(0.02, 0.1, abs(latitude + 0.14));
+        float drift = fbm(dir * 2.4 + 3.0);
+        float wisps = fbm(dir * 5.2 - 7.0);
+        vec3 nebula = vec3(0.045, 0.02, 0.07) * tiers(drift + belt * 0.22, 0.52)
+          + vec3(0.075, 0.022, 0.06) * tiers(wisps * 0.6 + drift * 0.4 + belt * 0.2, 0.62) * belt
+          + vec3(0.01, 0.045, 0.06) * tiers(drift * 0.5 + wisps * 0.5, 0.56) * (1.0 - belt) * 0.7
+          + vec3(0.011, 0.014, 0.03) * farBank;
+
+        gl_FragColor = vec4(base + duskGlow + sunHalo + nebula + sunRays + sunCore, 1.0);
       }
     `,
   });
@@ -1887,38 +2251,72 @@ export function buildOrbitalBackdrop(dotTexture: THREE.CanvasTexture): THREE.Gro
 
   const planetPos = new THREE.Vector3(-1950, -480, -3400);
   const planetRadius = 820;
-  const planetGeo = new THREE.SphereGeometry(planetRadius, 40, 32);
+  const ringInner = 1040;
+  const ringOuter = 1580;
+  const ringEuler = new THREE.Euler(Math.PI * 0.46, 0.18, 0);
+  const ringUniforms = {
+    uSunDir: { value: sunDir },
+    uPlanetRadius: { value: planetRadius },
+    uRingNormal: { value: new THREE.Vector3(0, 0, 1).applyEuler(ringEuler) },
+    uRingSpan: { value: new THREE.Vector2(ringInner, ringOuter) },
+  };
+  const ringDensityGlsl = `
+    uniform vec2 uRingSpan;
+    ${AA_STEP_GLSL}
+    // x: ringlet brightness, y: opacity. Shared so the shadow on the planet matches the rings exactly.
+    vec2 ringDensity(float radius) {
+      float t = (radius - uRingSpan.x) / (uRingSpan.y - uRingSpan.x);
+      if (t <= 0.0 || t >= 1.0) return vec2(0.0);
+      float footprint = fwidth(t);
+      float cassini = smoothstep(0.015, 0.04 + footprint, abs(t - 0.62) + footprint * 0.5)
+        * smoothstep(0.006, 0.02 + footprint, abs(t - 0.27) + footprint * 0.5);
+      float ringlets = 0.5 + 0.5 * aaStep(0.0, sin(t * 40.0 + sin(t * 9.0) * 2.0));
+      float edgeFade = smoothstep(0.0, 0.08, t) * (1.0 - smoothstep(0.9, 1.0, t));
+      return vec2(ringlets, edgeFade * cassini * (0.4 + 0.34 * ringlets));
+    }
+  `;
+
+  const planetGeo = new THREE.SphereGeometry(planetRadius, 48, 36);
   const planetMat = new THREE.ShaderMaterial({
-    uniforms: {
-      uSunDir: { value: sunDir },
-    },
+    uniforms: ringUniforms,
     vertexShader: `
       varying vec3 vLocal;
-      varying vec3 vWorldNormal;
+      varying vec3 vWorldPos;
       void main() {
         vLocal = normalize(position);
-        vWorldNormal = normalize(mat3(modelMatrix) * normal);
+        vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
       }
     `,
     fragmentShader: `
       uniform vec3 uSunDir;
+      uniform vec3 uRingNormal;
+      uniform float uPlanetRadius;
       varying vec3 vLocal;
-      varying vec3 vWorldNormal;
+      varying vec3 vWorldPos;
+      ${ringDensityGlsl}
       void main() {
-        float lat = vLocal.y;
-        float band = sin(lat * 18.0 + sin(vLocal.x * 5.0) * 0.25) * 0.5 + 0.5;
-        float stepped = floor(band * 4.0) / 4.0;
-        vec3 c1 = vec3(0.06, 0.045, 0.11);
-        vec3 c2 = vec3(0.18, 0.11, 0.15);
-        vec3 c3 = vec3(0.36, 0.22, 0.17);
-        vec3 albedo = mix(c1, c2, stepped);
-        albedo = mix(albedo, c3, smoothstep(0.55, 0.85, stepped) * 0.65);
+        vec3 normal = normalize(vLocal);
+        float lat = normal.y + sin(normal.x * 6.0 + normal.y * 9.0) * 0.012 + sin(normal.z * 11.0) * 0.007;
+        float band = sin(lat * 21.0) * 0.5 + 0.5 + 0.22 * sin(lat * 47.0 + 1.3);
+        vec3 albedo = vec3(0.11, 0.075, 0.22);
+        albedo = mix(albedo, vec3(0.3, 0.13, 0.2), aaStep(0.26, band));
+        albedo = mix(albedo, vec3(0.46, 0.26, 0.15), aaStep(0.52, band));
+        albedo = mix(albedo, vec3(0.68, 0.5, 0.32), aaStep(0.82, band));
+        vec2 storm = vec2(atan(normal.z, normal.x) - 0.75, (normal.y + 0.3) * 3.4);
+        albedo = mix(albedo, vec3(0.74, 0.3, 0.16), 1.0 - aaStep(0.11, length(storm)));
 
-        float lit = smoothstep(-0.12, 0.42, dot(vWorldNormal, uSunDir));
-        vec3 night = vec3(0.008, 0.007, 0.02);
-        vec3 rim = vec3(0.42, 0.24, 0.16) * pow(1.0 - max(dot(vWorldNormal, vec3(0.0, 0.0, 1.0)), 0.0), 3.5) * lit * 0.45;
-        gl_FragColor = vec4(mix(night, albedo, lit) + rim, 1.0);
+        float ndl = dot(normal, uSunDir);
+        float lit = 0.035 + 0.42 * aaStep(-0.05, ndl) + 0.5 * aaStep(0.05, ndl);
+
+        vec3 local = normal * uPlanetRadius;
+        float travel = -dot(local, uRingNormal) / dot(uSunDir, uRingNormal);
+        float ringShadow = travel > 0.0 ? ringDensity(length(local + uSunDir * travel)).y : 0.0;
+        lit *= 1.0 - 0.5 * ringShadow;
+
+        float fresnel = pow(1.0 - max(dot(normal, normalize(cameraPosition - vWorldPos)), 0.0), 3.0);
+        vec3 haze = vec3(0.55, 0.3, 0.42) * fresnel * (0.12 + 0.6 * aaStep(-0.05, ndl));
+        gl_FragColor = vec4(albedo * lit * 0.88 + vec3(0.006, 0.005, 0.016) + haze, 1.0);
       }
     `,
   });
@@ -1926,15 +2324,12 @@ export function buildOrbitalBackdrop(dotTexture: THREE.CanvasTexture): THREE.Gro
   planet.position.copy(planetPos);
   group.add(planet);
 
-  const ringGeo = new THREE.RingGeometry(1040, 1580, 96);
+  const ringGeo = new THREE.RingGeometry(ringInner, ringOuter, 96);
   const ringMat = new THREE.ShaderMaterial({
     side: THREE.DoubleSide,
     transparent: true,
     depthWrite: false,
-    uniforms: {
-      uSunDir: { value: sunDir },
-      uPlanetRadius: { value: planetRadius },
-    },
+    uniforms: ringUniforms,
     vertexShader: `
       varying vec3 vLocalPos;
       varying vec3 vOffsetFromPlanet;
@@ -1949,29 +2344,49 @@ export function buildOrbitalBackdrop(dotTexture: THREE.CanvasTexture): THREE.Gro
       uniform float uPlanetRadius;
       varying vec3 vLocalPos;
       varying vec3 vOffsetFromPlanet;
+      ${ringDensityGlsl}
       void main() {
-        float r = length(vLocalPos.xy);
-        float t = clamp((r - 1040.0) / (1580.0 - 1040.0), 0.0, 1.0);
-        float cassiniGap = smoothstep(0.015, 0.04, abs(t - 0.62));
-        float bands = 0.5 + 0.5 * smoothstep(-0.18, 0.18, sin(t * 24.0));
-        float edgeFade = smoothstep(0.0, 0.12, t) * (1.0 - smoothstep(0.89, 1.0, t));
-
+        vec2 density = ringDensity(length(vLocalPos.xy));
         float proj = dot(vOffsetFromPlanet, uSunDir);
         vec3 perp = vOffsetFromPlanet - uSunDir * proj;
         float inShadow = (proj < 0.0) ? (1.0 - smoothstep(uPlanetRadius * 0.94, uPlanetRadius * 1.04, length(perp))) : 0.0;
 
-        vec3 litColor = mix(vec3(0.14, 0.11, 0.19), vec3(0.32, 0.22, 0.18), bands);
+        vec3 litColor = mix(vec3(0.3, 0.17, 0.26), vec3(0.78, 0.58, 0.4), density.x);
         vec3 color = mix(litColor, vec3(0.015, 0.012, 0.03), inShadow * 0.9);
-        float alpha = edgeFade * cassiniGap * (0.24 + 0.14 * bands);
-        gl_FragColor = vec4(color, alpha);
+        gl_FragColor = vec4(color, density.y);
       }
     `,
   });
   const ring = new THREE.Mesh(ringGeo, ringMat);
   ring.position.copy(planetPos);
-  ring.rotation.x = Math.PI * 0.46;
-  ring.rotation.y = 0.18;
+  ring.rotation.copy(ringEuler);
   group.add(ring);
+
+  const moonMat = new THREE.ShaderMaterial({
+    uniforms: { uSunDir: { value: sunDir } },
+    vertexShader: `
+      varying vec3 vNormalLocal;
+      void main() {
+        vNormalLocal = normalize(position);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 uSunDir;
+      varying vec3 vNormalLocal;
+      ${AA_STEP_GLSL}
+      void main() {
+        vec3 normal = normalize(vNormalLocal);
+        float ndl = dot(normal, uSunDir);
+        float crater = aaStep(0.3, sin(normal.x * 9.0 + 1.0) * sin(normal.y * 8.0) * sin(normal.z * 7.0 + 2.0));
+        vec3 albedo = mix(vec3(0.32, 0.4, 0.46), vec3(0.2, 0.26, 0.34), crater);
+        gl_FragColor = vec4(albedo * (0.05 + 0.4 * aaStep(-0.05, ndl) + 0.5 * aaStep(0.4, ndl)), 1.0);
+      }
+    `,
+  });
+  const moon = new THREE.Mesh(new THREE.SphereGeometry(74, 20, 14), moonMat);
+  moon.position.set(-1300, 950, -3600);
+  group.add(moon);
 
   const starCount = 2200;
   const starPositions = new Float32Array(starCount * 3);
@@ -2025,6 +2440,37 @@ export function buildOrbitalBackdrop(dotTexture: THREE.CanvasTexture): THREE.Gro
     sizeAttenuation: true,
   });
   group.add(new THREE.Points(starGeo, starMat));
+
+  // Sparse cross-glint stars so the field reads as hand-placed.
+  const sparkleTexture = createSparkleTexture();
+  const sparkleCount = 64;
+  const sparklePositions = new Float32Array(sparkleCount * 3);
+  const sparkleColors = new Float32Array(sparkleCount * 3);
+  for (let i = 0; i < sparkleCount; i += 1) {
+    const u = nextRand() * 2 - 1;
+    const theta = nextRand() * Math.PI * 2;
+    const r = Math.sqrt(Math.max(0, 1 - u * u));
+    sparklePositions.set([r * Math.cos(theta) * 4500, u * 4500, r * Math.sin(theta) * 4500], i * 3);
+    const mag = 0.55 + nextRand() * 0.75;
+    const warm = nextRand() < 0.4;
+    sparkleColors.set(warm ? [mag, 0.8 * mag, 0.6 * mag] : [0.75 * mag, 0.9 * mag, mag], i * 3);
+  }
+  const sparkleGeo = new THREE.BufferGeometry();
+  sparkleGeo.setAttribute('position', new THREE.BufferAttribute(sparklePositions, 3));
+  sparkleGeo.setAttribute('color', new THREE.BufferAttribute(sparkleColors, 3));
+  const sparkleMat = new THREE.PointsMaterial({
+    vertexColors: true,
+    map: sparkleTexture,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    size: 104,
+    sizeAttenuation: true,
+  });
+  sparkleMat.addEventListener('dispose', () => {
+    sparkleTexture.dispose();
+  });
+  group.add(new THREE.Points(sparkleGeo, sparkleMat));
 
   return group;
 }
