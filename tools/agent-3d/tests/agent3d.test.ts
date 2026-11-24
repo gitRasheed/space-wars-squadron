@@ -418,4 +418,91 @@ export function buildAsset(THREE) {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it('matches Three.js group/material-array draw rules, counts ShaderMaterial uniform textures, and keeps exact coverageRatio precision', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-3d-recheck-'));
+    try {
+      // 1a. Material array with no geometry groups renders nothing in Three.js.
+      const emptyArrayFac = path.join(tmpDir, 'mat-array-no-groups.mjs');
+      fs.writeFileSync(
+        emptyArrayFac,
+        `
+export function buildAsset(THREE) {
+  const geo = new THREE.BoxGeometry(1, 1, 1);
+  geo.clearGroups();
+  return new THREE.Mesh(geo, [new THREE.MeshBasicMaterial({ color: 0xff0000 })]);
+}
+`,
+      );
+      const emptyArrayRes = await runAssetSession({ assetPath: emptyArrayFac, card: null, renderSheet: false });
+      assert.equal(emptyArrayRes.metrics.trianglesByOccurrence, 0);
+      assert.equal(emptyArrayRes.metrics.worldBounds, null);
+      assert.equal(evaluateAssetGates(emptyArrayRes.metrics, null).ok, false);
+
+      // 1b. Single material ignores geometry groups and draws the full drawRange.
+      const singleMatGroupFac = path.join(tmpDir, 'single-mat-one-group.mjs');
+      fs.writeFileSync(
+        singleMatGroupFac,
+        `
+export function buildAsset(THREE) {
+  const geo = new THREE.BoxGeometry(1, 1, 1);
+  geo.clearGroups();
+  geo.addGroup(0, 6, 0);
+  return new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x00ff00 }));
+}
+`,
+      );
+      const singleMatGroupRes = await runAssetSession({ assetPath: singleMatGroupFac, card: null, renderSheet: false });
+      assert.equal(singleMatGroupRes.metrics.trianglesByOccurrence, 12);
+
+      // 2. ShaderMaterial sampling a texture via uniforms counts toward effectiveTextures and texturesMax.
+      const shaderFac = path.join(tmpDir, 'shader-tex.mjs');
+      fs.writeFileSync(
+        shaderFac,
+        `
+export function buildAsset(THREE) {
+  const c = document.createElement('canvas'); c.width = 8; c.height = 8;
+  const tex = new THREE.CanvasTexture(c);
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uMap: { value: tex } },
+    vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: 'uniform sampler2D uMap; varying vec2 vUv; void main(){ gl_FragColor = texture2D(uMap, vUv); }',
+  });
+  return new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), mat);
+}
+`,
+      );
+      const zeroTexCard: StyleCard = {
+        id: 'no-textures',
+        budgets: { texturesMax: 0 },
+        palette: { white: '#ffffff' },
+        paletteDeltaE76Max: 5,
+      };
+      const shaderRes = await runAssetSession({ assetPath: shaderFac, card: zeroTexCard, renderSheet: false });
+      assert.equal(shaderRes.metrics.effectiveTextures, 1);
+      assert.equal(shaderRes.metrics.palette.status, 'unassessed_textured');
+      const shaderEval = evaluateAssetGates(shaderRes.metrics, zeroTexCard);
+      assert.equal(shaderEval.ok, false);
+      assert.ok(shaderEval.findings.some((f) => f.id === 'TEXTURES_OVER_BUDGET'));
+
+      // 3. View coverageRatio preserves exact float precision (1322 / 132300 < 0.01 fails gate; rendered ratio matches integer pixel count).
+      const sheetRes = await runAssetSession({
+        assetPath: singleMatGroupFac,
+        card: null,
+        renderSheet: true,
+        contactSheetPath: path.join(tmpDir, 'precision-sheet.png'),
+      });
+      for (const v of sheetRes.views) {
+        const pixels = v.coverageRatio * (420 * 315);
+        assert.ok(Math.abs(pixels - Math.round(pixels)) < 1e-6, `Expected unrounded ratio on ${v.id}, got ${v.coverageRatio}`);
+      }
+      const nearThresholdEval = evaluateAssetGates(sheetRes.metrics, null, [
+        { id: 'persp-front', ortho: false, coverageRatio: 1322 / (420 * 315), edgeClipped: false, beautyUniqueColors: 12 },
+      ]);
+      assert.equal(nearThresholdEval.ok, false);
+      assert.ok(nearThresholdEval.findings.some((f) => f.id === 'VIEW_SUBJECT_MISSING'));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

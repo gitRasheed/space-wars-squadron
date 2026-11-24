@@ -101,26 +101,61 @@ function activeSpansForMesh(mesh) {
   const drEnd = Math.min(total, drStart + geo.drawRange.count);
   if (drEnd - drStart < 3) return [];
 
-  const isMulti = Array.isArray(mesh.material);
-  const mats = isMulti ? mesh.material : [mesh.material];
-  const groups =
-    geo.groups && geo.groups.length > 0
-      ? geo.groups
-      : [{ start: 0, count: total, materialIndex: 0 }];
-
   const spans = [];
-  for (const g of groups) {
-    const start = Math.max(drStart, g.start);
-    const end = Math.min(drEnd, g.start + g.count);
-    if (end - start < 3) continue;
-    const matIdx = g.materialIndex ?? 0;
-    const mat = isMulti ? mats[matIdx] : mats[0];
-    if (!mat || mat.visible === false) continue;
-    const triCount = Math.floor((end - start) / 3);
-    if (triCount <= 0) continue;
-    spans.push({ start, end: start + triCount * 3, triCount, material: mat });
+  if (Array.isArray(mesh.material)) {
+    const groups = geo.groups || [];
+    for (const g of groups) {
+      const start = Math.max(drStart, g.start);
+      const end = Math.min(drEnd, g.start + g.count);
+      if (end - start < 3) continue;
+      const mat = mesh.material[g.materialIndex];
+      if (!mat || mat.visible === false) continue;
+      const triCount = Math.floor((end - start) / 3);
+      if (triCount <= 0) continue;
+      spans.push({ start, end: start + triCount * 3, triCount, material: mat });
+    }
+    return spans;
   }
+
+  const mat = mesh.material;
+  if (!mat || mat.visible === false) return [];
+  const triCount = Math.floor((drEnd - drStart) / 3);
+  if (triCount <= 0) return [];
+  spans.push({ start: drStart, end: drStart + triCount * 3, triCount, material: mat });
   return spans;
+}
+
+function collectTexturesFromUniformValue(val, outSet, seen) {
+  if (!val || typeof val !== 'object' || seen.has(val)) return;
+  if (val.isTexture) {
+    outSet.add(val);
+    return;
+  }
+  if (
+    val.isObject3D ||
+    val.isMaterial ||
+    val.isBufferGeometry ||
+    val.isVector2 ||
+    val.isVector3 ||
+    val.isVector4 ||
+    val.isMatrix3 ||
+    val.isMatrix4 ||
+    val.isColor
+  ) {
+    return;
+  }
+  seen.add(val);
+  if (Array.isArray(val)) {
+    for (const item of val) {
+      collectTexturesFromUniformValue(item, outSet, seen);
+    }
+    return;
+  }
+  if (Object.getPrototypeOf(val) === Object.prototype) {
+    for (const nested of Object.values(val)) {
+      collectTexturesFromUniformValue(nested, outSet, seen);
+    }
+  }
 }
 
 function collectMaterialTextures(mat, outSet) {
@@ -129,6 +164,27 @@ function collectMaterialTextures(mat, outSet) {
       outSet.add(val);
     }
   }
+  if (mat.uniforms && typeof mat.uniforms === 'object') {
+    const seen = new Set();
+    for (const uniform of Object.values(mat.uniforms)) {
+      if (uniform && typeof uniform === 'object' && 'value' in uniform) {
+        collectTexturesFromUniformValue(uniform.value, outSet, seen);
+      }
+    }
+  }
+}
+
+function materialHasUniformTexture(mat) {
+  if (!mat.uniforms || typeof mat.uniforms !== 'object') return false;
+  const found = new Set();
+  const seen = new Set();
+  for (const uniform of Object.values(mat.uniforms)) {
+    if (uniform && typeof uniform === 'object' && 'value' in uniform) {
+      collectTexturesFromUniformValue(uniform.value, found, seen);
+      if (found.size > 0) return true;
+    }
+  }
+  return false;
 }
 
 function inspectRoot(root, inputKind, glbSource, card) {
@@ -328,7 +384,9 @@ function inspectRoot(root, inputKind, glbSource, card) {
 
       for (const span of spans) {
         const mat = span.material;
-        const hasBaseTexture = Boolean(mat.map && mat.map.isTexture);
+        const hasBaseTexture =
+          Boolean(mat.map && mat.map.isTexture) ||
+          (Boolean(mat.isShaderMaterial) && materialHasUniformTexture(mat));
         if (hasBaseTexture) {
           meshHadTextured = true;
           continue;
@@ -627,7 +685,7 @@ function renderContactSheet(root, worldBox, center, radius, card) {
     views.push({
       id: def.id,
       ortho: def.ortho,
-      coverageRatio: Number((covered / (tileW * tileH)).toFixed(4)),
+      coverageRatio: covered / (tileW * tileH),
       edgeClipped,
       beautyUniqueColors: beautyBuckets.size,
     });
