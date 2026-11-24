@@ -13,13 +13,13 @@ function assertCondition(condition, message) {
   }
 }
 
-function waitForViteUrl(server, getLogs, timeoutMs) {
+function waitForViteUrl(server, getStdout, getAllLogs, timeoutMs) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const timer = setTimeout(() => {
       if (!settled) {
         settled = true;
-        reject(new Error(`Timed out waiting for Vite to report its listening URL.\n${getLogs()}`));
+        reject(new Error(`Timed out waiting for Vite to report its listening URL.\n${getAllLogs()}`));
       }
     }, timeoutMs);
 
@@ -33,7 +33,7 @@ function waitForViteUrl(server, getLogs, timeoutMs) {
     };
 
     const inspectStdout = () => {
-      const clean = stripVTControlCharacters(getLogs());
+      const clean = stripVTControlCharacters(getStdout());
       const match = clean.match(/Local:\s+(http:\/\/127\.0\.0\.1:\d+)/);
       if (match !== null && match[1] !== undefined) {
         finish(resolve, match[1]);
@@ -45,7 +45,7 @@ function waitForViteUrl(server, getLogs, timeoutMs) {
     server.once('exit', (code, signal) => {
       finish(
         reject,
-        new Error(`Vite exited before listening (code=${String(code)}, signal=${String(signal)}).\n${getLogs()}`),
+        new Error(`Vite exited before listening (code=${String(code)}, signal=${String(signal)}).\n${getAllLogs()}`),
       );
     });
     inspectStdout();
@@ -145,21 +145,35 @@ async function run() {
     env: { ...process.env },
   });
 
-  let serverLogs = '';
+  let stdoutLogs = '';
+  let stderrLogs = '';
+  let serverExitInfo = null;
   server.stdout.on('data', (chunk) => {
-    serverLogs += chunk.toString();
+    stdoutLogs += chunk.toString();
   });
   server.stderr.on('data', (chunk) => {
-    serverLogs += chunk.toString();
+    stderrLogs += chunk.toString();
   });
+  server.once('exit', (code, signal) => {
+    serverExitInfo = { code, signal };
+  });
+
+  const getAllLogs = () => `${stdoutLogs}${stderrLogs}`;
+  const assertServerAlive = () => {
+    assertCondition(
+      server.exitCode === null && serverExitInfo === null,
+      `Spawned Vite server exited prematurely (${JSON.stringify(serverExitInfo)})`,
+    );
+  };
 
   let browser;
   const consoleErrors = [];
   const pageErrors = [];
 
   try {
-    const baseUrl = await waitForViteUrl(server, () => serverLogs, 15000);
+    const baseUrl = await waitForViteUrl(server, () => stdoutLogs, getAllLogs, 15000);
     await waitForServer(server, baseUrl, 10000);
+    assertServerAlive();
 
     browser = await chromium.launch({
       headless: true,
@@ -271,6 +285,7 @@ async function run() {
     );
     await page.screenshot({ path: path.join(OUT_DIR, '05-chase-combat.png') });
     await page.keyboard.up('KeyJ');
+    assertServerAlive();
     assertCondition(consoleErrors.length === 0, `Console errors: ${consoleErrors.join('; ')}`);
     assertCondition(pageErrors.length === 0, `Page errors: ${pageErrors.join('; ')}`);
 
@@ -300,8 +315,9 @@ async function run() {
     console.log(JSON.stringify(report, null, 2));
   } catch (error) {
     console.error(error);
-    if (serverLogs.trim().length > 0) {
-      console.error('Vite output:\n', serverLogs);
+    const logs = getAllLogs().trim();
+    if (logs.length > 0) {
+      console.error('Vite output:\n', logs);
     }
     process.exitCode = 1;
   } finally {
