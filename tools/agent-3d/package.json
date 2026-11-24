@@ -1,0 +1,40 @@
+{
+  "name": "agent-3d",
+  "version": "0.1.0",
+  "description": "Headless 3D asset turntable, mechanical mesh/style-lock gate, and blind visual critic kit for coding agents.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "agent-3d": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "SKILL.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "test": "tsc -p tsconfig.json && tsc -p tsconfig.test.json && node --test dist-test/tests/*.test.js"
+  },
+  "dependencies": {
+    "esbuild": "^0.28.2",
+    "playwright": "^1.65.1",
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "@gltf-transform/core": "^4.5.1",
+    "@types/node": "^26.6.6",
+    "@types/three": "^0.187.0",
+    "typescript": "^7.0.2"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
+  }
+}

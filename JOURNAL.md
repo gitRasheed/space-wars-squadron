@@ -89,3 +89,28 @@ Playtesting v1 exposed two distinct failure classes that all green checks (`tsc`
 - Re-calibrating skybox/planet shaders into true linear values fixed double-gamma pastel washout, restoring deep midnight-indigo space with a subtle flank star glow.
 - Replacing the bulky lower HUD box with reticle-hugging curved Boost/Weapon arcs, 4-dot missile pips, and a floating translucent radar freed up ~65% of lower screen real estate.
 - Screenshot inspection immediately caught `THREE.ExtrudeGeometry` world-unit UV moiré ("TV static") on `HMV-09 Hearthstone` and the rival frigate; adding `scaleUvs(geo, tileWorldUnits)` fixed all extruded hulls cleanly.
+
+---
+
+## 6. Standalone Agent Tooling Testbed (`tools/agent-audio/` & `tools/agent-3d/`)
+
+Built both standalone MIT TypeScript packages from scratch inside isolated `tools/` directories (zero imports from `src/`), targeting the newest toolchain (`typescript@7.0.2`, `@types/node@26.6.6`, `three@0.187.0`, `playwright@1.65.1`, `esbuild@0.28.2`), using **Neon + Astra** adversarial engineering loops and **Muse** as a blind visual critic.
+
+### `tools/agent-audio/` (Zero Runtime Deps, MIT — `render` & `check`)
+- **Why cutting scope won:** Astra proved `mix-check` band-SNR cannot distinguish in-phase summation from phase cancellation, and mains-hum detectors false-positive on 60 Hz spaceship engines. Cutting v1 to **`render`** + **`check`** (with explicit WAV support matrix, BS.1770-4 loudness, 4× true peak, per-channel integrity/loop-seam checks, and pure `node:zlib` PNG waveform/spectrogram/seam-wrap outputs) produced a **22.1 KB** zero-dep tarball.
+- **Real bugs caught by Astra's adversarial probes (all 10 closed & verified 10/10 on re-check):**
+  1. Truncated true-peak FIR understated `[0.7, 0.7, -0.7, -0.7]` (`-1.465` vs FFmpeg `-0.1 dBTP`). Replacing with a 4-phase 16-tap/phase Kaiser-windowed sinc matched FFmpeg at **`-0.085 dBTP`**.
+  2. Integrated loudness relative-gating accidentally re-admitted blocks below `-70 LUFS` (`-74.68` vs `-69.0`); restricting the relative pass to absolute-gate survivors matched FFmpeg at **`-69.024 LUFS`**.
+  3. Momentary loudness dropped quiet signals (`< -70 LUFS`); removing the absolute gate from momentary matched FFmpeg (`-83.004` at 1 s, `-89.994` at 80 ms right-padded).
+  4. Whole-file `p95` first-difference click detection collapsed on sparse silence (`clickRatio = 0` on `±0.5` impulses) and false-positived on clean 4 ms exponential attacks; switching to local-window 2nd-difference curvature caught isolated impulses while passing smooth decays.
+  5. `10 ms` tail window flagged clean `5 ms` linear fade-outs as `CUT_TAIL`; narrowing to the final `0.5 ms` fixed it.
+  6. Added `WAVE_FORMAT_EXTENSIBLE` (tag `0xFFFE`) PCM/float decoding for real FFmpeg `-c:a pcm_s24le` files, bounded RIFF traversal by declared container size, enforced strict CLI/recipe validation (exit `2`), added `prepack`, and switched entry detection to `fileURLToPath(import.meta.url)` so installs under paths with spaces (`install space/`) run cleanly.
+- **Game proof:** Verified the 80 ms cannon shot, 110 ms lock chirp, 2-track 120 BPM combat loop, and a full **defect-revision loop** (planted 45 ms leading silence → `check` failed `LEADING_SILENCE` → recipe fixed → `check` exited `0`), then upgraded `src/audio/synthAudio.ts` with the layered 80 ms cannon + 2-step `1320 → 1760 Hz` lock chirp + bandpass noise bursts through `masterGain`.
+
+### `tools/agent-3d/` (MIT, Pure TS + Three.js + Playwright — `check` & `turntable`)
+- **Key architectural wins from Astra's spec & code audits:**
+  - Replaced `@gltf-transform/core` runtime loading with a 30-line pure-TS GLB JSON chunk reader so valid renderable assets using extensions like `KHR_materials_unlit` never fail metadata inspection.
+  - Intersected `drawRange`, `groups`, and `material.visible` uniformly across triangle counts, degeneracy, world bounds, and resource counts; multiplied active `vertexColors` and `instanceColor` strictly in linear RGB before Lab D65 comparison; temporarily stripped `instanceColor` during the white-on-black silhouette mask pass so dark instanced geometry never vanishes from coverage checks.
+  - Refused `--out` overwriting input files (`exit 2`), enforced strict CLI/card validation (rejecting impossible `topUpAxis: "+Y"`), evaluated untextured meshes independently of textured meshes, derived near/far planes and degeneracy tolerance strictly from actual bounds (passing `0.001` cubes and `1e-9` right triangles), and switched to per-view 2D projected bounding-box camera framing (lifting fighter `ortho-front` coverage from `1.05%` to `6.1%`!).
+- **Blind visual critic proof (Muse):** Rendered labeled 9-view contact sheets of our real `player-fighter` (intact vs. upper starboard wing removed) and handed *only* the PNGs + brief to Muse with zero code. Muse immediately caught the missing wing by exact view IDs (`ortho-front`, `persp-front`, `persp-back`) and pinpointed the real side-profile slab nose in `persp-right`/`ortho-right` as the top geometry fix for our next art pass.
+

@@ -1,0 +1,47 @@
+{
+  "schemaVersion": "agent-audio/recipe/v1",
+  "kind": "one-shot",
+  "id": "lock-chirp",
+  "sampleRate": 48000,
+  "channels": 2,
+  "encoding": "pcm16",
+  "seed": 133702,
+  "durationS": 0.11,
+  "masterGainDb": -6.0,
+  "voices": [
+    {
+      "id": "lock-ping-1",
+      "waveform": "sine",
+      "gainDb": -2.0,
+      "pan": 0,
+      "freqStartHz": 1320,
+      "freqEndHz": 1320,
+      "startS": 0.0,
+      "durationS": 0.036,
+      "envelope": {
+        "attackS": 0.003,
+        "decayS": 0.02,
+        "sustainLevel": 0.45,
+        "releaseS": 0.015
+      }
+    },
+    {
+      "id": "lock-ping-2",
+      "waveform": "fm",
+      "gainDb": -1.5,
+      "pan": 0,
+      "freqStartHz": 1760,
+      "freqEndHz": 1760,
+      "fmRatio": 2.0,
+      "fmIndex": 0.55,
+      "startS": 0.045,
+      "durationS": 0.042,
+      "envelope": {
+        "attackS": 0.003,
+        "decayS": 0.024,
+        "sustainLevel": 0.35,
+        "releaseS": 0.02
+      }
+    }
+  ]
+}

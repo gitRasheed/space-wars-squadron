@@ -1,0 +1,11 @@
+{
+  "id": "space-wars-ships",
+  "frontAxis": "-Z",
+  "topUpAxis": "-Z",
+  "budgets": {
+    "trisMax": 6000,
+    "materialsMax": 16,
+    "texturesMax": 8,
+    "degenerateTrianglesMax": 0
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "schemaVersion": "agent-audio/recipe/v1",
+  "kind": "one-shot",
+  "id": "cannon-shot",
+  "sampleRate": 48000,
+  "channels": 2,
+  "encoding": "pcm16",
+  "seed": 133701,
+  "durationS": 0.08,
+  "masterGainDb": -4.5,
+  "voices": [
+    {
+      "id": "plasma-sweep",
+      "waveform": "saw",
+      "gainDb": -3.0,
+      "pan": 0,
+      "freqStartHz": 860,
+      "freqEndHz": 165,
+      "freqCurve": "exp",
+      "envelope": {
+        "attackS": 0.002,
+        "decayS": 0.045,
+        "sustainLevel": 0.12,
+        "releaseS": 0.025
+      },
+      "filter": {
+        "type": "lowpass",
+        "freqHz": 3400,
+        "q": 1.1
+      },
+      "drive": 1.4
+    },
+    {
+      "id": "breech-transient",
+      "waveform": "noise",
+      "gainDb": -9.0,
+      "pan": 0,
+      "envelope": {
+        "attackS": 0.001,
+        "decayS": 0.018,
+        "sustainLevel": 0.0,
+        "releaseS": 0.012
+      },
+      "filter": {
+        "type": "bandpass",
+        "freqHz": 2400,
+        "q": 1.3
+      },
+      "durationS": 0.024
+    },
+    {
+      "id": "sub-punch",
+      "waveform": "sine",
+      "gainDb": -5.0,
+      "pan": 0,
+      "freqStartHz": 190,
+      "freqEndHz": 68,
+      "freqCurve": "exp",
+      "envelope": {
+        "attackS": 0.002,
+        "decayS": 0.036,
+        "sustainLevel": 0.0,
+        "releaseS": 0.024
+      }
+    }
+  ]
+}

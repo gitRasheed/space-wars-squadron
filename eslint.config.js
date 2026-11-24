@@ -4,7 +4,7 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['dist/**', 'artifacts/**', 'node_modules/**', 'formal/states/**'],
+    ignores: ['dist/**', 'dist-test/**', 'artifacts/**', 'node_modules/**', 'formal/states/**', 'tools/**'],
   },
   js.configs.recommended,
   {
