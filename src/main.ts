@@ -12,9 +12,11 @@ interface ReadOnlyTelemetry {
     readonly phase: WorldState['phase']['kind'];
     readonly cameraMode: WorldState['cameraMode'];
     readonly speed: number;
-    readonly boostMode: WorldState['player']['energy']['boostMode']['kind'];
-    readonly engineCharge: number;
+    readonly throttle: number;
+    readonly overdrive: boolean;
+    readonly weaponState: WorldState['player']['energy']['weaponState'];
     readonly weaponCharge: number;
+    readonly shieldCharge: number;
     readonly missilesReady: number;
     readonly enemiesRemaining: number;
     readonly subsystemsRemaining: number;
@@ -70,9 +72,11 @@ function boot(): void {
       phase: world.phase.kind,
       cameraMode: world.cameraMode,
       speed: len(world.player.velocity),
-      boostMode: world.player.energy.boostMode.kind,
-      engineCharge: world.player.energy.engineCharge,
+      throttle: world.player.throttle,
+      overdrive: world.player.energy.overdrive,
+      weaponState: world.player.energy.weaponState,
       weaponCharge: world.player.energy.weaponCharge,
+      shieldCharge: world.player.energy.shieldCharge,
       missilesReady: world.player.missilesReady,
       enemiesRemaining: world.enemies.length,
       subsystemsRemaining: world.hostileFrigate.subsystems.filter((s) => s.hull > 0).length,

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { add, forwardOf, rightOf, scale, upOf } from '../sim/math';
+import { COCKPIT_CAMERA_OFFSET } from '../sim/combat';
+import { add, forwardOf, scale, upOf } from '../sim/math';
 import type { CameraMode, PlayerShipState, Quat, Vec3 } from '../sim/types';
 
 export interface CameraPose {
@@ -10,36 +11,19 @@ export interface CameraPose {
   readonly targetFov: number;
 }
 
-export function computeCameraPose(player: PlayerShipState, cameraMode: CameraMode): CameraPose {
-  const boostKind = player.energy.boostMode.kind;
-  const targetFov = boostKind === 'boosting' ? 82 : boostKind === 'drifting' ? 76 : 68;
+export function computeCameraPose(player: PlayerShipState, _cameraMode: CameraMode = 'cockpit'): CameraPose {
+  const targetFov = player.energy.overdrive ? 79 : 68;
   const fwd = forwardOf(player.orientation);
   const up = upOf(player.orientation);
-  const right = rightOf(player.orientation);
 
-  if (cameraMode === 'cockpit') {
-    return {
-      position: add(add(player.position, scale(up, 1.35)), scale(fwd, 1.8)),
-      up,
-      lookAt: null,
-      orientation: player.orientation,
-      targetFov,
-    };
-  }
-
-  const chaseDist = boostKind === 'boosting' ? 27 : 23;
-  const position = add(
-    add(player.position, scale(fwd, -chaseDist)),
-    add(scale(up, 8.2), scale(right, -player.angularVelocity.y * 1.3)),
-  );
-  // Look downrange along the ship's flight axis so the fighter sits in lower-center frame
-  // while the projected gun boresight reticle sits cleanly near screen center.
-  const lookAt = add(add(player.position, scale(fwd, 260)), scale(up, 2.5));
   return {
-    position,
+    position: add(
+      add(player.position, scale(up, COCKPIT_CAMERA_OFFSET.up)),
+      scale(fwd, COCKPIT_CAMERA_OFFSET.forward),
+    ),
     up,
-    lookAt,
-    orientation: null,
+    lookAt: null,
+    orientation: player.orientation,
     targetFov,
   };
 }

@@ -1,36 +1,34 @@
 ----------------------------- MODULE EnergyAndLock -----------------------------
 EXTENDS Integers, Sequences
 
-VARIABLES projection, primaryCooldown, boostMode, engineCharge, weaponCharge, shieldCharge,
-          driftTicks, recoveryTicks, missilesReady, targetAlive, lockTicks, rearmTicks, rearmPeriod, missileCooldown, launchStock
+VARIABLES projection, primaryCooldown, overdrive, weaponState, weaponCharge, overheatTicks, shieldCharge,
+          shieldDelay, missilesReady, targetAlive, lockTicks, rearmTicks, rearmPeriod, missileCooldown, launchStock
 
-flight == <<primaryCooldown, boostMode, engineCharge, weaponCharge, shieldCharge, driftTicks, recoveryTicks>>
+flight == <<primaryCooldown, overdrive, weaponState, weaponCharge, overheatTicks, shieldCharge, shieldDelay>>
 combat == <<missilesReady, targetAlive, lockTicks, rearmTicks, rearmPeriod, missileCooldown, launchStock>>
 vars == <<projection, flight, combat>>
 
 (* With geometry supplied as input, each property depends on just one of
    these two state machines. Explore each projection from the initial ship. *)
 MaxMissiles == 4
-(* Measured at FIXED_DT: drift starts at elapsed zero on its entry frame. *)
-MaxDriftTicks == 121
-BoostRecovery == 39
-DriftRecovery == 45
 AcquireTicks == 48
-FreshRearm == 241
-CarriedRearm == 240
-MissileCooldown == 31
-PrimaryCooldown == 8
+FreshRearm == 271
+CarriedRearm == 270
+MissileCooldown == 34
+PrimaryCooldown == 9
+ShieldRegenDelayTicks == 211
+OverheatTicks == 215
 LockState == CASE lockTicks = 0 -> "none" [] lockTicks = AcquireTicks -> "locked" [] OTHER -> "acquiring"
 
 Init ==
     /\ projection \in {"flight", "combat"}
     /\ primaryCooldown = 0
-    /\ boostMode = "ready"
-    /\ engineCharge = 4
-    /\ weaponCharge = 3
-    /\ shieldCharge = 2
-    /\ driftTicks = 0
-    /\ recoveryTicks = 0
+    /\ overdrive = FALSE
+    /\ weaponState = "ready"
+    /\ weaponCharge = 2
+    /\ overheatTicks = 0
+    /\ shieldCharge = 3
+    /\ shieldDelay = 0
     /\ missilesReady = MaxMissiles
     /\ targetAlive = TRUE
     /\ lockTicks = 0
@@ -44,21 +42,16 @@ CombatInit == Init /\ projection = "combat"
    Rates below are charge units per frame. There are 600 units in one charge point. *)
 Unit == 600
 Full == 100 * Unit
-DriftThreshold == 9600
-BoostThreshold == 12000
-EngineRecharge == 180
-RecoveryRecharge == 108
-WeaponRecharge == 220
-DriftWeaponRecharge == 154
+MinOverdriveShield == 9000
+OverdriveDrain == 240
 ShieldRecharge == 100
-DriftDrain == 240
-BoostDrain == 300
-BoostWeaponDraw == 80
-ShotCost == 2700
-BoltDamage == 3600
-EngineEdges == <<0, 0, DriftThreshold, BoostThreshold, Full, Full>>
-WeaponEdges == <<0, 0, ShotCost, Full, Full>>
-ShieldEdges == <<0, 0, Full, Full>>
+WeaponRecharge == 180
+OverheatCooldown == 280
+ShotCost == 6600
+BoltDamage == 8400
+WeaponEdges == <<0, 0, Full, Full>>
+ShieldEdges == <<0, 0, MinOverdriveShield, Full, Full>>
+
 Band(n, edges) ==
     CASE n < 0 -> -1 [] n > Full -> Len(edges) - 1
       [] n = 0 -> 0 [] n = Full -> Len(edges) - 2
@@ -68,65 +61,58 @@ After(b, delta, edges) ==
     IF delta = 0 THEN {b}
     ELSE Band(Clamp(edges[b+1] + delta), edges)..Band(Clamp(edges[b+2] + delta), edges)
 
-FirePrimary(w) ==
+StepReadyWeapon(w) ==
     \/ /\ weaponCharge' = w
+       /\ weaponState' = "ready"
+       /\ overheatTicks' = 0
        /\ primaryCooldown' = IF primaryCooldown > 0 THEN primaryCooldown - 1 ELSE 0
-    \/ /\ primaryCooldown <= 1 /\ w >= 2
-       /\ weaponCharge' \in After(w, -ShotCost, WeaponEdges)
+    \/ /\ primaryCooldown <= 1 /\ w > 0
+       /\ \E afterShot \in After(w, -ShotCost, WeaponEdges) :
+            /\ weaponCharge' = afterShot
+            /\ weaponState' = IF afterShot = 0 THEN "overheated" ELSE "ready"
+            /\ overheatTicks' = IF afterShot = 0 THEN OverheatTicks ELSE 0
        /\ primaryCooldown' = PrimaryCooldown
 
-Frame(mode, charge, drift, recovery, weaponDelta) ==
-    /\ boostMode' = mode /\ engineCharge' = charge
-    /\ driftTicks' = drift /\ recoveryTicks' = recovery
-    /\ \E w \in After(weaponCharge, weaponDelta, WeaponEdges) : FirePrimary(w)
-    /\ shieldCharge' \in After(shieldCharge, ShieldRecharge, ShieldEdges)
+Fly ==
+    /\ projection = "flight"
+    /\ \E enterOd \in BOOLEAN, cancelOd \in BOOLEAN :
+         LET nextDelay == IF shieldDelay > 0 THEN shieldDelay - 1 ELSE 0
+             odStart == IF cancelOd THEN FALSE
+                        ELSE IF ~overdrive /\ enterOd /\ shieldCharge >= 2 THEN TRUE
+                        ELSE overdrive
+             shieldDelta == IF odStart THEN -OverdriveDrain
+                            ELSE IF nextDelay = 0 THEN ShieldRecharge
+                            ELSE 0
+         IN /\ shieldDelay' = nextDelay
+            /\ \E s \in After(shieldCharge, shieldDelta, ShieldEdges) :
+                 /\ shieldCharge' = s
+                 /\ overdrive' = IF odStart /\ s > 0 THEN TRUE ELSE FALSE
+            /\ IF weaponState = "overheated" THEN
+                 IF overheatTicks = 1 THEN StepReadyWeapon(2)
+                 ELSE /\ weaponState' = "overheated"
+                      /\ weaponCharge' = 1
+                      /\ overheatTicks' = overheatTicks - 1
+                      /\ primaryCooldown' = IF primaryCooldown > 0 THEN primaryCooldown - 1 ELSE 0
+               ELSE \E w \in After(weaponCharge, WeaponRecharge, WeaponEdges) : StepReadyWeapon(w)
     /\ UNCHANGED <<projection, combat>>
 
-PilotInput(boost, drift) ==
-    IF boostMode \in {"ready", "boosting"} /\ drift /\ engineCharge >= 2
-    THEN \E c \in After(engineCharge, -DriftDrain, EngineEdges) : Frame("drifting", c, 0, 0, 0)
-    ELSE CASE boostMode = "ready" ->
-           IF boost /\ engineCharge >= 3
-           THEN \E c \in After(engineCharge, -BoostDrain, EngineEdges) : Frame("boosting", c, 0, 0, -BoostWeaponDraw)
-           ELSE \E c \in After(engineCharge, EngineRecharge, EngineEdges) : Frame("ready", c, 0, 0, WeaponRecharge)
-      [] boostMode = "boosting" ->
-           IF boost /\ engineCharge > 0
-           THEN \E c \in After(engineCharge, -BoostDrain, EngineEdges) :
-                    IF c = 0 THEN Frame("recovering", c, 0, BoostRecovery, -BoostWeaponDraw)
-                             ELSE Frame("boosting", c, 0, 0, -BoostWeaponDraw)
-           ELSE Frame("recovering", engineCharge, 0, BoostRecovery, 0)
-      [] boostMode = "drifting" ->
-           \E c \in After(engineCharge, -DriftDrain, EngineEdges) :
-               IF ~drift \/ c = 0 \/ driftTicks + 1 >= MaxDriftTicks
-               THEN Frame("recovering", c, 0, DriftRecovery, DriftWeaponRecharge)
-               ELSE Frame("drifting", c, driftTicks + 1, 0, DriftWeaponRecharge)
-
-Fly ==
-    /\ projection = "flight" /\ boostMode # "recovering"
-    /\ \E boost \in BOOLEAN, drift \in BOOLEAN : PilotInput(boost, drift)
-
-Recover ==
-    /\ projection = "flight" /\ boostMode = "recovering"
-    /\ \E c \in After(engineCharge, RecoveryRecharge, EngineEdges) :
-           Frame(IF recoveryTicks = 1 THEN "ready" ELSE "recovering",
-                 c, 0, recoveryTicks - 1, WeaponRecharge)
-
-(* Several hostile bolts can hit after a flight update. Each impact is a separate step. *)
+(* Hostile bolts or collisions can hit after a flight update, resetting shield regen delay
+   and dropping overdrive if shields hit zero. *)
 ShieldHit ==
     /\ projection = "flight"
-    /\ shieldCharge' \in After(shieldCharge, -BoltDamage, ShieldEdges)
-    /\ UNCHANGED <<projection, primaryCooldown, boostMode, engineCharge, weaponCharge, driftTicks, recoveryTicks, combat>>
+    /\ \E s \in After(shieldCharge, -BoltDamage, ShieldEdges) :
+         /\ shieldCharge' = s
+         /\ overdrive' = IF s = 0 THEN FALSE ELSE overdrive
+    /\ shieldDelay' = ShieldRegenDelayTicks
+    /\ UNCHANGED <<projection, primaryCooldown, weaponState, weaponCharge, overheatTicks, combat>>
 
 Scan(stock) ==
     IF stock = 0 THEN {0}
     ELSE LET same == IF lockTicks = AcquireTicks THEN AcquireTicks ELSE lockTicks + 1
-         IN {0, 1, same}  \* no contact/out of cone, new contact, same contact
+         IN {0, 1, same}
 
 AfterImpact(progress, alive) == IF alive THEN progress ELSE 0
 
-(* A full rack clears the fractional timer before firing. From zero, the first reload
-   takes 241 updates. Subtraction retains the overshoot: a long interval is followed
-   by a short one. After a short interval the remaining fraction is abstracted. *)
 CombatFrame ==
     /\ projection = "combat"
     /\ LET full == missilesReady = MaxMissiles
@@ -147,10 +133,12 @@ CombatFrame ==
                      lockTicks' = AfterImpact(IF fired THEN 0 ELSE progress, targetAlive')
     /\ UNCHANGED <<projection, flight>>
 
-Next == Fly \/ Recover \/ ShieldHit \/ CombatFrame
-Spec == Init /\ [][Next]_vars /\ WF_vars(Recover)
+Next == Fly \/ ShieldHit \/ CombatFrame
+Spec == Init /\ [][Next]_vars /\ WF_vars(Fly)
 
-ChargesBounded == engineCharge \in 0..4 /\ weaponCharge \in 0..3 /\ shieldCharge \in 0..2
+ChargesBounded == weaponCharge \in 0..2 /\ shieldCharge \in 0..3
+WeaponStateValid == weaponState \in {"ready", "overheated"}
+OverdriveHasShield == overdrive => shieldCharge > 0
 AmmoBounded == missilesReady \in 0..MaxMissiles
 LaunchHadAmmo == launchStock = -1 \/ launchStock \in 1..MaxMissiles
 LockHasAmmo == LockState # "none" => missilesReady > 0
@@ -158,22 +146,20 @@ LockHasLiveTarget == LockState # "none" => targetAlive
 TimerBounds ==
     /\ rearmPeriod \in {FreshRearm, CarriedRearm} /\ rearmTicks \in 0..(rearmPeriod - 1)
     /\ primaryCooldown \in 0..PrimaryCooldown /\ missileCooldown \in 0..MissileCooldown
-    /\ driftTicks \in 0..(MaxDriftTicks - 1) /\ lockTicks \in 0..AcquireTicks
-    /\ boostMode # "drifting" => driftTicks = 0
-    /\ IF boostMode = "recovering" THEN recoveryTicks \in 1..DriftRecovery ELSE recoveryTicks = 0
-BoostModeValid == boostMode \in {"ready", "boosting", "drifting", "recovering"}
+    /\ shieldDelay \in 0..ShieldRegenDelayTicks /\ lockTicks \in 0..AcquireTicks
+    /\ IF weaponState = "overheated" THEN overheatTicks \in 1..OverheatTicks ELSE overheatTicks = 0
 
-RecoveryStep ==
-    boostMode = "recovering" =>
-        \/ UNCHANGED <<boostMode, recoveryTicks>>
-        \/ /\ recoveryTicks' = recoveryTicks - 1
-           /\ boostMode' = IF recoveryTicks > 1 THEN "recovering" ELSE "ready"
-RecoveryCannotBeSkipped == [][RecoveryStep]_vars
-RecoveryCompletes == (boostMode = "recovering") ~> (boostMode = "ready")
+OverheatCannotFireStep ==
+    weaponState = "overheated" =>
+        \/ UNCHANGED <<weaponState, overheatTicks, primaryCooldown>>
+        \/ (overheatTicks > 1 /\ weaponState' = "overheated" /\ overheatTicks' = overheatTicks - 1 /\ primaryCooldown' <= primaryCooldown)
+        \/ (overheatTicks = 1 /\ weaponState' = "ready" /\ overheatTicks' = 0)
+OverheatCannotFire == [][OverheatCannotFireStep]_vars
+OverheatCompletes == (weaponState = "overheated") ~> (weaponState = "ready")
 
-NeverAtDriftLimit == ~(boostMode = "drifting" /\ driftTicks = MaxDriftTicks - 1)
+NeverOverheated == weaponState # "overheated"
+NeverOverdrive == ~overdrive
 NeverFiredOnReload == ~(rearmPeriod = CarriedRearm /\ rearmTicks = 0 /\ launchStock = 1)
-NeverRecovering == boostMode # "recovering"
 NeverLocked == LockState # "locked"
 NeverFiredLastMissile == launchStock # 1
 ===============================================================================

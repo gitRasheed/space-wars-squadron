@@ -71,6 +71,8 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
   let lastHudTick = -1;
   let hitMarkerAlpha = 0;
   let hitMarkerKill = false;
+  let hitMarkerShield = false;
+  let shieldBreakBannerAlpha = 0;
 
   function hudScale(): number {
     return clamp(cssHeight / 720, 0.85, 1.45);
@@ -189,11 +191,15 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     const cx = reticle.x;
     const cy = reticle.y;
     const p = world.player;
-    const boostKind = p.energy.boostMode.kind;
-    const isDrifting = boostKind === 'drifting';
+    const overdrive = p.energy.overdrive;
+    const overheated = p.energy.weaponState === 'overheated';
 
     const s = hudScale();
-    ctx.strokeStyle = isDrifting ? CYAN : 'rgba(244, 180, 89, 0.88)';
+    ctx.strokeStyle = overheated
+      ? 'rgba(255, 77, 99, 0.85)'
+      : overdrive
+        ? HUD_PALETTE.boostGold
+        : 'rgba(244, 180, 89, 0.88)';
     ctx.lineWidth = 1.5;
 
     const gap = 8 * s;
@@ -209,7 +215,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     ctx.lineTo(cx, cy + gap + arm);
     ctx.stroke();
 
-    ctx.fillStyle = isDrifting ? CYAN : AMBER;
+    ctx.fillStyle = overheated ? CRIMSON : overdrive ? HUD_PALETTE.boostGold : AMBER;
     ctx.fillRect(cx - 1.5, cy - 1.5, 3, 3);
 
     if (hitMarkerAlpha > 0.02) {
@@ -217,7 +223,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       const outer = (14 + (1 - hitMarkerAlpha) * 5) * s;
       ctx.save();
       ctx.globalAlpha = clamp(hitMarkerAlpha, 0, 1);
-      ctx.strokeStyle = hitMarkerKill ? CRIMSON : HUD_PALETTE.boostGold;
+      ctx.strokeStyle = hitMarkerKill ? CRIMSON : hitMarkerShield ? CYAN : HUD_PALETTE.boostGold;
       ctx.lineWidth = hitMarkerKill ? 2.4 : 1.9;
       ctx.beginPath();
       ctx.moveTo(cx - outer, cy - outer);
@@ -248,22 +254,23 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     ctx.arc(cx, cy, arcRadius, rightStart, rightEnd);
     ctx.stroke();
 
-    const engRatio = clamp(p.energy.engineCharge / 100, 0, 1);
-    const engColor =
-      boostKind === 'boosting'
-        ? HUD_PALETTE.boostGold
-        : boostKind === 'drifting'
-          ? CYAN
-          : boostKind === 'recovering'
-            ? CRIMSON
-            : 'rgba(107, 229, 255, 0.85)';
-    ctx.strokeStyle = engColor;
+    const shdRatio = clamp(p.energy.shieldCharge / 100, 0, 1);
+    const shdColor = overdrive
+      ? HUD_PALETTE.boostGold
+      : shdRatio < 0.25
+        ? CRIMSON
+        : 'rgba(107, 229, 255, 0.85)';
+    ctx.strokeStyle = shdColor;
     ctx.beginPath();
-    ctx.arc(cx, cy, arcRadius, leftEnd - (leftEnd - leftStart) * engRatio, leftEnd);
+    ctx.arc(cx, cy, arcRadius, leftEnd - (leftEnd - leftStart) * shdRatio, leftEnd);
     ctx.stroke();
 
     const wpnRatio = clamp(p.energy.weaponCharge / 100, 0, 1);
-    ctx.strokeStyle = wpnRatio < 0.2 ? CRIMSON : 'rgba(244, 180, 89, 0.85)';
+    ctx.strokeStyle = overheated
+      ? CRIMSON
+      : wpnRatio < 0.25
+        ? HUD_PALETTE.missileOrange
+        : 'rgba(244, 180, 89, 0.85)';
     ctx.beginPath();
     ctx.arc(cx, cy, arcRadius, rightEnd - (rightEnd - rightStart) * wpnRatio, rightEnd);
     ctx.stroke();
@@ -278,13 +285,24 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       ctx.fillRect(pipStartX + i * (pipW + pipGap), pipY, pipW, 3);
     }
 
-    if (boostKind === 'boosting' || boostKind === 'drifting' || boostKind === 'recovering') {
-      const modeText =
-        boostKind === 'boosting' ? 'BOOST' : boostKind === 'drifting' ? 'SNAP TURN' : 'COOLING';
+    if (overheated) {
       ctx.font = 'bold 10px "Courier New", monospace';
-      ctx.fillStyle = engColor;
+      ctx.fillStyle = CRIMSON;
       ctx.textAlign = 'center';
-      ctx.fillText(modeText, cx, cy - arcRadius - 8);
+      ctx.fillText('OVERHEAT', cx, cy - arcRadius - 8);
+    } else if (overdrive) {
+      ctx.font = 'bold 10px "Courier New", monospace';
+      ctx.fillStyle = HUD_PALETTE.boostGold;
+      ctx.textAlign = 'center';
+      ctx.fillText('OVERDRIVE 120%', cx, cy - arcRadius - 8);
+    } else if (shieldBreakBannerAlpha > 0.05) {
+      ctx.save();
+      ctx.globalAlpha = clamp(shieldBreakBannerAlpha, 0, 1);
+      ctx.font = 'bold 10px "Courier New", monospace';
+      ctx.fillStyle = CYAN;
+      ctx.textAlign = 'center';
+      ctx.fillText('SHIELD DOWN', cx, cy - arcRadius - 8);
+      ctx.restore();
     }
 
     const bounds = canopyBounds();
@@ -298,7 +316,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       projectedVel.y <= bounds.bottom;
 
     if (inCanopy) {
-      ctx.strokeStyle = isDrifting ? CYAN : 'rgba(107, 229, 255, 0.52)';
+      ctx.strokeStyle = overdrive ? HUD_PALETTE.boostGold : 'rgba(107, 229, 255, 0.52)';
       ctx.lineWidth = 1.4;
       ctx.beginPath();
       ctx.arc(projectedVel.x, projectedVel.y, 6, 0, Math.PI * 2);
@@ -307,8 +325,6 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       ctx.moveTo(projectedVel.x + 6, projectedVel.y);
       ctx.lineTo(projectedVel.x + 10, projectedVel.y);
       ctx.stroke();
-    } else if (isDrifting) {
-      drawEdgeChevron(projectedVel, CYAN, null);
     }
   }
 
@@ -394,6 +410,40 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
           CRIMSON,
           labelAlign,
         );
+
+        // Display real target entity shield + hull bars right beneath the lock bracket.
+        const enemyEntity =
+          contact.kind === 'enemy' ? world.enemies.find((e) => e.id === contact.id) : undefined;
+        const barW = 36;
+        const barX = projected.x - barW * 0.5;
+        const barY = projected.y + bracketHalf + 6;
+        if (enemyEntity !== undefined) {
+          if (enemyEntity.maxShields > 0) {
+            drawSegmentedBar(
+              barX,
+              barY,
+              barW,
+              3,
+              enemyEntity.shields / enemyEntity.maxShields,
+              enemyEntity.shields > 0 ? CYAN : 'rgba(107, 229, 255, 0.2)',
+              false,
+            );
+          }
+          drawSegmentedBar(
+            barX,
+            barY + 5,
+            barW,
+            3,
+            enemyEntity.hull / enemyEntity.maxHull,
+            enemyEntity.hull < enemyEntity.maxHull * 0.35 ? CRIMSON : EMERALD,
+            false,
+          );
+        } else {
+          const subEntity = world.hostileFrigate.subsystems.find((s) => s.id === contact.id);
+          if (subEntity !== undefined) {
+            drawSegmentedBar(barX, barY, barW, 4, subEntity.hull / subEntity.maxHull, CRIMSON, false);
+          }
+        }
 
         const lead = computeLeadPoint(
           world.player.position,
@@ -591,23 +641,28 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     const leftBarX = cx - radarRadius - barW - 18;
     const rightBarX = cx + radarRadius + 18;
 
+    const throttlePct = Math.round(p.throttle * 100);
     ctx.font = 'bold 19px "Courier New", monospace';
-    ctx.fillStyle = HUD_PALETTE.warmWhite;
+    ctx.fillStyle = p.energy.overdrive ? HUD_PALETTE.boostGold : HUD_PALETTE.warmWhite;
     ctx.textAlign = 'right';
     ctx.fillText(`${Math.round(len(p.velocity))}`, leftBarX + barW, radarY - 4);
     ctx.font = 'bold 9px "Courier New", monospace';
-    ctx.fillStyle = 'rgba(244, 180, 89, 0.72)';
-    ctx.fillText('M/S', leftBarX + barW, radarY + 9);
+    ctx.fillStyle = p.energy.overdrive ? HUD_PALETTE.boostGold : 'rgba(244, 180, 89, 0.72)';
+    ctx.fillText(`M/S  ${throttlePct}%`, leftBarX + barW, radarY + 9);
 
+    // Throttle bar spans 0..120%, with a visible 100% high-watermark detent tick.
     drawSegmentedBar(
       leftBarX,
       radarY + 18,
       barW,
       5,
-      p.throttle,
-      AMBER,
+      p.throttle / 1.2,
+      p.energy.overdrive ? HUD_PALETTE.boostGold : AMBER,
       true,
     );
+    const detentX = leftBarX + barW * (1 - 1 / 1.2);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(detentX - 0.5, radarY + 16, 1.5, 9);
 
     drawSegmentedBar(
       rightBarX,
@@ -640,7 +695,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     ctx.fillStyle = 'rgba(216, 224, 245, 0.5)';
     ctx.textAlign = 'right';
     ctx.fillText(
-      `[V] ${world.cameraMode.toUpperCase()}  [ESC] PAUSE  [M] ${audioLabel}  [N] BGM`,
+      `[W@100%] OVERDRIVE  [ESC] PAUSE  [M] ${audioLabel}  [N] BGM`,
       cssWidth - 16,
       cssHeight - 14,
     );
@@ -708,13 +763,13 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
 
       ctx.font = 'bold 12px "Courier New", monospace';
       ctx.fillStyle = '#fff0d4';
-      ctx.fillText('MOUSE: Steer  |  LMB: Cannons  |  RMB/E: Missile', cssWidth * 0.5, cardY + 126);
+      ctx.fillText('MOUSE: Steer  |  LMB: Cannons (Manual + Overheat)  |  RMB/E: Lock-On Missile', cssWidth * 0.5, cardY + 126);
 
       ctx.font = '12px "Courier New", monospace';
       ctx.fillStyle = CYAN;
-      ctx.fillText('SHIFT: Boost  |  SPACE: Snap-Turn  |  W/S: Speed  |  A/D: Roll', cssWidth * 0.5, cardY + 152);
+      ctx.fillText('W/S: Throttle (Tap W at 100%: 120% Overdrive)  |  A/D: Roll', cssWidth * 0.5, cardY + 152);
       ctx.fillStyle = 'rgba(244, 180, 89, 0.78)';
-      ctx.fillText('T: Target  |  V: Cockpit/Chase  |  ESC: Pause  |  M/N: Audio', cssWidth * 0.5, cardY + 174);
+      ctx.fillText('T: Target  |  ESC/P: Pause  |  R: Restart  |  M/N: Audio', cssWidth * 0.5, cardY + 174);
 
       ctx.font = 'bold 15px "Courier New", monospace';
       ctx.fillStyle = EMERALD;
@@ -736,7 +791,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       ctx.fillStyle = CYAN;
       ctx.fillText('[ESC] / [P] / [ENTER] or CLICK: Resume   |   [R]: Restart', cssWidth * 0.5, cardY + 148);
       ctx.fillStyle = 'rgba(244, 180, 89, 0.8)';
-      ctx.fillText('[V]: Camera   |   [M]: Mute All   |   [N]: Toggle Soundtrack', cssWidth * 0.5, cardY + 172);
+      ctx.fillText('[M]: Mute All   |   [N]: Toggle Soundtrack', cssWidth * 0.5, cardY + 172);
 
       ctx.font = 'bold 15px "Courier New", monospace';
       ctx.fillStyle = EMERALD;
@@ -784,16 +839,26 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     if (world.tick < lastHudTick) {
       hitMarkerAlpha = 0;
       hitMarkerKill = false;
+      hitMarkerShield = false;
+      shieldBreakBannerAlpha = 0;
     } else if (world.tick > lastHudTick) {
       const tickDelta = Math.min(world.tick - lastHudTick, 10);
       hitMarkerAlpha = Math.max(0, hitMarkerAlpha - tickDelta * 0.09);
+      shieldBreakBannerAlpha = Math.max(0, shieldBreakBannerAlpha - tickDelta * 0.025);
       for (const evt of world.events) {
         if (evt.kind === 'subsystem_destroyed') {
           hitMarkerAlpha = 1;
           hitMarkerKill = true;
+          hitMarkerShield = false;
+        } else if (evt.kind === 'shield_broken') {
+          hitMarkerAlpha = 1;
+          hitMarkerKill = false;
+          hitMarkerShield = true;
+          shieldBreakBannerAlpha = 1;
         } else if (evt.kind === 'hit_confirmed') {
           hitMarkerAlpha = 1;
           hitMarkerKill = evt.isKill;
+          hitMarkerShield = evt.shieldHit === true;
         }
       }
     }

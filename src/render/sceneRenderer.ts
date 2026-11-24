@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { add, forwardOf, rightOf, scale } from '../sim/math';
+import { add, forwardOf, scale } from '../sim/math';
 import { FIXED_DT, type Quat, type Vec3, type WorldState } from '../sim/types';
 import { FRIGATE_SUBSYSTEM_LAYOUT } from '../sim/world';
 import { computeCameraPose } from './cameraPose';
@@ -368,9 +368,6 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   const exhaustOrigin = new THREE.Vector3();
   const scratchVelCam = new THREE.Vector3();
   const scratchCamInv = new THREE.Quaternion();
-  const scratchBankEuler = new THREE.Euler();
-  const scratchBankQuat = new THREE.Quaternion();
-  const scratchUp = new THREE.Vector3(0, 1, 0);
   const scratchRight = new THREE.Vector3();
   const scratchCamUp = new THREE.Vector3();
   const destroyedSubMat = new THREE.MeshToonMaterial({ color: SCENE_PALETTE.destroyedSubsystem });
@@ -423,19 +420,16 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   }
 
   function updateSpeedStreaks(world: WorldState, dt: number): void {
-    const boostKind = world.player.energy.boostMode.kind;
-    const targetOpacity = boostKind === 'boosting' ? 0.52 : boostKind === 'drifting' ? 0.42 : 0;
+    const overdrive = world.player.energy.overdrive;
+    const targetOpacity = overdrive ? 0.52 : 0;
     const alpha = 1 - Math.exp(-12 * dt);
     streakMat.opacity += (targetOpacity - streakMat.opacity) * alpha;
     speedStreaks.visible = streakMat.opacity > 0.01;
     if (!speedStreaks.visible) {
       return;
     }
-    streakMat.color
-      .setHex(boostKind === 'drifting' ? SCENE_PALETTE.streakDrift : SCENE_PALETTE.streakBoost)
-      .multiplyScalar(1.9);
+    streakMat.color.setHex(SCENE_PALETTE.streakBoost).multiplyScalar(1.9);
 
-    // Transform actual ship velocity into camera space so snap-turn drift streaks flow along real drift vector.
     scratchCamInv.copy(camera.quaternion).invert();
     scratchVelCam
       .set(world.player.velocity.x, world.player.velocity.y, world.player.velocity.z)
@@ -449,7 +443,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
 
     const posAttr = streakGeo.getAttribute('position') as THREE.BufferAttribute;
     const travel = (world.tick * 5.2) % 90;
-    const length = boostKind === 'boosting' ? 14 : 9.5;
+    const length = 14;
     for (let i = 0; i < streakCount; i += 1) {
       const base = streakBase[i];
       if (base === undefined) {
@@ -503,6 +497,22 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
         scene.add(mesh);
       }
       setPose(mesh, enemy.position, enemy.orientation);
+
+      const shieldBubble = mesh.getObjectByName('enemy-shield-bubble');
+      if (shieldBubble instanceof THREE.Mesh) {
+        const flash = enemy.shieldHitFlash;
+        shieldBubble.visible = flash > 0.02;
+        if (shieldBubble.visible) {
+          shieldBubble.rotation.y = world.tick * 0.06;
+          shieldBubble.scale.setScalar(1 + (1 - flash) * 0.08);
+          const shellMat = shieldBubble.material as THREE.MeshBasicMaterial;
+          shellMat.opacity = flash * 0.42;
+          const wireChild = shieldBubble.children[0];
+          if (wireChild instanceof THREE.LineSegments) {
+            (wireChild.material as THREE.LineBasicMaterial).opacity = flash * 0.85;
+          }
+        }
+      }
 
       let trail = enemyTrails.get(enemy.id);
       if (trail === undefined) {
@@ -596,11 +606,13 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
       let entry = explosionVisuals.get(exp.id);
       if (entry === undefined) {
         const color =
-          exp.tint === 'crimson'
-            ? SCENE_PALETTE.explosionCrimson
-            : exp.tint === 'emerald'
-              ? SCENE_PALETTE.explosionEmerald
-              : SCENE_PALETTE.explosionAmber;
+          exp.tint === 'cyan'
+            ? 0x58ecff
+            : exp.tint === 'crimson'
+              ? SCENE_PALETTE.explosionCrimson
+              : exp.tint === 'emerald'
+                ? SCENE_PALETTE.explosionEmerald
+                : SCENE_PALETTE.explosionAmber;
         const sphereMat = new THREE.MeshBasicMaterial({
           color: new THREE.Color(color).multiplyScalar(2.6),
           transparent: true,
@@ -609,7 +621,9 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
           depthWrite: false,
         });
         const ringMat = new THREE.MeshBasicMaterial({
-          color: new THREE.Color(SCENE_PALETTE.explosionRing).multiplyScalar(2.8),
+          color: new THREE.Color(
+            exp.tint === 'cyan' ? 0x8ef6ff : SCENE_PALETTE.explosionRing,
+          ).multiplyScalar(2.8),
           side: THREE.DoubleSide,
           transparent: true,
           opacity: 0.9,
@@ -631,7 +645,9 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
       entry.sphere.position.set(exp.position.x, exp.position.y, exp.position.z);
       entry.sphere.scale.setScalar(scaleRadius * (1 - t * 0.35));
       const sphereMat = entry.sphere.material as THREE.MeshBasicMaterial;
-      if (t < 0.22) {
+      if (exp.tint === 'cyan') {
+        sphereMat.color.setHex(t < 0.25 ? 0xe0fcff : 0x48e4ff).multiplyScalar(t < 0.25 ? 3.0 : 2.3);
+      } else if (t < 0.22) {
         sphereMat.color.setHex(0xfff8e8).multiplyScalar(3.1);
       } else if (t < 0.58) {
         sphereMat.color
@@ -693,7 +709,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
 
   function updateCamera(world: WorldState, dt: number): void {
     const player = world.player;
-    const boostKind = player.energy.boostMode.kind;
+    const overdrive = player.energy.overdrive;
     const pose = computeCameraPose(player, world.cameraMode);
     if (Math.abs(camera.fov - pose.targetFov) > 0.05) {
       const fovAlpha = 1 - Math.exp(-10 * dt);
@@ -701,19 +717,10 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
       camera.updateProjectionMatrix();
     }
 
-    const isCockpit = world.cameraMode === 'cockpit';
-    cockpitRig.root.visible = isCockpit;
-    playerRig.root.visible = !isCockpit;
-    playerLeftTrail.line.visible = !isCockpit;
-    playerRightTrail.line.visible = !isCockpit;
-
-    const firingGlow = player.recoilKick > 0.35;
-    playerRig.muzzleLeft.visible = !isCockpit && firingGlow;
-    playerRig.muzzleRight.visible = !isCockpit && firingGlow;
-    if (firingGlow) {
-      playerRig.muzzleLeft.rotation.z = world.tick * 0.9;
-      playerRig.muzzleRight.rotation.z = -world.tick * 0.9;
-    }
+    cockpitRig.root.visible = true;
+    playerRig.root.visible = false;
+    playerLeftTrail.line.visible = false;
+    playerRightTrail.line.visible = false;
 
     camera.position.set(pose.position.x, pose.position.y, pose.position.z);
     if (pose.orientation !== null) {
@@ -726,29 +733,35 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
       cockpitRig.root.position.set(
         -player.angularVelocity.y * 0.03,
         -player.angularVelocity.x * 0.025,
-        player.recoilKick * 0.038,
+        player.recoilKick * 0.028,
       );
       cockpitRig.root.rotation.set(
         player.angularVelocity.x * 0.022,
         player.angularVelocity.y * 0.022,
         player.angularVelocity.z * 0.032,
       );
-      const throttleZ = boostKind === 'boosting' ? -0.96 : -0.82 - player.throttle * 0.12;
+      const throttleZ = overdrive ? -0.98 : -0.82 - Math.min(player.throttle, 1) * 0.12;
       cockpitRig.throttleHandle.position.z = throttleZ;
 
-      cockpitRig.muzzleLeft.visible = firingGlow;
-      cockpitRig.muzzleRight.visible = firingGlow;
-      cockpitRig.muzzleLeft.rotation.z = world.tick * 0.9;
-      cockpitRig.muzzleRight.rotation.z = -world.tick * 0.9;
-      cockpitRig.flashLight.intensity = firingGlow ? 1.8 : 0;
-    } else if (pose.lookAt !== null) {
-      scratchUp.set(pose.up.x, pose.up.y, pose.up.z);
-      camera.up.copy(scratchUp);
-      camera.lookAt(pose.lookAt.x, pose.lookAt.y, pose.lookAt.z);
+      // Reciprocating left/right gun barrels kick visibly back-and-forth on each alternating shot.
+      cockpitRig.barrelLeft.position.z = player.recoilLeft * 0.28;
+      cockpitRig.barrelRight.position.z = player.recoilRight * 0.28;
+
+      const leftFlash = player.recoilLeft > 0.52;
+      const rightFlash = player.recoilRight > 0.52;
+      cockpitRig.muzzleLeft.visible = leftFlash;
+      cockpitRig.muzzleRight.visible = rightFlash;
+      if (leftFlash) {
+        cockpitRig.muzzleLeft.rotation.z = world.tick * 0.9;
+      }
+      if (rightFlash) {
+        cockpitRig.muzzleRight.rotation.z = -world.tick * 0.9;
+      }
+      cockpitRig.flashLight.intensity = leftFlash || rightFlash ? 2.1 : 0;
     }
 
     if (shakeIntensity > 0.005) {
-      const amp = shakeIntensity * (isCockpit ? 0.14 : 0.45);
+      const amp = shakeIntensity * 0.14;
       const phase = world.tick * 1.73;
       scratchRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
       scratchCamUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
@@ -788,10 +801,12 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
           shakeIntensity = Math.min(1, shakeIntensity + 0.55);
         } else if (evt.kind === 'subsystem_destroyed') {
           shakeIntensity = Math.min(1, shakeIntensity + 0.65);
+        } else if (evt.kind === 'shield_broken') {
+          shakeIntensity = Math.min(1, shakeIntensity + 0.28);
         } else if (evt.kind === 'hit_confirmed') {
           shakeIntensity = Math.min(1, shakeIntensity + (evt.isKill ? 0.34 : 0.12));
         } else if (evt.kind === 'cannon_fired' && evt.faction === 'friendly') {
-          shakeIntensity = Math.min(1, shakeIntensity + 0.045);
+          shakeIntensity = Math.min(1, shakeIntensity + 0.065);
         }
       }
       if (playerHit) {
@@ -805,41 +820,18 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     }
 
     setPose(playerRig.root, player.position, player.orientation);
-    if (world.cameraMode === 'chase') {
-      // Visual-only chase-cam roll/pitch banking gives the fighter lively weight without affecting sim aim.
-      const bankRoll = Math.max(-0.34, Math.min(0.34, -player.angularVelocity.y * 0.28));
-      const bankPitch = Math.max(-0.16, Math.min(0.16, player.angularVelocity.x * 0.12));
-      scratchBankEuler.set(bankPitch, 0, bankRoll);
-      scratchBankQuat.setFromEuler(scratchBankEuler);
-      playerRig.root.quaternion.multiply(scratchBankQuat);
-    }
     setPose(wingmateRig.root, world.wingmate.position, world.wingmate.orientation);
     setPose(carrierMesh, world.friendlyCarrier.position, world.friendlyCarrier.orientation);
     setPose(frigateRig.root, world.hostileFrigate.position, world.hostileFrigate.orientation);
     syncSubsystems(world);
 
-    const boostKind = player.energy.boostMode.kind;
     const flicker = 0.92 + ((world.tick * 13) % 7) * 0.03;
-    const plumeScale =
-      (boostKind === 'boosting' ? 1.78 : boostKind === 'drifting' ? 1.28 : 0.82) * flicker;
+    const plumeScale = (player.energy.overdrive ? 1.78 : 0.85) * flicker;
     for (const plume of playerRig.plumes) {
       plume.scale.set(1, 1, plumeScale);
-      if (emitExhaust && (boostKind === 'boosting' || boostKind === 'drifting')) {
-        plume.localToWorld(exhaustOrigin.set(0, 0, 4.6));
-        scratchDir.set(0, 0, 22).applyQuaternion(playerRig.root.quaternion);
-        exhaustVelocity.copy(player.velocity).multiplyScalar(0.74).add(scratchDir);
-        const tint = boostKind === 'boosting' ? SCENE_PALETTE.streakBoost : SCENE_PALETTE.streakDrift;
-        sparks.emit(exhaustOrigin, world.tick, tint, 5, 0.14 + Math.random() * 0.1, 0.4, exhaustVelocity);
-      }
     }
 
     if (tickAdvanced) {
-      const fwd = forwardOf(player.orientation);
-      const right = rightOf(player.orientation);
-      const tipLeft = add(add(player.position, scale(right, -6.8)), scale(fwd, -1.5));
-      const tipRight = add(add(player.position, scale(right, 6.8)), scale(fwd, -1.5));
-      pushTrailPoint(playerLeftTrail, tipLeft);
-      pushTrailPoint(playerRightTrail, tipRight);
       pushTrailPoint(
         wingmateTrail,
         add(world.wingmate.position, scale(forwardOf(world.wingmate.orientation), -4)),

@@ -47,8 +47,7 @@ describe('input deadzone and channel merging', () => {
         yaw: -0.8,
         roll: -0.25,
         throttleDelta: 0.5,
-        boost: true,
-        drift: true,
+        throttlePushEdge: true,
         toggleMute: true,
       },
     );
@@ -58,8 +57,7 @@ describe('input deadzone and channel merging', () => {
     expect(merged.roll).toBeCloseTo(0.75, 6);
     expect(merged.throttleDelta).toBe(0.5);
     expect(merged.firePrimary).toBe(true);
-    expect(merged.boost).toBe(true);
-    expect(merged.drift).toBe(true);
+    expect(merged.throttlePushEdge).toBe(true);
     expect(merged.toggleMute).toBe(true);
     expect(merged.cycleTarget).toBe(false);
   });

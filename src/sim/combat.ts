@@ -22,6 +22,7 @@ import {
 } from './math';
 import type {
   AsteroidState,
+  BarrelSide,
   CapitalShipState,
   EnemyManeuver,
   EnemyShipState,
@@ -37,27 +38,49 @@ import type {
   WingmateState,
 } from './types';
 
+// Single source of truth shared across cameraPose.ts, models.ts, and combat.ts so first-person
+// bolts spawn directly from the visible left/right cockpit barrels.
+export const COCKPIT_CAMERA_OFFSET = {
+  forward: 1.8,
+  up: 1.35,
+} as const;
+
+export const COCKPIT_GUN_LOCAL = {
+  x: 0.99,
+  y: -0.54,
+  forward: 2.32,
+} as const;
+
+export const FIGHTER_WEAPON_LAYOUT = {
+  muzzleX: COCKPIT_GUN_LOCAL.x,
+  muzzleY: COCKPIT_CAMERA_OFFSET.up + COCKPIT_GUN_LOCAL.y,
+  muzzleForward: COCKPIT_CAMERA_OFFSET.forward + COCKPIT_GUN_LOCAL.forward,
+} as const;
+
 export const COMBAT_TUNING = {
-  boltSpeed: 580,
-  boltDamage: 24,
-  boltTtl: 1.9,
-  primaryFireInterval: 0.13,
-  missileSpeed: 320,
-  missileDamage: 80,
+  boltSpeed: 560,
+  boltDamage: 18,
+  boltTtl: 0.92,
+  primaryFireInterval: 0.14,
+  missileSpeed: 330,
+  missileDamage: 85,
   missileTtl: 5.2,
-  missileCooldown: 0.5,
-  missileRearmSeconds: 4.0,
-  missileTurnRate: 4.8,
-  lockConeCos: 0.86,
-  lockMaxRange: 1200,
+  missileCooldown: 0.55,
+  missileRearmSeconds: 4.5,
+  missileTurnRate: 4.9,
+  lockConeCos: 0.88,
+  lockMaxRange: 1100,
   lockAcquireSeconds: 0.8,
-  enemyBoltSpeed: 310,
-  enemyBoltDamage: 6,
-  enemyHitRadius: 14,
+  enemyBoltSpeed: 390,
+  enemyBoltDamage: 14,
+  enemyCarrierDamage: 24,
+  enemyHitRadius: 9.5,
   playerHitRadius: 7.5,
-  enemyMinApproachDistance: 215,
-  enemyBreakAwaySeconds: 3.4,
-  enemyApproachSeconds: 5.5,
+  enemyShieldRegenDelay: 4.5,
+  enemyShieldRegenRate: 6,
+  enemyMinApproachDistance: 155,
+  enemyBreakAwaySeconds: 2.6,
+  enemyApproachSeconds: 7.2,
 } as const;
 
 export interface TargetContact {
@@ -282,25 +305,33 @@ function stepPlayerWeapons(
   let missileCooldown = Math.max(0, player.missileCooldown - dt);
   let energy = player.energy;
   let recoilKick = player.recoilKick;
+  let recoilLeft = player.recoilLeft;
+  let recoilRight = player.recoilRight;
+  let nextBarrel: BarrelSide = player.nextBarrel;
   let lockState = lockStep.lockState;
 
   if (input.firePrimary && primaryCooldown <= 0) {
     const spent = spendWeaponCharge(energy, ENERGY_RULES.primaryShotCost);
     if (spent !== null) {
-      energy = spent;
+      energy = spent.energy;
       primaryCooldown = COMBAT_TUNING.primaryFireInterval;
-      recoilKick = 1;
-      const fireSolution = computePlayerFireSolution(player, selectedContact);
+      recoilKick = 0.72;
+      const firedBarrel = nextBarrel;
+      nextBarrel = firedBarrel === 'left' ? 'right' : 'left';
+      if (firedBarrel === 'left') {
+        recoilLeft = 1;
+      } else {
+        recoilRight = 1;
+      }
 
-      for (let i = 0; i < fireSolution.barrels.length; i += 1) {
-        const barrel = fireSolution.barrels[i];
-        if (barrel === undefined) {
-          continue;
-        }
+      const fireSolution = computePlayerFireSolution(player, selectedContact);
+      const barrel = fireSolution.barrels[firedBarrel === 'left' ? 0 : 1];
+      if (barrel !== undefined) {
         spawned.push({
-          id: `pb-${tick}-${i === 0 ? 'l' : 'r'}`,
+          id: `pb-${tick}-${firedBarrel === 'left' ? 'l' : 'r'}`,
           kind: 'bolt',
           faction: 'friendly',
+          owner: 'player',
           position: barrel.muzzle,
           velocity: add(player.velocity, scale(barrel.direction, COMBAT_TUNING.boltSpeed)),
           targetId: null,
@@ -308,7 +339,10 @@ function stepPlayerWeapons(
           ttl: COMBAT_TUNING.boltTtl,
         });
       }
-      events.push({ kind: 'cannon_fired', faction: 'friendly' });
+      events.push({ kind: 'cannon_fired', faction: 'friendly', barrel: firedBarrel });
+      if (spent.overheatedNow) {
+        events.push({ kind: 'weapon_overheated' });
+      }
     }
   }
 
@@ -318,17 +352,19 @@ function stepPlayerWeapons(
     missileCooldown = COMBAT_TUNING.missileCooldown;
     lockState = { kind: 'none' };
     const right = rightOf(player.orientation);
+    const up = upOf(player.orientation);
     const side = missilesReady % 2 === 0 ? 1 : -1;
     const launchPos = add(
-      add(player.position, scale(playerForward, 4)),
-      scale(right, side * 4.2),
+      add(player.position, scale(playerForward, FIGHTER_WEAPON_LAYOUT.muzzleForward)),
+      add(scale(right, side * 1.45), scale(up, FIGHTER_WEAPON_LAYOUT.muzzleY - 0.2)),
     );
     spawned.push({
       id: `pm-${tick}`,
       kind: 'missile',
       faction: 'friendly',
+      owner: 'player',
       position: launchPos,
-      velocity: add(player.velocity, scale(playerForward, COMBAT_TUNING.missileSpeed * 0.8)),
+      velocity: add(player.velocity, scale(playerForward, COMBAT_TUNING.missileSpeed * 0.85)),
       targetId: lockedId,
       damage: COMBAT_TUNING.missileDamage,
       ttl: COMBAT_TUNING.missileTtl,
@@ -347,6 +383,9 @@ function stepPlayerWeapons(
       selectedTargetId,
       lockState,
       recoilKick,
+      recoilLeft,
+      recoilRight,
+      nextBarrel,
     },
     spawned,
     events,
@@ -482,15 +521,36 @@ function stepProjectilesAndHits(
       for (const [id, enemy] of enemyMap) {
         if (distance(nextPos, enemy.position) <= COMBAT_TUNING.enemyHitRadius) {
           hit = true;
+          const hadShields = enemy.shields > 0;
           const shieldAbsorbed = Math.min(enemy.shields, proj.damage);
           const hullDmg = Math.max(0, proj.damage - shieldAbsorbed);
           const nextHull = enemy.hull - hullDmg;
           const nextShields = enemy.shields - shieldAbsorbed;
+          const shieldBrokeNow = hadShields && nextShields <= 0;
+
+          if (shieldBrokeNow) {
+            events.push({ kind: 'shield_broken', position: enemy.position });
+            nextExplosions.push({
+              id: `shdbrk-${tick}-${id}`,
+              position: enemy.position,
+              radius: 20,
+              elapsed: 0,
+              duration: 0.52,
+              tint: 'cyan',
+            });
+          }
 
           if (nextHull <= 0) {
             enemyMap.delete(id);
             enemiesDestroyedDelta += 1;
-            events.push({ kind: 'hit_confirmed', isKill: true });
+            if (proj.owner === 'player') {
+              events.push({ kind: 'hit_confirmed', isKill: true, shieldHit: false });
+              radio = {
+                speaker: wingmateCallsign,
+                text: `Splash ${enemy.callsign}! Good kill, lead.`,
+                remainingSeconds: 2.8,
+              };
+            }
             nextExplosions.push({
               id: `exp-${tick}-${id}`,
               position: enemy.position,
@@ -499,22 +559,27 @@ function stepProjectilesAndHits(
               duration: 1.0,
               tint: 'amber',
             });
-            radio = {
-              speaker: wingmateCallsign,
-              text: `Splash ${enemy.callsign}! Good kill, lead.`,
-              remainingSeconds: 2.8,
-            };
           } else {
-            enemyMap.set(id, { ...enemy, hull: nextHull, shields: nextShields });
-            events.push({ kind: 'hit_confirmed', isKill: false });
-            nextExplosions.push({
-              id: `hit-${tick}-${proj.id}`,
-              position: nextPos,
-              radius: 6,
-              elapsed: 0,
-              duration: 0.28,
-              tint: 'emerald',
+            enemyMap.set(id, {
+              ...enemy,
+              hull: nextHull,
+              shields: nextShields,
+              shieldRegenDelay: COMBAT_TUNING.enemyShieldRegenDelay,
+              shieldHitFlash: hadShields ? 1 : enemy.shieldHitFlash,
             });
+            if (proj.owner === 'player') {
+              events.push({ kind: 'hit_confirmed', isKill: false, shieldHit: hadShields && !shieldBrokeNow });
+            }
+            if (!shieldBrokeNow) {
+              nextExplosions.push({
+                id: `hit-${tick}-${proj.id}`,
+                position: nextPos,
+                radius: hadShields ? 8.5 : 6,
+                elapsed: 0,
+                duration: 0.28,
+                tint: hadShields ? 'cyan' : 'emerald',
+              });
+            }
           }
           break;
         }
@@ -532,7 +597,9 @@ function stepProjectilesAndHits(
             const nextHull = Math.max(0, subsys.hull - proj.damage);
             subsystems[i] = { ...subsys, hull: nextHull };
             const destroyed = nextHull <= 0;
-            events.push({ kind: 'hit_confirmed', isKill: destroyed });
+            if (proj.owner === 'player') {
+              events.push({ kind: 'hit_confirmed', isKill: destroyed });
+            }
             if (destroyed) {
               subsystemsDestroyedDelta += 1;
               events.push({ kind: 'subsystem_destroyed', label: subsys.label });
@@ -571,7 +638,9 @@ function stepProjectilesAndHits(
             const nextHull = ast.hull - proj.damage;
             if (nextHull <= 0) {
               asteroidMap.delete(id);
-              events.push({ kind: 'hit_confirmed', isKill: true });
+              if (proj.owner === 'player') {
+                events.push({ kind: 'hit_confirmed', isKill: true });
+              }
               nextExplosions.push({
                 id: `ast-${tick}-${id}`,
                 position: ast.position,
@@ -609,14 +678,14 @@ function stepProjectilesAndHits(
       hit = true;
       friendlyCarrier = {
         ...friendlyCarrier,
-        hull: Math.max(0, friendlyCarrier.hull - proj.damage * 0.4),
+        hull: Math.max(0, friendlyCarrier.hull - proj.damage),
       };
       nextExplosions.push({
         id: `carhit-${tick}-${proj.id}`,
         position: nextPos,
-        radius: 8,
+        radius: 10,
         elapsed: 0,
-        duration: 0.32,
+        duration: 0.36,
         tint: 'amber',
       });
     }
@@ -732,13 +801,6 @@ export function stepCombat(ctx: CombatStepInput): CombatStepOutput {
   };
 }
 
-// Single source of truth for player fighter wing-cannon mount offsets (read by combat.ts and models.ts).
-export const FIGHTER_WEAPON_LAYOUT = {
-  muzzleX: 6.45,
-  muzzleY: 0,
-  muzzleForward: 1.9,
-} as const;
-
 export interface PlayerFireSolution {
   readonly leadPoint: Vec3 | null;
   readonly convergencePoint: Vec3;
@@ -765,26 +827,21 @@ export function computePlayerFireSolution(
         )
       : null;
 
-  let aimDir = playerForward;
-  if (leadPoint !== null) {
-    const toLead = normalize(sub(leadPoint, player.position));
-    // Subtle gimbal convergence inside a 7-degree cone makes leading shots feel crisp with mouse aim.
-    if (dot(playerForward, toLead) >= 0.992) {
-      aimDir = normalize(lerpVec3(playerForward, toLead, 0.72));
-    }
-  }
-
+  // Honest manual aim on LMB: zero gimbal bending toward the lead point.
   const maxBoltReach = COMBAT_TUNING.boltSpeed * COMBAT_TUNING.boltTtl;
   const convergenceRange =
-    leadPoint !== null
-      ? clamp(distance(player.position, leadPoint), 15, maxBoltReach)
-      : 420;
-  const convergencePoint = add(player.position, scale(aimDir, convergenceRange));
+    target !== null
+      ? clamp(distance(player.position, target.position), 30, maxBoltReach)
+      : 300;
+  const convergencePoint = add(player.position, scale(playerForward, convergenceRange));
 
   const barrels = ([-1, 1] as const).map((side) => {
     const muzzle = add(
       add(player.position, scale(playerForward, FIGHTER_WEAPON_LAYOUT.muzzleForward)),
-      add(scale(right, side * FIGHTER_WEAPON_LAYOUT.muzzleX), scale(up, FIGHTER_WEAPON_LAYOUT.muzzleY)),
+      add(
+        scale(right, side * FIGHTER_WEAPON_LAYOUT.muzzleX),
+        scale(up, FIGHTER_WEAPON_LAYOUT.muzzleY),
+      ),
     );
     return {
       muzzle,
@@ -859,8 +916,8 @@ function stepWingmate(
   let callout: string | null = null;
   if (target === null) {
     target = pickWingmateTarget(player, enemies, hostileFrigate);
-    if (target !== null && tick > 60 && tick % 180 === 0) {
-      callout = `Covering your six—engaging ${target.label}.`;
+    if (target !== null && tick > 60 && tick % 240 === 0) {
+      callout = `Covering your six—suppressing ${target.label}.`;
     }
   }
 
@@ -879,7 +936,7 @@ function stepWingmate(
   const targetQuat = quatLookAt(desiredDir);
   const orientation = slerpQuat(wingmate.orientation, targetQuat, clamp(dt * 3.0, 0, 1));
   const playerSpeed = len(player.velocity);
-  const speed = target !== null ? 96 : clamp(playerSpeed + dist * 0.45, 45, 130);
+  const speed = target !== null ? 92 : clamp(playerSpeed + dist * 0.45, 45, 130);
   const velocity = lerpVec3(
     wingmate.velocity,
     scale(forwardOf(orientation), speed),
@@ -892,8 +949,8 @@ function stepWingmate(
   if (
     target !== null &&
     fireCooldown <= 0 &&
-    dist < 540 &&
-    dist > 90 &&
+    dist < 460 &&
+    dist > 100 &&
     dot(forwardOf(orientation), desiredDir) > 0.94
   ) {
     const lead = computeLeadPoint(
@@ -902,20 +959,21 @@ function stepWingmate(
       target.position,
       target.velocity,
       COMBAT_TUNING.boltSpeed,
-      1.4,
+      0.9,
     );
     if (lead !== null) {
-      fireCooldown = 0.62;
+      fireCooldown = 1.35;
       const shotDir = normalize(sub(lead, position));
       projectile = {
         id: `wb-${tick}`,
         kind: 'bolt',
         faction: 'friendly',
+        owner: 'wingmate',
         position: add(position, scale(shotDir, 6)),
         velocity: add(velocity, scale(shotDir, COMBAT_TUNING.boltSpeed)),
         targetId: null,
-        damage: 11,
-        ttl: 1.4,
+        damage: 5,
+        ttl: 0.9,
       };
     }
   }
@@ -943,23 +1001,42 @@ function stepEnemyAi(
   dt: number,
 ): { readonly enemy: EnemyShipState; readonly projectile: ProjectileState | null; readonly rngState: number } {
   let nextRng = rngState;
+  const shieldRegenDelay = Math.max(0, enemy.shieldRegenDelay - dt);
+  const shieldHitFlash = Math.max(0, enemy.shieldHitFlash - dt * 3.8);
+  const shields =
+    shieldRegenDelay <= 0 && enemy.shields < enemy.maxShields
+      ? clamp(enemy.shields + COMBAT_TUNING.enemyShieldRegenRate * dt, 0, enemy.maxShields)
+      : enemy.shields;
+
   const toPlayer = sub(player.position, enemy.position);
   const distToPlayer = len(toPlayer);
   const dirToPlayer = distToPlayer > 1 ? scale(toPlayer, 1 / distToPlayer) : forwardOf(enemy.orientation);
+  const toCarrier = sub(friendlyCarrier.position, enemy.position);
+  const distToCarrier = len(toCarrier);
+  const dirToCarrier = distToCarrier > 1 ? scale(toCarrier, 1 / distToCarrier) : forwardOf(enemy.orientation);
+
+  const enemyBehindPlayer = dot(forwardOf(player.orientation), dirToPlayer) < -0.25;
 
   let maneuver: EnemyManeuver = enemy.maneuver;
   let goalDir: Vec3;
 
   if (maneuver.kind === 'approach') {
     const remainingSeconds = maneuver.remainingSeconds - dt;
-    if (distToPlayer < COMBAT_TUNING.enemyMinApproachDistance || remainingSeconds <= 0) {
+    const tooClose =
+      enemy.kind === 'striker'
+        ? distToCarrier < 210
+        : distToPlayer < COMBAT_TUNING.enemyMinApproachDistance;
+    // Stay on the player's tail if already behind them; break away on overshoot or timer expiry.
+    const shouldBreak = tooClose || (remainingSeconds <= 0 && !enemyBehindPlayer);
+    if (shouldBreak) {
       const r = nextRandom(nextRng);
       nextRng = r.nextState;
       const sideSign = r.value >= 0.5 ? 1 : -1;
-      const away = scale(dirToPlayer, -1);
+      const refDir = enemy.kind === 'striker' ? dirToCarrier : dirToPlayer;
+      const away = scale(refDir, -1);
       const lateral = normalize(cross(away, { x: 0, y: 1, z: 0 }));
       const escapeDir = normalize(
-        add(add(scale(away, 0.7), scale(lateral, sideSign * 0.72)), {
+        add(add(scale(away, 0.65), scale(lateral, sideSign * 0.76)), {
           x: 0,
           y: (r.value - 0.5) * 0.6,
           z: 0,
@@ -968,31 +1045,32 @@ function stepEnemyAi(
       maneuver = {
         kind: 'break_away',
         escapeDir,
-        remainingSeconds: COMBAT_TUNING.enemyBreakAwaySeconds + r.value * 1.1,
+        remainingSeconds: COMBAT_TUNING.enemyBreakAwaySeconds + r.value * 0.9,
       };
       goalDir = escapeDir;
     } else {
-      maneuver = { kind: 'approach', remainingSeconds };
+      maneuver = { kind: 'approach', remainingSeconds: Math.max(remainingSeconds, 0.4) };
       const time = tick / 60 + enemy.phaseOffset;
+      const evasiveJink = enemy.shieldHitFlash > 0.35 ? 1.8 : 1.0;
       const anchor =
         enemy.kind === 'raider'
           ? add(player.position, {
-              x: Math.sin(time * 0.6) * 95,
-              y: Math.cos(time * 0.5) * 55,
-              z: Math.cos(time * 0.6) * 95,
+              x: Math.sin(time * 0.95) * 58 * evasiveJink,
+              y: Math.cos(time * 0.75) * 34 * evasiveJink,
+              z: Math.cos(time * 0.95) * 58 * evasiveJink,
             })
           : add(friendlyCarrier.position, {
-              x: Math.cos(time * 0.35) * 260,
-              y: 65 + Math.sin(time * 0.5) * 60,
-              z: Math.sin(time * 0.35) * 260,
+              x: Math.cos(time * 0.45) * 120,
+              y: 40 + Math.sin(time * 0.6) * 35,
+              z: Math.sin(time * 0.45) * 120,
             });
       goalDir = normalize(sub(anchor, enemy.position));
     }
   } else {
     const remainingSeconds = maneuver.remainingSeconds - dt;
-    if (remainingSeconds <= 0 && distToPlayer > 320) {
-      maneuver = { kind: 'approach', remainingSeconds: COMBAT_TUNING.enemyApproachSeconds };
-    } else if (remainingSeconds <= -1.2) {
+    const minReengageDist = enemy.kind === 'striker' ? 300 : 250;
+    const currentDist = enemy.kind === 'striker' ? distToCarrier : distToPlayer;
+    if ((remainingSeconds <= 0 && currentDist > minReengageDist) || remainingSeconds <= -1.0) {
       maneuver = { kind: 'approach', remainingSeconds: COMBAT_TUNING.enemyApproachSeconds };
     } else {
       maneuver = {
@@ -1001,49 +1079,78 @@ function stepEnemyAi(
         remainingSeconds,
       };
     }
-    goalDir = maneuver.kind === 'break_away' ? maneuver.escapeDir : dirToPlayer;
+    goalDir =
+      maneuver.kind === 'break_away'
+        ? maneuver.escapeDir
+        : enemy.kind === 'striker'
+          ? dirToCarrier
+          : dirToPlayer;
   }
 
   const targetQuat = quatLookAt(goalDir);
-  const turnSpeed = enemy.kind === 'raider' ? 1.65 : 1.15;
+  const turnSpeed = enemy.kind === 'raider' ? 2.15 : 1.35;
   const orientation = slerpQuat(enemy.orientation, targetQuat, clamp(dt * turnSpeed, 0, 1));
   const cruiseSpeed =
     maneuver.kind === 'break_away'
       ? enemy.kind === 'raider'
-        ? 92
-        : 68
+        ? 98
+        : 76
       : enemy.kind === 'raider'
-        ? 78
-        : 58;
-  const velocity = lerpVec3(enemy.velocity, scale(forwardOf(orientation), cruiseSpeed), clamp(dt * 2.5, 0, 1));
+        ? 86
+        : 66;
+  const velocity = lerpVec3(enemy.velocity, scale(forwardOf(orientation), cruiseSpeed), clamp(dt * 2.8, 0, 1));
   const position = add(enemy.position, scale(velocity, dt));
 
   let fireCooldown = Math.max(0, enemy.fireCooldown - dt);
   let projectile: ProjectileState | null = null;
-  const facingPlayer = dot(forwardOf(orientation), dirToPlayer) > 0.92;
 
-  if (
-    maneuver.kind === 'approach' &&
-    fireCooldown <= 0 &&
-    distToPlayer > 175 &&
-    distToPlayer < 480 &&
-    facingPlayer
-  ) {
-    const roll = nextRandom(nextRng);
-    nextRng = roll.nextState;
-    fireCooldown = 1.35 + roll.value * 0.85;
-    const spread = (roll.value - 0.5) * 0.05;
-    const shotDir = normalize(add(dirToPlayer, { x: spread, y: -spread * 0.5, z: 0 }));
-    projectile = {
-      id: `eb-${tick}-${enemy.id}`,
-      kind: 'bolt',
-      faction: 'hostile',
-      position: add(position, scale(shotDir, 7)),
-      velocity: add(velocity, scale(shotDir, COMBAT_TUNING.enemyBoltSpeed)),
-      targetId: null,
-      damage: COMBAT_TUNING.enemyBoltDamage,
-      ttl: 1.7,
-    };
+  if (maneuver.kind === 'approach' && fireCooldown <= 0) {
+    if (enemy.kind === 'striker' && distToCarrier > 180 && distToCarrier < 620) {
+      if (dot(forwardOf(orientation), dirToCarrier) > 0.88) {
+        const roll = nextRandom(nextRng);
+        nextRng = roll.nextState;
+        fireCooldown = 1.05 + roll.value * 0.55;
+        const spread = (roll.value - 0.5) * 0.03;
+        const shotDir = normalize(add(dirToCarrier, { x: spread, y: -spread * 0.5, z: 0 }));
+        projectile = {
+          id: `eb-${tick}-${enemy.id}`,
+          kind: 'bolt',
+          faction: 'hostile',
+          owner: 'hostile',
+          position: add(position, scale(shotDir, 8)),
+          velocity: add(velocity, scale(shotDir, COMBAT_TUNING.enemyBoltSpeed)),
+          targetId: null,
+          damage: COMBAT_TUNING.enemyCarrierDamage,
+          ttl: 1.9,
+        };
+      }
+    } else if (distToPlayer > 130 && distToPlayer < 560 && dot(forwardOf(orientation), dirToPlayer) > 0.88) {
+      const lead = computeLeadPoint(
+        position,
+        velocity,
+        player.position,
+        player.velocity,
+        COMBAT_TUNING.enemyBoltSpeed,
+        1.7,
+      );
+      const roll = nextRandom(nextRng);
+      nextRng = roll.nextState;
+      fireCooldown = 0.85 + roll.value * 0.55;
+      const aimDir = lead !== null ? normalize(sub(lead, position)) : dirToPlayer;
+      const spread = (roll.value - 0.5) * 0.032;
+      const shotDir = normalize(add(aimDir, { x: spread, y: -spread * 0.5, z: 0 }));
+      projectile = {
+        id: `eb-${tick}-${enemy.id}`,
+        kind: 'bolt',
+        faction: 'hostile',
+        owner: 'hostile',
+        position: add(position, scale(shotDir, 7)),
+        velocity: add(velocity, scale(shotDir, COMBAT_TUNING.enemyBoltSpeed)),
+        targetId: null,
+        damage: COMBAT_TUNING.enemyBoltDamage,
+        ttl: 1.7,
+      };
+    }
   }
 
   return {
@@ -1053,6 +1160,9 @@ function stepEnemyAi(
       velocity,
       orientation,
       maneuver,
+      shields,
+      shieldRegenDelay,
+      shieldHitFlash,
       fireCooldown,
     },
     projectile,

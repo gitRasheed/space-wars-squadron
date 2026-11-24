@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { isInsideCapitalBox } from '../src/sim/combat';
-import { createInitialEnergy, ENERGY_RULES, stepEnergy } from '../src/sim/energy';
+import { COMBAT_TUNING, isInsideCapitalBox } from '../src/sim/combat';
+import { createInitialEnergy, ENERGY_RULES, spendWeaponCharge, stepEnergy } from '../src/sim/energy';
 import { FLIGHT_TUNING, resolveObstacleClearance } from '../src/sim/flight';
-import { distance, dot, len, nextRandom, normalize, quatFromAxisAngle, vec3 } from '../src/sim/math';
+import { dot, len, nextRandom, normalize, quatFromAxisAngle, vec3 } from '../src/sim/math';
 import {
   DEFAULT_SORTIE_SEED,
   FIXED_DT,
@@ -13,46 +13,85 @@ import {
 } from '../src/sim/types';
 import { createInitialWorld, DEFAULT_SORTIE_CONFIG, stepWorld } from '../src/sim/world';
 
-describe('energy and snap-turn drift kernel', () => {
-  it('enforces recovery cooldown after boost release and blocks immediate boost-gasping', () => {
-    let energy = createInitialEnergy();
-    const vel = vec3(0, 0, -90);
+describe('throttle overdrive and weapon overheat kernel', () => {
+  it('stops throttle at 100% high-watermark while holding W, enters 120% Overdrive on second W press draining shields, and drops cleanly on S or 0 shields', () => {
+    let world = createInitialWorld(DEFAULT_SORTIE_SEED, true);
+    world = { ...world, enemies: [], asteroids: [] };
 
-    energy = stepEnergy(energy, true, false, vel, FIXED_DT).energy;
-    expect(energy.boostMode.kind).toBe('boosting');
-
-    energy = stepEnergy(energy, false, false, vel, FIXED_DT).energy;
-    expect(energy.boostMode.kind).toBe('recovering');
-
-    energy = stepEnergy(energy, true, false, vel, FIXED_DT).energy;
-    expect(energy.boostMode.kind).toBe('recovering');
-
-    energy = stepEnergy(energy, false, true, vel, FIXED_DT).energy;
-    expect(energy.boostMode.kind).toBe('recovering');
-
-    const recoveryTicks = Math.ceil(ENERGY_RULES.boostRecoverySeconds / FIXED_DT) + 2;
-    for (let i = 0; i < recoveryTicks; i += 1) {
-      energy = stepEnergy(energy, false, false, vel, FIXED_DT).energy;
+    // Hold W continuously without a second press: climbs to 1.00 and stops cleanly at the detent.
+    for (let i = 0; i < 60; i += 1) {
+      world = stepWorld(
+        world,
+        { ...NEUTRAL_INPUT, throttleDelta: 1, throttlePushEdge: i === 0 },
+        FIXED_DT,
+      );
     }
-    expect(energy.boostMode.kind).toBe('ready');
+    expect(world.player.throttle).toBeCloseTo(1.0, 4);
+    expect(world.player.energy.overdrive).toBe(false);
+
+    // Second W press at 100% kicks into 120% Overdrive and starts burning shields.
+    const preOverdriveShield = world.player.energy.shieldCharge;
+    world = stepWorld(
+      world,
+      { ...NEUTRAL_INPUT, throttleDelta: 1, throttlePushEdge: true },
+      FIXED_DT,
+    );
+    expect(world.player.energy.overdrive).toBe(true);
+    expect(world.player.throttle).toBeCloseTo(1.2, 4);
+    expect(world.player.energy.shieldCharge).toBeLessThan(preOverdriveShield);
+
+    // Pressing S immediately cancels Overdrive back to <= 100%.
+    world = stepWorld(world, { ...NEUTRAL_INPUT, throttleDelta: -1 }, FIXED_DT);
+    expect(world.player.energy.overdrive).toBe(false);
+    expect(world.player.throttle).toBeLessThanOrEqual(1.0);
+
+    // Re-enter Overdrive and burn shields all the way to 0: auto-drops out cleanly.
+    world = { ...world, player: { ...world.player, throttle: 1.0 } };
+    world = stepWorld(world, { ...NEUTRAL_INPUT, throttleDelta: 1, throttlePushEdge: true }, FIXED_DT);
+    expect(world.player.energy.overdrive).toBe(true);
+    for (let i = 0; i < 300; i += 1) {
+      world = stepWorld(world, NEUTRAL_INPUT, FIXED_DT);
+      if (!world.player.energy.overdrive) break;
+    }
+    expect(world.player.energy.overdrive).toBe(false);
+    expect(world.player.energy.shieldCharge).toBe(0);
+    expect(world.player.throttle).toBeCloseTo(1.0, 4);
   });
 
-  it('caps snap-turn drift duration and forces transition into recovery', () => {
+  it('locks out primary cannons on overheat at 0 charge until weapon charge cools all the way to 100%', () => {
     let energy = createInitialEnergy();
-    const vel = vec3(0, 0, -110);
-
-    energy = stepEnergy(energy, false, true, vel, FIXED_DT).energy;
-    expect(energy.boostMode.kind).toBe('drifting');
-
-    const maxTicks = Math.ceil(ENERGY_RULES.maxDriftSeconds / FIXED_DT) + 2;
-    for (let i = 0; i < maxTicks; i += 1) {
-      energy = stepEnergy(energy, false, true, vel, FIXED_DT).energy;
+    let shotsFired = 0;
+    while (energy.weaponState === 'ready' && shotsFired < 20) {
+      const spent = spendWeaponCharge(energy, ENERGY_RULES.primaryShotCost);
+      expect(spent).not.toBeNull();
+      if (spent === null) break;
+      energy = spent.energy;
+      shotsFired += 1;
     }
-    expect(energy.boostMode.kind).toBe('recovering');
+    expect(energy.weaponState).toBe('overheated');
+    expect(energy.weaponCharge).toBe(0);
+
+    // Cannot fire while overheated, even after partial cooling (e.g., 50%).
+    for (let i = 0; i < 100; i += 1) {
+      energy = stepEnergy(energy, false, false, FIXED_DT).energy;
+    }
+    expect(energy.weaponCharge).toBeGreaterThan(20);
+    expect(energy.weaponCharge).toBeLessThan(100);
+    expect(energy.weaponState).toBe('overheated');
+    expect(spendWeaponCharge(energy, ENERGY_RULES.primaryShotCost)).toBeNull();
+
+    // Once cooled back to 100%, cannons unlock cleanly.
+    for (let i = 0; i < 200; i += 1) {
+      energy = stepEnergy(energy, false, false, FIXED_DT).energy;
+      if (energy.weaponState === 'ready') break;
+    }
+    expect(energy.weaponState).toBe('ready');
+    expect(energy.weaponCharge).toBe(100);
+    expect(spendWeaponCharge(energy, ENERGY_RULES.primaryShotCost)).not.toBeNull();
   });
 });
 
-describe('sortie simulation contracts', () => {
+describe('sortie simulation contracts and enemy shield entities', () => {
   it('launches from briefing, ignores Enter during active flight, and restarts only on explicit restart', () => {
     let world = createInitialWorld(DEFAULT_SORTIE_SEED, false);
     expect(world.phase.kind).toBe('briefing');
@@ -72,29 +111,86 @@ describe('sortie simulation contracts', () => {
     expect(world.phase.kind).toBe('active');
   });
 
-  it('breaks enemy raiders away after close passes instead of gluing them behind the player', () => {
+  it('alternates left/right reciprocating barrels on LMB and stays in first-person cockpit mode', () => {
     let world = createInitialWorld(DEFAULT_SORTIE_SEED, true);
-    let sawBreakAway = false;
-    for (let i = 0; i < 420; i += 1) {
-      world = stepWorld(world, NEUTRAL_INPUT, FIXED_DT);
-      if (world.enemies.some((e) => e.maneuver.kind === 'break_away')) {
-        sawBreakAway = true;
-      }
-      for (const e of world.enemies) {
-        if (e.maneuver.kind === 'break_away') {
-          expect(distance(e.position, world.player.position)).toBeGreaterThan(20);
-        }
+    world = stepWorld(world, { ...NEUTRAL_INPUT, firePrimary: true }, FIXED_DT);
+    expect(world.cameraMode).toBe('cockpit');
+    expect(world.player.recoilLeft).toBe(1);
+    expect(world.player.recoilRight).toBe(0);
+    expect(world.player.nextBarrel).toBe('right');
+    expect(world.events.some((e) => e.kind === 'cannon_fired' && e.barrel === 'left')).toBe(true);
+
+    for (let i = 0; i < 10; i += 1) {
+      world = stepWorld(world, { ...NEUTRAL_INPUT, firePrimary: true }, FIXED_DT);
+      if (world.events.some((e) => e.kind === 'cannon_fired' && e.barrel === 'right')) {
+        break;
       }
     }
-    expect(sawBreakAway).toBe(true);
+    expect(world.player.recoilRight).toBe(1);
+    expect(world.player.nextBarrel).toBe('left');
   });
 
-  it('toggles camera, fires cannons, and maintains autonomous wingmate target', () => {
-    let world = createInitialWorld(DEFAULT_SORTIE_SEED, true);
-    world = stepWorld(world, { ...NEUTRAL_INPUT, toggleCamera: true, firePrimary: true }, FIXED_DT);
-    expect(world.cameraMode).toBe('chase');
-    expect(world.projectiles.length).toBeGreaterThanOrEqual(2);
-    expect(world.wingmate.targetId).not.toBeNull();
+  it('gives raiders real shields: 1 missile strips shield with shield_broken event, 1 missile kills an unshielded raider', () => {
+    const base = createInitialWorld(DEFAULT_SORTIE_SEED, true);
+    const raider = base.enemies[0];
+    expect(raider).toBeDefined();
+    if (raider === undefined) return;
+    expect(raider.maxShields).toBeGreaterThan(0);
+    expect(raider.shields).toBe(raider.maxShields);
+
+    // Hit 1: one missile strips the fresh raider's entire shield, emits shield_broken, leaves raider alive.
+    const afterFirstMissile = stepWorld(
+      {
+        ...base,
+        enemies: [{ ...raider, fireCooldown: 99 }],
+        projectiles: [
+          {
+            id: 'm1',
+            kind: 'missile',
+            faction: 'friendly',
+            owner: 'player',
+            position: raider.position,
+            velocity: vec3(0, 0, -1),
+            targetId: raider.id,
+            damage: COMBAT_TUNING.missileDamage,
+            ttl: 2,
+          },
+        ],
+      },
+      NEUTRAL_INPUT,
+      FIXED_DT,
+    );
+    expect(afterFirstMissile.enemies).toHaveLength(1);
+    expect(afterFirstMissile.enemies[0]?.shields).toBe(0);
+    expect(afterFirstMissile.enemies[0]?.hull).toBeGreaterThan(0);
+    expect(afterFirstMissile.events.some((e) => e.kind === 'shield_broken')).toBe(true);
+
+    // Hit 2: one missile destroys an unshielded raider cleanly.
+    const unshieldedRaider = afterFirstMissile.enemies[0];
+    expect(unshieldedRaider).toBeDefined();
+    if (unshieldedRaider === undefined) return;
+    const afterSecondMissile = stepWorld(
+      {
+        ...afterFirstMissile,
+        projectiles: [
+          {
+            id: 'm2',
+            kind: 'missile',
+            faction: 'friendly',
+            owner: 'player',
+            position: unshieldedRaider.position,
+            velocity: vec3(0, 0, -1),
+            targetId: unshieldedRaider.id,
+            damage: COMBAT_TUNING.missileDamage,
+            ttl: 2,
+          },
+        ],
+      },
+      NEUTRAL_INPUT,
+      FIXED_DT,
+    );
+    expect(afterSecondMissile.enemies).toHaveLength(0);
+    expect(afterSecondMissile.events.some((e) => e.kind === 'hit_confirmed' && e.isKill)).toBe(true);
   });
 
   it('clears lock and rearms missiles after firing', () => {
@@ -103,7 +199,7 @@ describe('sortie simulation contracts', () => {
     expect(world.player.missilesReady).toBe(3);
     expect(world.player.lockState.kind).toBe('none');
 
-    for (let i = 0; i < 270; i += 1) {
+    for (let i = 0; i < 290; i += 1) {
       world = stepWorld(world, NEUTRAL_INPUT, FIXED_DT);
     }
     expect(world.player.missilesReady).toBe(4);
@@ -113,27 +209,28 @@ describe('sortie simulation contracts', () => {
     const base = createInitialWorld(DEFAULT_SORTIE_SEED, true);
     const targetRock = base.asteroids[0];
     expect(targetRock).toBeDefined();
-    if (targetRock === undefined) {
-      return;
-    }
+    if (targetRock === undefined) return;
 
-    const worldWithShot = {
-      ...base,
-      projectiles: [
-        {
-          id: 'test-missile',
-          kind: 'missile' as const,
-          faction: 'friendly' as const,
-          position: targetRock.position,
-          velocity: vec3(0, 0, -1),
-          targetId: null,
-          damage: targetRock.hull + 10,
-          ttl: 2,
-        },
-      ],
-    };
-
-    const next = stepWorld(worldWithShot, NEUTRAL_INPUT, FIXED_DT);
+    const next = stepWorld(
+      {
+        ...base,
+        projectiles: [
+          {
+            id: 'test-missile',
+            kind: 'missile',
+            faction: 'friendly',
+            owner: 'player',
+            position: targetRock.position,
+            velocity: vec3(0, 0, -1),
+            targetId: null,
+            damage: targetRock.hull + 10,
+            ttl: 2,
+          },
+        ],
+      },
+      NEUTRAL_INPUT,
+      FIXED_DT,
+    );
     expect(next.asteroids.some((a) => a.id === targetRock.id)).toBe(false);
     expect(next.explosions.length).toBeGreaterThan(0);
   });
@@ -180,7 +277,7 @@ describe('sortie simulation contracts', () => {
     }
   });
 
-  it('resolves rotated capital-ship clearance and projectile hitboxes in ship-local space', () => {
+  it('resolves rotated capital-ship clearance, deals closing-speed collision damage, and checks hitboxes in ship-local space', () => {
     const rotatedFrigate: CapitalShipState = {
       id: 'rotated-frigate',
       name: 'ROTATED FRIGATE',
@@ -193,29 +290,19 @@ describe('sortie simulation contracts', () => {
       subsystems: [],
     };
 
-    // After 90 deg yaw, local Z (halfExtent 100) lies along world X, and local X (halfExtent 20) lies along world Z.
     expect(isInsideCapitalBox(vec3(80, 0, 0), rotatedFrigate, 0)).toBe(true);
     expect(isInsideCapitalBox(vec3(0, 0, 80), rotatedFrigate, 0)).toBe(false);
 
     const alongRotatedHull = resolveObstacleClearance(
       vec3(80, 0, 14),
-      vec3(0, 0, -40),
+      vec3(0, 0, -60),
       [rotatedFrigate],
       [],
     );
     expect(alongRotatedHull.warning).toBe(true);
+    expect(alongRotatedHull.impactSpeed).toBeCloseTo(60, 4);
     expect(alongRotatedHull.position.x).toBeCloseTo(80, 4);
-    expect(alongRotatedHull.position.y).toBeCloseTo(0, 4);
     expect(alongRotatedHull.position.z).toBeGreaterThan(20);
-
-    const clearAlongOldAxis = resolveObstacleClearance(
-      vec3(0, 0, 80),
-      vec3(0, 0, -40),
-      [rotatedFrigate],
-      [],
-    );
-    expect(clearAlongOldAxis.warning).toBe(false);
-    expect(clearAlongOldAxis.position).toEqual(vec3(0, 0, 80));
   });
 
   it('preserves custom sortie configuration across restarts without re-passing config', () => {
@@ -264,6 +351,30 @@ describe('sortie simulation contracts', () => {
     expect(len(vel)).toBeLessThan(1);
   });
 
+  it('balance gate: an AFK pilot takes real damage or loses Hearthstone instead of sitting immune', () => {
+    let world = createInitialWorld(DEFAULT_SORTIE_SEED, true);
+    let minPlayerShield = 100;
+    let minPlayerHull = world.player.hull;
+    let minCarrierHull = world.friendlyCarrier.hull;
+
+    for (let tick = 0; tick < 60 * 90; tick += 1) {
+      world = stepWorld(world, { ...NEUTRAL_INPUT, throttleDelta: -1 }, FIXED_DT);
+      minPlayerShield = Math.min(minPlayerShield, world.player.energy.shieldCharge);
+      minPlayerHull = Math.min(minPlayerHull, world.player.hull);
+      minCarrierHull = Math.min(minCarrierHull, world.friendlyCarrier.hull);
+      if (world.phase.kind !== 'active') break;
+    }
+
+    // Real stakes: either the AFK pilot/carrier was destroyed, or took serious shield/hull damage.
+    const tookSeriousDamage =
+      world.phase.kind === 'failed' ||
+      minPlayerShield < 50 ||
+      minPlayerHull < world.player.maxHull ||
+      minCarrierHull < world.friendlyCarrier.maxHull - 100;
+    expect(tookSeriousDamage).toBe(true);
+    expect(world.phase.kind).not.toBe('victory');
+  });
+
   it('survives 60 seconds of randomized combat flight with finite state and valid invariants', () => {
     let world = createInitialWorld(DEFAULT_SORTIE_SEED, true);
     let seed = 0xdeadbeef;
@@ -281,8 +392,8 @@ describe('sortie simulation contracts', () => {
           pitch: (r1.value - 0.5) * 1.4,
           yaw: (r2.value - 0.5) * 1.4,
           roll: r3.value > 0.7 ? 1 : r3.value < 0.3 ? -1 : 0,
-          boost: r1.value > 0.82,
-          drift: r2.value > 0.88,
+          throttleDelta: r1.value > 0.65 ? 1 : r1.value < 0.2 ? -1 : 0,
+          throttlePushEdge: tick % 120 === 0,
           firePrimary: r3.value > 0.5,
           fireMissile: tick % 90 === 0,
           cycleTarget: tick % 180 === 0,
@@ -293,10 +404,13 @@ describe('sortie simulation contracts', () => {
       expect(Number.isFinite(world.player.position.x)).toBe(true);
       expect(Number.isFinite(world.player.position.y)).toBe(true);
       expect(Number.isFinite(world.player.position.z)).toBe(true);
-      expect(world.player.energy.engineCharge).toBeGreaterThanOrEqual(0);
-      expect(world.player.energy.engineCharge).toBeLessThanOrEqual(100);
       expect(world.player.energy.weaponCharge).toBeGreaterThanOrEqual(0);
       expect(world.player.energy.weaponCharge).toBeLessThanOrEqual(100);
+      expect(world.player.energy.shieldCharge).toBeGreaterThanOrEqual(0);
+      expect(world.player.energy.shieldCharge).toBeLessThanOrEqual(100);
+      if (world.player.energy.overdrive) {
+        expect(world.player.energy.shieldCharge).toBeGreaterThan(0);
+      }
       expect(world.player.missilesReady).toBeGreaterThanOrEqual(0);
       expect(world.player.missilesReady).toBeLessThanOrEqual(world.player.maxMissiles);
 

@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { computeCameraPose, projectPointFromPose } from '../src/render/cameraPose';
 import { computeHudReticlePoint } from '../src/render/cockpitHud';
-import { buildHostileFrigateMesh, buildPlayerFighterMesh } from '../src/render/models';
+import { buildCockpitRig, buildHostileFrigateMesh } from '../src/render/models';
 import type { HullTextureSet } from '../src/render/textures';
 import {
+  COCKPIT_CAMERA_OFFSET,
+  COCKPIT_GUN_LOCAL,
   COMBAT_TUNING,
   computePlayerFireSolution,
   FIGHTER_WEAPON_LAYOUT,
@@ -25,18 +27,17 @@ import {
   DEFAULT_SORTIE_SEED,
   FIXED_DT,
   NEUTRAL_INPUT,
-  type CameraMode,
   type Vec3,
   type WorldState,
 } from '../src/sim/types';
 import { createInitialWorld, stepWorld } from '../src/sim/world';
 
-describe('ballistic lead solver, HUD convergence, unreachable guards, pause freeze, and frigate layout', () => {
+describe('ballistic lead solver, manual aim, cockpit gun alignment, pause freeze, and frigate layout', () => {
   it('solves exact quadratic intercept and scores a real hit on a fast crossing enemy in stepWorld', () => {
     const shooterPos = vec3(0, 0, 0);
     const shooterVel = vec3(0, 0, -60);
-    const targetPos = vec3(-120, 25, -360);
-    const targetVel = vec3(110, -20, 40);
+    const targetPos = vec3(-95, 20, -280);
+    const targetVel = vec3(95, -15, 35);
 
     const t = solveInterceptTime(
       sub(targetPos, shooterPos),
@@ -84,15 +85,15 @@ describe('ballistic lead solver, HUD convergence, unreachable guards, pause free
       ],
     };
 
-    const startHull = world.enemies[0]?.hull ?? 0;
+    const startIntegrity = (world.enemies[0]?.shields ?? 0) + (world.enemies[0]?.hull ?? 0);
     world = stepWorld(world, { ...NEUTRAL_INPUT, firePrimary: true }, FIXED_DT);
     expect(world.projectiles.length).toBeGreaterThan(0);
 
     let hitConfirmed = false;
     for (let i = 0; i < 60; i += 1) {
       world = stepWorld(world, NEUTRAL_INPUT, FIXED_DT);
-      const currentHull = world.enemies[0]?.hull ?? 0;
-      if (currentHull < startHull || world.events.some((e) => e.kind === 'hit_confirmed')) {
+      const currentIntegrity = (world.enemies[0]?.shields ?? 0) + (world.enemies[0]?.hull ?? 0);
+      if (currentIntegrity < startIntegrity || world.events.some((e) => e.kind === 'hit_confirmed')) {
         hitConfirmed = true;
         break;
       }
@@ -101,7 +102,6 @@ describe('ballistic lead solver, HUD convergence, unreachable guards, pause free
   });
 
   it('returns null for unreachable receding targets and intercepts beyond bolt TTL', () => {
-    // 300 m away, receding at 700 m/s (> 580 m/s boltSpeed): no positive intercept exists.
     expect(
       solveInterceptTime(vec3(0, 0, -300), vec3(90, 0, -700), COMBAT_TUNING.boltSpeed, COMBAT_TUNING.boltTtl),
     ).toBeNull();
@@ -116,12 +116,12 @@ describe('ballistic lead solver, HUD convergence, unreachable guards, pause free
       ),
     ).toBeNull();
 
-    // 1,400 m crossing shot: mathematical intercept exists (~2.44 s) but exceeds 1.9 s bolt TTL.
+    // 700 m crossing shot exceeds the ~515 m bolt reach (560 m/s * 0.92 s).
     expect(
       computeLeadPoint(
         vec3(0, 0, 0),
         vec3(0, 0, 0),
-        vec3(0, 0, -1400),
+        vec3(0, 0, -700),
         vec3(120, 0, 0),
         COMBAT_TUNING.boltSpeed,
         COMBAT_TUNING.boltTtl,
@@ -129,7 +129,7 @@ describe('ballistic lead solver, HUD convergence, unreachable guards, pause free
     ).toBeNull();
   });
 
-  it('projects the real HUD reticle onto the exact crossing point of both spawned bolts across cockpit/chase cams, aim assist, and mid-FOV transitions', () => {
+  it('keeps LMB manual with zero aim assist and projects cockpit reticle onto exact barrel convergence across ranges and FOV', () => {
     const width = 1280;
     const height = 720;
     const base = createInitialWorld(DEFAULT_SORTIE_SEED, true);
@@ -137,23 +137,16 @@ describe('ballistic lead solver, HUD convergence, unreachable guards, pause free
     expect(baseEnemy).toBeDefined();
     if (baseEnemy === undefined) return;
 
-    const scenarios: readonly {
-      readonly cameraMode: CameraMode;
-      readonly targetPos: Vec3;
-      readonly liveFov: number;
-    }[] = [
-      { cameraMode: 'cockpit', targetPos: vec3(0, 0, -90), liveFov: 68 },
-      { cameraMode: 'chase', targetPos: vec3(0, 0, -90), liveFov: 68 },
-      // 6 deg off-axis at 260 m during a mid-boost FOV lerp (triggers aim assist + off-center projection).
-      { cameraMode: 'chase', targetPos: vec3(27.3, 6, -258.5), liveFov: 74.2 },
-      // Long-range 640 m engagement in cockpit view.
-      { cameraMode: 'cockpit', targetPos: vec3(-18, 9, -639.7), liveFov: 68 },
+    const scenarios: readonly { readonly targetPos: Vec3; readonly liveFov: number }[] = [
+      { targetPos: vec3(0, 0, -90), liveFov: 68 },
+      // 6 deg off-axis at 260 m during overdrive FOV lerp: must NOT bend toward target!
+      { targetPos: vec3(27.3, 6, -258.5), liveFov: 74.2 },
+      { targetPos: vec3(-18, 9, -460), liveFov: 68 },
     ];
 
     for (const scenario of scenarios) {
       const world: WorldState = {
         ...base,
-        cameraMode: scenario.cameraMode,
         player: {
           ...base.player,
           position: vec3(0, 0, 0),
@@ -171,17 +164,19 @@ describe('ballistic lead solver, HUD convergence, unreachable guards, pause free
         ],
       };
 
-      const pose = computeCameraPose(world.player, world.cameraMode);
+      const pose = computeCameraPose(world.player, 'cockpit');
       const liveProject = (point: Vec3, w: number, h: number) =>
         projectPointFromPose(pose, point, w, h, scenario.liveFov);
-
-      // Measure actual HUD reticle coordinates from production cockpitHud.ts.
       const hudReticle = computeHudReticlePoint(world, liveProject, width, height);
 
-      // Fire real bolts from combat.ts and intersect both trajectories with the convergence plane.
       const selected = findTargetContact(world.player.selectedTargetId, world.enemies, world.hostileFrigate);
       const fireSolution = computePlayerFireSolution(world.player, selected);
       expect(fireSolution.barrels.length).toBe(2);
+
+      // Zero aim assist: convergencePoint lies strictly along ship forward (-Z), never bent toward X/Y!
+      expect(fireSolution.convergencePoint.x).toBeCloseTo(0, 6);
+      expect(fireSolution.convergencePoint.y).toBeCloseTo(0, 6);
+      expect(fireSolution.convergencePoint.z).toBeLessThan(0);
 
       const planeNormal = normalize(sub(fireSolution.convergencePoint, world.player.position));
       for (const barrel of fireSolution.barrels) {
@@ -210,12 +205,11 @@ describe('ballistic lead solver, HUD convergence, unreachable guards, pause free
     world = stepWorld(world, { ...NEUTRAL_INPUT, togglePause: true }, FIXED_DT);
     expect(world.phase.kind).toBe('paused');
 
-    // Idempotent pauseRequested never unpauses when already paused.
     world = stepWorld(world, { ...NEUTRAL_INPUT, pauseRequested: true }, FIXED_DT);
     expect(world.phase.kind).toBe('paused');
 
     for (let i = 0; i < 90; i += 1) {
-      world = stepWorld(world, { ...NEUTRAL_INPUT, firePrimary: true, boost: true, pitch: 1 }, FIXED_DT);
+      world = stepWorld(world, { ...NEUTRAL_INPUT, firePrimary: true, throttlePushEdge: true, pitch: 1 }, FIXED_DT);
     }
     expect(world.phase.kind).toBe('paused');
     expect(world.tick).toBe(prePauseTick);
@@ -249,16 +243,20 @@ describe('ballistic lead solver, HUD convergence, unreachable guards, pause free
     }
   });
 
-  it('keeps chase-cam fighter muzzle burst positions locked to FIGHTER_WEAPON_LAYOUT', () => {
-    const stubTextures = {
-      fighterHull: undefined,
-    } as unknown as HullTextureSet;
-    const rig = buildPlayerFighterMesh(0xe88332, stubTextures);
-    expect(rig.muzzleLeft.position.x).toBe(-FIGHTER_WEAPON_LAYOUT.muzzleX);
-    expect(rig.muzzleLeft.position.y).toBe(FIGHTER_WEAPON_LAYOUT.muzzleY);
-    expect(rig.muzzleLeft.position.z).toBe(-FIGHTER_WEAPON_LAYOUT.muzzleForward);
-    expect(rig.muzzleRight.position.x).toBe(FIGHTER_WEAPON_LAYOUT.muzzleX);
-    expect(rig.muzzleRight.position.y).toBe(FIGHTER_WEAPON_LAYOUT.muzzleY);
-    expect(rig.muzzleRight.position.z).toBe(-FIGHTER_WEAPON_LAYOUT.muzzleForward);
+  it('keeps first-person cockpit gun barrel tips and sim FIGHTER_WEAPON_LAYOUT derived from one shared source', () => {
+    const rig = buildCockpitRig();
+    expect(rig.barrelLeft.position.x).toBe(-COCKPIT_GUN_LOCAL.x);
+    expect(rig.barrelLeft.position.y).toBe(COCKPIT_GUN_LOCAL.y);
+    expect(rig.muzzleLeft.position.z).toBe(-COCKPIT_GUN_LOCAL.forward);
+    expect(rig.barrelRight.position.x).toBe(COCKPIT_GUN_LOCAL.x);
+    expect(rig.barrelRight.position.y).toBe(COCKPIT_GUN_LOCAL.y);
+    expect(rig.muzzleRight.position.z).toBe(-COCKPIT_GUN_LOCAL.forward);
+
+    expect(FIGHTER_WEAPON_LAYOUT.muzzleX).toBe(COCKPIT_GUN_LOCAL.x);
+    expect(FIGHTER_WEAPON_LAYOUT.muzzleY).toBeCloseTo(COCKPIT_CAMERA_OFFSET.up + COCKPIT_GUN_LOCAL.y, 6);
+    expect(FIGHTER_WEAPON_LAYOUT.muzzleForward).toBeCloseTo(
+      COCKPIT_CAMERA_OFFSET.forward + COCKPIT_GUN_LOCAL.forward,
+      6,
+    );
   });
 });

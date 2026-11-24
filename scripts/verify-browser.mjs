@@ -150,14 +150,15 @@ async function run() {
     await waitForTelemetry(
       page,
       (snap) => snap.phase === 'active' && snap.tick > 5,
-      'active phase with tick > 5',
+      'active cockpit flight',
     );
 
+    // 1. Fire reciprocating cannons in cockpit view.
     await page.keyboard.down('KeyJ');
     const combatSnap = await waitForTelemetry(
       page,
       (snap) => snap.projectilesCount > 0 || snap.weaponCharge < 100,
-      'cannons firing in cockpit view',
+      'cockpit cannons firing',
     );
     assertCondition(
       combatSnap.wingmateTargetId !== null,
@@ -169,64 +170,49 @@ async function run() {
       cockpitGlSignal.nonBlackRatio >= 0.15 && cockpitGlSignal.uniqueColors >= 24,
       `Cockpit 3D canvas lacks visual signal (${JSON.stringify(cockpitGlSignal)})`,
     );
+
+    // 2. Keep holding fire until weapon overheat lockout triggers.
+    const overheatSnap = await waitForTelemetry(
+      page,
+      (snap) => snap.weaponState === 'overheated',
+      'weapon overheat lockout',
+    );
+    await page.screenshot({ path: path.join(OUT_DIR, '03-overheat.png') });
     await page.keyboard.up('KeyJ');
 
-    await page.keyboard.press('KeyE');
-    await page.keyboard.down('Space');
-    await page.mouse.move(930, 310, { steps: 6 });
-    const driftSnap = await waitForTelemetry(
+    // 3. Push throttle to 100% high-watermark detent, release W, and tap W again for 120% Overdrive.
+    await page.keyboard.down('KeyW');
+    await waitForTelemetry(page, (snap) => snap.throttle >= 0.995, 'throttle reaching 100% detent');
+    await page.keyboard.up('KeyW');
+    await page.keyboard.press('KeyW');
+    const overdriveSnap = await waitForTelemetry(
       page,
-      (snap) =>
-        (snap.boostMode === 'drifting' || snap.boostMode === 'recovering') &&
-        snap.missilesReady < 4,
-      'snap-turn drift and missile launch',
+      (snap) => snap.overdrive === true && snap.throttle > 1.15,
+      '120% throttle overdrive',
     );
-    await page.screenshot({ path: path.join(OUT_DIR, '03-snap-turn.png') });
-    await page.keyboard.up('Space');
-
-    await waitForTelemetry(
-      page,
-      (snap) => snap.boostMode === 'ready' && snap.engineCharge >= 35,
-      'engine recovery to ready before boost',
-    );
-    await page.keyboard.press('KeyV');
-    await waitForTelemetry(page, (snap) => snap.cameraMode === 'chase', 'chase camera mode');
-    await page.mouse.move(640, 360, { steps: 4 });
-    await page.keyboard.down('ShiftLeft');
-    await page.keyboard.down('KeyD');
-    const chaseSnap = await waitForTelemetry(
-      page,
-      (snap) => snap.cameraMode === 'chase' && snap.boostMode === 'boosting',
-      'active boost in chase view',
-    );
-    // Capture screenshot immediately while boosting, before measureWebglSignal advances frames.
-    await page.screenshot({ path: path.join(OUT_DIR, '04-chase-boost.png') });
-    const chaseGlSignal = await measureWebglSignal(page);
+    await page.screenshot({ path: path.join(OUT_DIR, '04-overdrive.png') });
+    const overdriveGlSignal = await measureWebglSignal(page);
     assertCondition(
-      chaseGlSignal.nonBlackRatio >= 0.15 && chaseGlSignal.uniqueColors >= 24,
-      `Chase 3D canvas lacks visual signal (${JSON.stringify(chaseGlSignal)})`,
+      overdriveGlSignal.nonBlackRatio >= 0.15 && overdriveGlSignal.uniqueColors >= 24,
+      `Overdrive 3D canvas lacks visual signal (${JSON.stringify(overdriveGlSignal)})`,
     );
-    await page.keyboard.up('ShiftLeft');
-    await page.keyboard.up('KeyD');
 
+    // 4. Restart and fire lock-on missile + cannons in cockpit view.
     await page.keyboard.press('KeyR');
-    const afterRestart = await waitForTelemetry(
+    await waitForTelemetry(
       page,
       (snap, prevTick) => snap.phase === 'active' && snap.tick < prevTick,
       'sortie restart',
-      chaseSnap.tick,
+      overdriveSnap.tick,
     );
-    if (afterRestart.cameraMode !== 'chase') {
-      await page.keyboard.press('KeyV');
-      await waitForTelemetry(page, (snap) => snap.cameraMode === 'chase', 'chase camera after restart');
-    }
+    await page.keyboard.press('KeyE');
     await page.keyboard.down('KeyJ');
     const finalSnap = await waitForTelemetry(
       page,
-      (snap) => snap.cameraMode === 'chase' && snap.projectilesCount > 0,
-      'chase combat bolts in flight',
+      (snap) => snap.missilesReady < 4 && snap.projectilesCount > 0,
+      'missile and cannon combat after restart',
     );
-    await page.screenshot({ path: path.join(OUT_DIR, '05-chase-combat.png') });
+    await page.screenshot({ path: path.join(OUT_DIR, '05-missile-combat.png') });
     await page.keyboard.up('KeyJ');
 
     assertCondition(consoleErrors.length === 0, `Console errors: ${consoleErrors.join('; ')}`);
@@ -237,20 +223,20 @@ async function run() {
       url: baseUrl,
       glSignal: {
         cockpit: cockpitGlSignal,
-        chase: chaseGlSignal,
+        overdrive: overdriveGlSignal,
       },
       screenshots: [
         '01-briefing.png',
         '02-cockpit-combat.png',
-        '03-snap-turn.png',
-        '04-chase-boost.png',
-        '05-chase-combat.png',
+        '03-overheat.png',
+        '04-overdrive.png',
+        '05-missile-combat.png',
       ],
       snapshots: {
         initial,
         combatSnap,
-        driftSnap,
-        chaseSnap,
+        overheatSnap,
+        overdriveSnap,
         finalSnap,
       },
     };

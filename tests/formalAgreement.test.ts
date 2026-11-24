@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { stepCombat, stepLockState } from '../src/sim/combat';
-import { stepEnergy } from '../src/sim/energy';
+import { COMBAT_TUNING, stepCombat, stepLockState } from '../src/sim/combat';
+import { absorbShieldDamage, stepEnergy } from '../src/sim/energy';
 import { vec3 } from '../src/sim/math';
-import { FIXED_DT, NEUTRAL_INPUT, type LockState } from '../src/sim/types';
+import { FIXED_DT, NEUTRAL_INPUT, type EnergyState, type LockState } from '../src/sim/types';
 import { createInitialWorld } from '../src/sim/world';
 
 function ticksUntil(step: (tick: number) => boolean): number {
@@ -15,29 +15,14 @@ function ticksUntil(step: (tick: number) => boolean): number {
 }
 
 describe('formal TLA+ timing agreement at 60 Hz', () => {
-  it('matches EnergyAndLock.tla tick boundaries for drift, recovery, lock, and missile rearm', () => {
+  it('matches EnergyAndLock.tla tick boundaries for shield delay, lock, primary fire, and missile rearm', () => {
     const world = createInitialWorld(1, true);
-    const initial = { ...world.player.energy, engineCharge: 75, weaponCharge: 50, shieldCharge: 50 };
-    const advance = (energy: typeof initial, boost: boolean, drift: boolean) =>
-      stepEnergy(energy, boost, drift, world.player.velocity, FIXED_DT).energy;
-
-    const boost = advance(initial, true, false);
-    const boostRecovering = advance(boost, false, false);
-    const driftEntry = advance(initial, true, true);
-
-    let driftState = driftEntry;
-    const maxDriftTicks = ticksUntil(() => {
-      driftState = advance(driftState, false, true);
-      return driftState.boostMode.kind === 'recovering';
+    const damaged = absorbShieldDamage(world.player.energy, COMBAT_TUNING.enemyBoltDamage).energy;
+    let delayState = damaged;
+    const shieldDelayTicks = ticksUntil(() => {
+      delayState = stepEnergy(delayState, false, false, FIXED_DT).energy;
+      return delayState.shieldRegenDelay <= 0;
     });
-
-    const measureRecovery = (start: typeof initial): number => {
-      let state = start;
-      return ticksUntil(() => {
-        state = advance(state, true, true);
-        return state.boostMode.kind === 'ready';
-      });
-    };
 
     const contact = {
       id: 'target',
@@ -82,14 +67,19 @@ describe('formal TLA+ timing agreement at 60 Hz', () => {
       return missileTicks.length === player.maxMissiles + 2;
     });
 
+    let ohState: EnergyState = { ...world.player.energy, weaponState: 'overheated', weaponCharge: 0 };
+    const overheatTicks = ticksUntil(() => {
+      ohState = stepEnergy(ohState, false, false, FIXED_DT).energy;
+      return ohState.weaponState === 'ready';
+    });
+
     const rack = player.maxMissiles;
-    expect(maxDriftTicks).toBe(121);
-    expect(measureRecovery(boostRecovering)).toBe(39);
-    expect(measureRecovery(driftState)).toBe(45);
+    expect(shieldDelayTicks).toBe(211);
+    expect(overheatTicks).toBe(215);
     expect(acquireTicks).toBe(48);
-    expect((shotTicks[1] ?? 0) - (shotTicks[0] ?? 0)).toBe(8);
-    expect((missileTicks[1] ?? 0) - (missileTicks[0] ?? 0)).toBe(31);
-    expect((missileTicks[rack] ?? 0) - (missileTicks[0] ?? 0)).toBe(241);
-    expect((missileTicks[rack + 1] ?? 0) - (missileTicks[rack] ?? 0)).toBe(240);
+    expect((shotTicks[1] ?? 0) - (shotTicks[0] ?? 0)).toBe(9);
+    expect((missileTicks[1] ?? 0) - (missileTicks[0] ?? 0)).toBe(34);
+    expect((missileTicks[rack] ?? 0) - (missileTicks[0] ?? 0)).toBe(271);
+    expect((missileTicks[rack + 1] ?? 0) - (missileTicks[rack] ?? 0)).toBe(270);
   });
 });

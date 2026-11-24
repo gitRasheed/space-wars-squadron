@@ -1,19 +1,14 @@
 import { clamp } from './math';
-import type { BoostMode, EnergyState, SimEvent, Vec3 } from './types';
+import type { EnergyState, SimEvent, WeaponState } from './types';
 
 export const ENERGY_RULES = {
-  minBoostEngageCharge: 20,
-  minDriftEngageCharge: 16,
-  boostDrainPerSecond: 30,
-  driftDrainPerSecond: 24,
-  maxDriftSeconds: 2.0,
-  boostRecoverySeconds: 0.65,
-  driftRecoverySeconds: 0.75,
-  engineRechargePerSecond: 18,
-  weaponRechargePerSecond: 22,
+  minOverdriveShield: 15,
+  overdriveShieldDrainPerSecond: 24,
   shieldRechargePerSecond: 10,
-  primaryShotCost: 4.5,
-  weaponDrawWhileBoosting: 8,
+  shieldRegenDelaySeconds: 3.5,
+  weaponRechargePerSecond: 18,
+  overheatCooldownPerSecond: 28,
+  primaryShotCost: 11,
 } as const;
 
 export interface EnergyStepResult {
@@ -23,128 +18,88 @@ export interface EnergyStepResult {
 
 export function createInitialEnergy(): EnergyState {
   return {
-    boostMode: { kind: 'ready' },
-    engineCharge: 100,
+    overdrive: false,
+    weaponState: 'ready',
     weaponCharge: 100,
     shieldCharge: 100,
+    shieldRegenDelay: 0,
   };
 }
 
 export function stepEnergy(
   current: EnergyState,
-  wantBoost: boolean,
-  wantDrift: boolean,
-  currentVelocity: Vec3,
+  enterOverdrive: boolean,
+  cancelOverdrive: boolean,
   dt: number,
 ): EnergyStepResult {
   const events: SimEvent[] = [];
 
-  let boostMode: BoostMode = current.boostMode;
-  let engineCharge = current.engineCharge;
-  let weaponCharge = current.weaponCharge;
-  const shieldCharge = clamp(
-    current.shieldCharge + ENERGY_RULES.shieldRechargePerSecond * dt,
-    0,
-    100,
-  );
+  let overdrive = current.overdrive;
+  let shieldCharge = current.shieldCharge;
+  const shieldRegenDelay = Math.max(0, current.shieldRegenDelay - dt);
 
-  switch (boostMode.kind) {
-    case 'ready': {
-      if (wantDrift && engineCharge >= ENERGY_RULES.minDriftEngageCharge) {
-        boostMode = {
-          kind: 'drifting',
-          driftVelocity: currentVelocity,
-          elapsedSeconds: 0,
-        };
-        engineCharge = clamp(engineCharge - ENERGY_RULES.driftDrainPerSecond * dt, 0, 100);
-        events.push({ kind: 'drift_engaged' });
-      } else if (wantBoost && engineCharge >= ENERGY_RULES.minBoostEngageCharge) {
-        boostMode = { kind: 'boosting' };
-        engineCharge = clamp(engineCharge - ENERGY_RULES.boostDrainPerSecond * dt, 0, 100);
-        weaponCharge = clamp(weaponCharge - ENERGY_RULES.weaponDrawWhileBoosting * dt, 0, 100);
-        events.push({ kind: 'boost_engaged' });
-      } else {
-        engineCharge = clamp(engineCharge + ENERGY_RULES.engineRechargePerSecond * dt, 0, 100);
-        weaponCharge = clamp(weaponCharge + ENERGY_RULES.weaponRechargePerSecond * dt, 0, 100);
-      }
-      break;
-    }
+  if (cancelOverdrive) {
+    overdrive = false;
+  } else if (!overdrive && enterOverdrive && shieldCharge >= ENERGY_RULES.minOverdriveShield) {
+    overdrive = true;
+    events.push({ kind: 'overdrive_engaged' });
+  }
 
-    case 'boosting': {
-      if (wantDrift && engineCharge >= ENERGY_RULES.minDriftEngageCharge) {
-        boostMode = {
-          kind: 'drifting',
-          driftVelocity: currentVelocity,
-          elapsedSeconds: 0,
-        };
-        engineCharge = clamp(engineCharge - ENERGY_RULES.driftDrainPerSecond * dt, 0, 100);
-        events.push({ kind: 'drift_engaged' });
-      } else if (wantBoost && engineCharge > 0) {
-        engineCharge = clamp(engineCharge - ENERGY_RULES.boostDrainPerSecond * dt, 0, 100);
-        weaponCharge = clamp(weaponCharge - ENERGY_RULES.weaponDrawWhileBoosting * dt, 0, 100);
-        if (engineCharge <= 0) {
-          boostMode = { kind: 'recovering', remainingSeconds: ENERGY_RULES.boostRecoverySeconds };
-        }
-      } else {
-        boostMode = { kind: 'recovering', remainingSeconds: ENERGY_RULES.boostRecoverySeconds };
-      }
-      break;
+  if (overdrive) {
+    shieldCharge = clamp(shieldCharge - ENERGY_RULES.overdriveShieldDrainPerSecond * dt, 0, 100);
+    if (shieldCharge <= 0) {
+      overdrive = false;
     }
+  } else if (shieldRegenDelay <= 0) {
+    shieldCharge = clamp(shieldCharge + ENERGY_RULES.shieldRechargePerSecond * dt, 0, 100);
+  }
 
-    case 'drifting': {
-      const elapsedSeconds = boostMode.elapsedSeconds + dt;
-      engineCharge = clamp(engineCharge - ENERGY_RULES.driftDrainPerSecond * dt, 0, 100);
-      weaponCharge = clamp(
-        weaponCharge + ENERGY_RULES.weaponRechargePerSecond * 0.7 * dt,
-        0,
-        100,
-      );
-      if (!wantDrift || engineCharge <= 0 || elapsedSeconds >= ENERGY_RULES.maxDriftSeconds) {
-        boostMode = { kind: 'recovering', remainingSeconds: ENERGY_RULES.driftRecoverySeconds };
-      } else {
-        boostMode = {
-          kind: 'drifting',
-          driftVelocity: boostMode.driftVelocity,
-          elapsedSeconds,
-        };
-      }
-      break;
-    }
-
-    case 'recovering': {
-      const remainingSeconds = boostMode.remainingSeconds - dt;
-      engineCharge = clamp(
-        engineCharge + ENERGY_RULES.engineRechargePerSecond * 0.6 * dt,
-        0,
-        100,
-      );
-      weaponCharge = clamp(weaponCharge + ENERGY_RULES.weaponRechargePerSecond * dt, 0, 100);
-      boostMode =
-        remainingSeconds <= 0
-          ? { kind: 'ready' }
-          : { kind: 'recovering', remainingSeconds };
-      break;
-    }
+  let weaponState: WeaponState = current.weaponState;
+  const rechargeRate =
+    weaponState === 'overheated'
+      ? ENERGY_RULES.overheatCooldownPerSecond
+      : ENERGY_RULES.weaponRechargePerSecond;
+  const weaponCharge = clamp(current.weaponCharge + rechargeRate * dt, 0, 100);
+  if (weaponState === 'overheated' && weaponCharge >= 100) {
+    weaponState = 'ready';
   }
 
   return {
     energy: {
-      boostMode,
-      engineCharge,
+      overdrive,
+      weaponState,
       weaponCharge,
       shieldCharge,
+      shieldRegenDelay,
     },
     events,
   };
 }
 
-export function spendWeaponCharge(energy: EnergyState, cost: number): EnergyState | null {
-  if (energy.weaponCharge < cost) {
+export function spendWeaponCharge(
+  energy: EnergyState,
+  cost: number,
+): { readonly energy: EnergyState; readonly overheatedNow: boolean } | null {
+  if (energy.weaponState === 'overheated' || energy.weaponCharge <= 0) {
     return null;
   }
+  const remaining = energy.weaponCharge - cost;
+  if (remaining <= 0) {
+    return {
+      energy: {
+        ...energy,
+        weaponCharge: 0,
+        weaponState: 'overheated',
+      },
+      overheatedNow: true,
+    };
+  }
   return {
-    ...energy,
-    weaponCharge: clamp(energy.weaponCharge - cost, 0, 100),
+    energy: {
+      ...energy,
+      weaponCharge: clamp(remaining, 0, 100),
+    },
+    overheatedNow: false,
   };
 }
 
@@ -153,10 +108,13 @@ export function absorbShieldDamage(
   damage: number,
 ): { readonly energy: EnergyState; readonly hullDamage: number } {
   const absorbed = Math.min(energy.shieldCharge, damage);
+  const nextShield = clamp(energy.shieldCharge - absorbed, 0, 100);
   return {
     energy: {
       ...energy,
-      shieldCharge: clamp(energy.shieldCharge - absorbed, 0, 100),
+      shieldCharge: nextShield,
+      shieldRegenDelay: ENERGY_RULES.shieldRegenDelaySeconds,
+      overdrive: nextShield <= 0 ? false : energy.overdrive,
     },
     hullDamage: Math.max(0, damage - absorbed),
   };

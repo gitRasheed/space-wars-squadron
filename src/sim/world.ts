@@ -22,8 +22,8 @@ function createFriendlyCarrier(): CapitalShipState {
     position: vec3(-165, -24, -180),
     orientation: IDENTITY_QUAT,
     halfExtents: vec3(44, 26, 155),
-    hull: 1000,
-    maxHull: 1000,
+    hull: 750,
+    maxHull: 750,
     subsystems: [],
   };
 }
@@ -34,14 +34,14 @@ export const FRIGATE_SUBSYSTEM_LAYOUT = {
     label: 'SHIELD DOME',
     localOffset: vec3(0, 31, -30),
     radius: 16,
-    maxHull: 140,
+    maxHull: 180,
   },
   clampCore: {
     id: 'sub-clamp-core',
     label: 'TOW CLAMP',
     localOffset: vec3(0, -28, 62),
     radius: 16,
-    maxHull: 140,
+    maxHull: 180,
   },
 } as const;
 
@@ -50,7 +50,7 @@ function createHostileFrigate(): CapitalShipState {
     id: 'frigate-aegis',
     name: 'CONCESSION FRIGATE',
     faction: 'hostile',
-    position: vec3(240, 24, -740),
+    position: vec3(240, 24, -780),
     orientation: quatLookAt(vec3(-0.88, -0.06, 0.47)),
     halfExtents: vec3(34, 22, 128),
     hull: 1000,
@@ -97,60 +97,68 @@ function createInitialEnemies(): readonly EnemyShipState[] {
       id: 'raider-1',
       callsign: 'VANE-1',
       kind: 'raider',
-      position: vec3(55, 16, -295),
-      velocity: vec3(-18, -2, 65),
-      orientation: quatLookAt(vec3(-0.3, -0.05, 0.95)),
-      maneuver: { kind: 'approach', remainingSeconds: 3.8 },
-      hull: 60,
-      maxHull: 60,
-      shields: 0,
-      maxShields: 0,
-      fireCooldown: 1.5,
+      position: vec3(68, 20, -445),
+      velocity: vec3(-18, -2, 68),
+      orientation: quatLookAt(vec3(-0.25, -0.05, 0.96)),
+      maneuver: { kind: 'approach', remainingSeconds: 6.0 },
+      hull: 75,
+      maxHull: 75,
+      shields: 70,
+      maxShields: 70,
+      shieldRegenDelay: 0,
+      shieldHitFlash: 0,
+      fireCooldown: 1.1,
       phaseOffset: 0.4,
     },
     {
       id: 'raider-2',
       callsign: 'VANE-2',
       kind: 'raider',
-      position: vec3(-95, 42, -450),
-      velocity: vec3(24, -6, 60),
+      position: vec3(-115, 48, -560),
+      velocity: vec3(24, -6, 62),
       orientation: quatLookAt(vec3(0.35, -0.1, 0.93)),
-      maneuver: { kind: 'approach', remainingSeconds: 4.6 },
-      hull: 60,
-      maxHull: 60,
-      shields: 0,
-      maxShields: 0,
-      fireCooldown: 2.0,
+      maneuver: { kind: 'approach', remainingSeconds: 6.5 },
+      hull: 75,
+      maxHull: 75,
+      shields: 70,
+      maxShields: 70,
+      shieldRegenDelay: 0,
+      shieldHitFlash: 0,
+      fireCooldown: 1.4,
       phaseOffset: 2.1,
     },
     {
       id: 'raider-3',
       callsign: 'VANE-3',
       kind: 'raider',
-      position: vec3(185, -12, -510),
-      velocity: vec3(-32, 8, 52),
-      orientation: quatLookAt(vec3(-0.5, 0.15, 0.85)),
-      maneuver: { kind: 'approach', remainingSeconds: 5.2 },
-      hull: 60,
-      maxHull: 60,
-      shields: 0,
-      maxShields: 0,
-      fireCooldown: 2.4,
+      position: vec3(210, -16, -640),
+      velocity: vec3(-32, 8, 56),
+      orientation: quatLookAt(vec3(-0.48, 0.14, 0.86)),
+      maneuver: { kind: 'approach', remainingSeconds: 7.0 },
+      hull: 75,
+      maxHull: 75,
+      shields: 70,
+      maxShields: 70,
+      shieldRegenDelay: 0,
+      shieldHitFlash: 0,
+      fireCooldown: 1.7,
       phaseOffset: 4.0,
     },
     {
       id: 'striker-1',
       callsign: 'STRIKER-4',
       kind: 'striker',
-      position: vec3(80, 62, -630),
-      velocity: vec3(-12, -4, 48),
-      orientation: quatLookAt(vec3(-0.2, -0.05, 0.98)),
-      maneuver: { kind: 'approach', remainingSeconds: 5.5 },
+      position: vec3(75, 58, -720),
+      velocity: vec3(-22, -6, 54),
+      orientation: quatLookAt(vec3(-0.35, -0.08, 0.93)),
+      maneuver: { kind: 'approach', remainingSeconds: 7.5 },
       hull: 100,
       maxHull: 100,
-      shields: 48,
-      maxShields: 48,
-      fireCooldown: 2.2,
+      shields: 90,
+      maxShields: 90,
+      shieldRegenDelay: 0,
+      shieldHitFlash: 0,
+      fireCooldown: 1.5,
       phaseOffset: 5.3,
     },
   ];
@@ -159,12 +167,12 @@ function createInitialEnemies(): readonly EnemyShipState[] {
 function createInitialPlayer(): PlayerShipState {
   return {
     position: vec3(0, 4, 140),
-    velocity: vec3(0, 0, -58),
+    velocity: vec3(0, 0, -64),
     orientation: IDENTITY_QUAT,
     angularVelocity: vec3(0, 0, 0),
-    throttle: 0.55,
-    hull: 100,
-    maxHull: 100,
+    throttle: 0.6,
+    hull: 80,
+    maxHull: 80,
     energy: createInitialEnergy(),
     primaryCooldown: 0,
     missileCooldown: 0,
@@ -176,6 +184,9 @@ function createInitialPlayer(): PlayerShipState {
     proximityWarning: false,
     hitFlash: 0,
     recoilKick: 0,
+    nextBarrel: 'left',
+    recoilLeft: 0,
+    recoilRight: 0,
   };
 }
 
@@ -183,10 +194,10 @@ function createInitialWingmate(): WingmateState {
   return {
     callsign: 'VALKYRIE-2',
     position: vec3(-32, 10, 162),
-    velocity: vec3(0, 0, -58),
+    velocity: vec3(0, 0, -64),
     orientation: IDENTITY_QUAT,
     targetId: 'raider-2',
-    fireCooldown: 0.5,
+    fireCooldown: 0.8,
   };
 }
 
@@ -194,7 +205,7 @@ export const DEFAULT_SORTIE_CONFIG: SortieConfig = {
   id: 'sortie-01-hearthstone',
   openingRadio: {
     speaker: 'VALKYRIE-2',
-    text: 'Raiders inbound on Hearthstone—I have your flank, cleared hot!',
+    text: 'Shielded raiders inbound on Hearthstone—watch your heat, cleared hot!',
     remainingSeconds: 4.5,
   },
   player: createInitialPlayer(),
@@ -267,63 +278,45 @@ export function stepWorld(
   input: FlightInput,
   dt: number,
 ): WorldState {
-  const cameraMode = input.toggleCamera
-    ? world.cameraMode === 'cockpit'
-      ? 'chase'
-      : 'cockpit'
-    : world.cameraMode;
-
   if (world.phase.kind === 'briefing') {
     if (input.launchBriefing || input.restartSortie) {
       return {
         ...world,
-        cameraMode,
         phase: { kind: 'active', elapsedSeconds: 0 },
         events: [],
       };
     }
-    return { ...world, cameraMode, events: [] };
+    return { ...world, events: [] };
   }
 
   if (world.phase.kind === 'paused') {
     if (input.restartSortie) {
-      return {
-        ...createInitialWorld(world.rngState, true, world.sortie),
-        cameraMode,
-      };
+      return createInitialWorld(world.rngState, true, world.sortie);
     }
     if (!input.pauseRequested && (input.togglePause || input.launchBriefing)) {
       return {
         ...world,
-        cameraMode,
         phase: { kind: 'active', elapsedSeconds: world.phase.elapsedSeconds },
         events: [],
       };
     }
-    return { ...world, cameraMode, events: [] };
+    return { ...world, events: [] };
   }
 
   if (world.phase.kind === 'victory' || world.phase.kind === 'failed') {
     if (input.launchBriefing || input.restartSortie) {
-      return {
-        ...createInitialWorld(world.rngState, true, world.sortie),
-        cameraMode,
-      };
+      return createInitialWorld(world.rngState, true, world.sortie);
     }
-    return { ...world, cameraMode, events: [] };
+    return { ...world, events: [] };
   }
 
   if (input.restartSortie) {
-    return {
-      ...createInitialWorld(world.rngState, true, world.sortie),
-      cameraMode,
-    };
+    return createInitialWorld(world.rngState, true, world.sortie);
   }
 
   if (input.pauseRequested || input.togglePause) {
     return {
       ...world,
-      cameraMode,
       phase: { kind: 'paused', elapsedSeconds: world.phase.elapsedSeconds },
       events: [],
     };
@@ -372,7 +365,7 @@ export function stepWorld(
     rngState: combatStep.rngState,
     sortie: world.sortie,
     phase,
-    cameraMode,
+    cameraMode: 'cockpit',
     player: combatStep.player,
     wingmate: combatStep.wingmate,
     enemies: combatStep.enemies,

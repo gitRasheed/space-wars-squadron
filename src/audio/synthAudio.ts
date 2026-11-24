@@ -147,21 +147,34 @@ export function createSynthAudio(): SynthAudio {
 
   function handleEvent(bus: Buses, event: SimEvent, next?: SimEvent) {
     switch (event.kind) {
-      case 'cannon_fired':
-        cannonSide[event.faction] *= -1;
-        playCue(bus, event.faction === 'friendly' ? 'cannon-shot' : 'enemy-cannon', cannonSide[event.faction]);
+      case 'cannon_fired': {
+        let side: number;
+        if (event.barrel !== undefined) {
+          side = event.barrel === 'left' ? -1 : 1;
+        } else {
+          cannonSide[event.faction] *= -1;
+          side = cannonSide[event.faction];
+        }
+        playCue(bus, event.faction === 'friendly' ? 'cannon-shot' : 'enemy-cannon', side);
         break;
+      }
       case 'hit_confirmed':
         playCue(bus, event.isKill ? 'kill-confirm' : 'hit-confirm');
         // A subsystem kill emits its own larger explosion immediately after the confirmation.
         if (event.isKill && next?.kind !== 'subsystem_destroyed') playCue(bus, 'explosion');
         break;
+      case 'shield_broken':
+        playCue(bus, 'snap-turn', 1);
+        playCue(bus, 'hit-confirm', -1);
+        break;
+      case 'weapon_overheated':
+        playCue(bus, 'snap-turn');
+        break;
       case 'subsystem_destroyed': playCue(bus, 'subsystem-destruction'); break;
       case 'missile_fired': playCue(bus, 'missile-launch'); break;
       case 'target_locked': playCue(bus, 'lock-chirp'); break;
       case 'player_damaged': playCue(bus, 'player-damage'); break;
-      case 'boost_engaged': playCue(bus, 'boost'); break;
-      case 'drift_engaged': playCue(bus, 'snap-turn'); break;
+      case 'overdrive_engaged': playCue(bus, 'boost'); break;
     }
   }
 
@@ -172,9 +185,9 @@ export function createSynthAudio(): SynthAudio {
     const active = audible && world.phase.kind === 'active';
     syncMusic(buses, active);
     if (active) {
-      const speed = Math.min(1, len(world.player.velocity) / FLIGHT_TUNING.boostSpeed);
-      const boosting = world.player.energy.boostMode.kind === 'boosting';
-      const throttle = speed * 0.78 + (boosting ? 0.22 : 0);
+      const speed = Math.min(1, len(world.player.velocity) / FLIGHT_TUNING.overdriveSpeed);
+      const overdrive = world.player.energy.overdrive;
+      const throttle = speed * 0.78 + (overdrive ? 0.22 : 0);
       for (const { osc, idleHz, boostHz } of turbines) {
         osc.frequency.setTargetAtTime(idleHz * (boostHz / idleHz) ** throttle, ctx.currentTime, 0.1);
       }

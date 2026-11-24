@@ -26,7 +26,7 @@ export function createInputChannel(
   let steering: SteeringMode = { kind: 'idle' };
 
   let queuedCycleTarget = false;
-  let queuedToggleCamera = false;
+  let queuedThrottlePush = false;
   let queuedLaunchBriefing = false;
   let queuedRestartSortie = false;
   let queuedFireMissile = false;
@@ -43,7 +43,7 @@ export function createInputChannel(
     mouseLeftHeld = false;
     mouseRightHeld = false;
     queuedCycleTarget = false;
-    queuedToggleCamera = false;
+    queuedThrottlePush = false;
     queuedLaunchBriefing = false;
     queuedRestartSortie = false;
     queuedFireMissile = false;
@@ -74,8 +74,8 @@ export function createInputChannel(
     if (!event.repeat) {
       if (code === 'KeyT' || code === 'Tab') {
         queuedCycleTarget = true;
-      } else if (code === 'KeyV') {
-        queuedToggleCamera = true;
+      } else if (code === 'KeyW') {
+        queuedThrottlePush = true;
       } else if (code === 'Enter') {
         lockedBeforePause = false;
         resumeOnPointerLock = false;
@@ -241,12 +241,10 @@ export function createInputChannel(
       yaw: clamp(keyYaw + mouseYaw, -1, 1),
       roll,
       throttleDelta,
-      boost: heldKeys.has('ShiftLeft') || heldKeys.has('ShiftRight'),
-      drift: heldKeys.has('Space'),
+      throttlePushEdge: queuedThrottlePush,
       firePrimary: mouseLeftHeld || heldKeys.has('KeyJ'),
       fireMissile: queuedFireMissile || mouseRightHeld,
       cycleTarget: queuedCycleTarget,
-      toggleCamera: queuedToggleCamera,
       launchBriefing: queuedLaunchBriefing,
       restartSortie: queuedRestartSortie,
       toggleMute: queuedToggleMute,
@@ -256,7 +254,7 @@ export function createInputChannel(
     };
 
     queuedCycleTarget = false;
-    queuedToggleCamera = false;
+    queuedThrottlePush = false;
     queuedLaunchBriefing = false;
     queuedRestartSortie = false;
     queuedFireMissile = false;

@@ -1,4 +1,4 @@
-import { stepEnergy } from './energy';
+import { absorbShieldDamage, stepEnergy } from './energy';
 import {
   add,
   clamp,
@@ -27,20 +27,22 @@ import type {
 } from './types';
 
 export const FLIGHT_TUNING = {
-  minSpeed: 22,
+  minThrottle: 0.15,
+  maxCruiseThrottle: 1.0,
+  overdriveThrottle: 1.2,
+  minSpeed: 24,
   maxCruiseSpeed: 102,
-  boostSpeed: 180,
-  pitchRate: 2.35,
-  yawRate: 2.05,
-  rollRate: 2.85,
-  driftTurnMultiplier: 2.45,
+  overdriveSpeed: 168,
+  pitchRate: 2.45,
+  yawRate: 2.15,
+  rollRate: 2.9,
   angularResponse: 12.5,
-  throttleRate: 0.85,
+  throttleRate: 0.9,
   velocityResponse: 5.4,
-  driftMomentumKeep: 0.968,
   carrierClearanceMargin: 18,
   carrierRepelSpeed: 58,
   asteroidClearanceMargin: 10,
+  collisionDamagePerSpeed: 0.32,
   arenaRadius: 2600,
 } as const;
 
@@ -49,20 +51,21 @@ export interface FlightStepResult {
   readonly events: readonly SimEvent[];
 }
 
-function sweetSpotTurnFactor(throttle: number): number {
-  const distanceFromOptimal = Math.abs(throttle - 0.55);
-  return clamp(1.16 - distanceFromOptimal * 0.35, 0.9, 1.16);
-}
-
 export function resolveObstacleClearance(
   position: Vec3,
   velocity: Vec3,
   ships: readonly CapitalShipState[],
   asteroids: readonly AsteroidState[],
-): { readonly position: Vec3; readonly velocity: Vec3; readonly warning: boolean } {
+): {
+  readonly position: Vec3;
+  readonly velocity: Vec3;
+  readonly warning: boolean;
+  readonly impactSpeed: number;
+} {
   let nextPos = position;
   let nextVel = velocity;
   let warning = false;
+  let impactSpeed = 0;
 
   for (const ship of ships) {
     const localDelta = toLocalPoint(ship.position, ship.orientation, nextPos);
@@ -99,6 +102,9 @@ export function resolveObstacleClearance(
       const pushNormal = normalize(rotateVec3(ship.orientation, localNormal));
       nextPos = add(nextPos, scale(pushNormal, penetration + 0.5));
       const inwardSpeed = dot(nextVel, pushNormal);
+      if (inwardSpeed < 0) {
+        impactSpeed = Math.max(impactSpeed, -inwardSpeed);
+      }
       if (inwardSpeed < FLIGHT_TUNING.carrierRepelSpeed) {
         nextVel = add(nextVel, scale(pushNormal, FLIGHT_TUNING.carrierRepelSpeed - inwardSpeed));
       }
@@ -116,13 +122,16 @@ export function resolveObstacleClearance(
       const normal = scale(delta, 1 / dist);
       nextPos = add(rock.position, scale(normal, safeRadius + 0.5));
       const inward = dot(nextVel, normal);
+      if (inward < 0) {
+        impactSpeed = Math.max(impactSpeed, -inward);
+      }
       if (inward < 45) {
         nextVel = add(nextVel, scale(normal, 45 - inward));
       }
     }
   }
 
-  return { position: nextPos, velocity: nextVel, warning };
+  return { position: nextPos, velocity: nextVel, warning, impactSpeed };
 }
 
 export function stepPlayerFlight(
@@ -132,16 +141,40 @@ export function stepPlayerFlight(
   asteroids: readonly AsteroidState[],
   dt: number,
 ): FlightStepResult {
-  const energyStep = stepEnergy(player.energy, input.boost, input.drift, player.velocity, dt);
-  const energy = energyStep.energy;
-  const throttle = clamp(player.throttle + input.throttleDelta * FLIGHT_TUNING.throttleRate * dt, 0.15, 1);
+  // High-watermark throttle detent: holding W climbs smoothly to 100% and stops;
+  // pressing W again at 100% pushes into 120% Overdrive (burning shields).
+  const atHighWatermark = player.throttle >= FLIGHT_TUNING.maxCruiseThrottle - 0.005;
+  const enterOverdrive = !player.energy.overdrive && atHighWatermark && input.throttlePushEdge;
+  const cancelOverdrive = player.energy.overdrive && input.throttleDelta < 0;
 
-  const isDrifting = energy.boostMode.kind === 'drifting';
-  const turnScale = sweetSpotTurnFactor(throttle) * (isDrifting ? FLIGHT_TUNING.driftTurnMultiplier : 1);
+  const energyStep = stepEnergy(player.energy, enterOverdrive, cancelOverdrive, dt);
+  let energy = energyStep.energy;
+  const events: SimEvent[] = [...energyStep.events];
+
+  let throttle: number;
+  if (energy.overdrive) {
+    throttle = FLIGHT_TUNING.overdriveThrottle;
+  } else if (player.energy.overdrive) {
+    // Dropped out of overdrive (shield depleted or S pressed): return cleanly to 100% detent.
+    throttle =
+      input.throttleDelta < 0
+        ? clamp(
+            FLIGHT_TUNING.maxCruiseThrottle + input.throttleDelta * FLIGHT_TUNING.throttleRate * dt,
+            FLIGHT_TUNING.minThrottle,
+            FLIGHT_TUNING.maxCruiseThrottle,
+          )
+        : FLIGHT_TUNING.maxCruiseThrottle;
+  } else {
+    throttle = clamp(
+      player.throttle + input.throttleDelta * FLIGHT_TUNING.throttleRate * dt,
+      FLIGHT_TUNING.minThrottle,
+      FLIGHT_TUNING.maxCruiseThrottle,
+    );
+  }
 
   const targetAngVel: Vec3 = {
-    x: input.pitch * FLIGHT_TUNING.pitchRate * turnScale,
-    y: -input.yaw * FLIGHT_TUNING.yawRate * turnScale,
+    x: input.pitch * FLIGHT_TUNING.pitchRate,
+    y: -input.yaw * FLIGHT_TUNING.yawRate,
     z: -input.roll * FLIGHT_TUNING.rollRate,
   };
   const angularVelocity = lerpVec3(
@@ -159,20 +192,19 @@ export function stepPlayerFlight(
   orientation = normalizeQuat(quatMul(rollQuat, orientation));
 
   const forward = forwardOf(orientation);
-  const targetSpeed =
-    energy.boostMode.kind === 'boosting'
-      ? FLIGHT_TUNING.boostSpeed
-      : FLIGHT_TUNING.minSpeed + (FLIGHT_TUNING.maxCruiseSpeed - FLIGHT_TUNING.minSpeed) * throttle;
+  const targetSpeed = energy.overdrive
+    ? FLIGHT_TUNING.overdriveSpeed
+    : FLIGHT_TUNING.minSpeed +
+      ((FLIGHT_TUNING.maxCruiseSpeed - FLIGHT_TUNING.minSpeed) *
+        (throttle - FLIGHT_TUNING.minThrottle)) /
+        (FLIGHT_TUNING.maxCruiseThrottle - FLIGHT_TUNING.minThrottle);
 
-  let nextVelocity: Vec3;
-  if (energy.boostMode.kind === 'drifting') {
-    const carried = scale(energy.boostMode.driftVelocity, Math.pow(FLIGHT_TUNING.driftMomentumKeep, dt * 60));
-    const thrustNudge = scale(forward, targetSpeed * 0.42);
-    nextVelocity = lerpVec3(carried, add(carried, thrustNudge), clamp(dt * 1.9, 0, 1));
-  } else {
-    const desiredVelocity = scale(forward, targetSpeed);
-    nextVelocity = lerpVec3(player.velocity, desiredVelocity, clamp(FLIGHT_TUNING.velocityResponse * dt, 0, 1));
-  }
+  const desiredVelocity = scale(forward, targetSpeed);
+  const nextVelocity = lerpVec3(
+    player.velocity,
+    desiredVelocity,
+    clamp(FLIGHT_TUNING.velocityResponse * dt, 0, 1),
+  );
 
   const rawPosition = add(player.position, scale(nextVelocity, dt));
   const clearance = resolveObstacleClearance(rawPosition, nextVelocity, capitalShips, asteroids);
@@ -188,16 +220,19 @@ export function stepPlayerFlight(
     }
   }
 
-  const updatedEnergy =
-    energy.boostMode.kind === 'drifting'
-      ? {
-          ...energy,
-          boostMode: {
-            ...energy.boostMode,
-            driftVelocity: arenaVelocity,
-          },
-        }
-      : energy;
+  let hull = player.hull;
+  let hitFlash = Math.max(0, player.hitFlash - dt * 2.5);
+  if (clearance.impactSpeed > 22) {
+    const collisionDmg = (clearance.impactSpeed - 20) * FLIGHT_TUNING.collisionDamagePerSpeed;
+    const absorbed = absorbShieldDamage(energy, collisionDmg);
+    energy = absorbed.energy;
+    hull = Math.max(0, hull - absorbed.hullDamage);
+    hitFlash = 1;
+    if (!energy.overdrive && throttle > FLIGHT_TUNING.maxCruiseThrottle) {
+      throttle = FLIGHT_TUNING.maxCruiseThrottle;
+    }
+    events.push({ kind: 'player_damaged' });
+  }
 
   return {
     player: {
@@ -207,11 +242,14 @@ export function stepPlayerFlight(
       orientation,
       angularVelocity,
       throttle,
-      energy: updatedEnergy,
+      hull,
+      energy,
       proximityWarning: clearance.warning,
-      hitFlash: Math.max(0, player.hitFlash - dt * 2.5),
-      recoilKick: Math.max(0, player.recoilKick - dt * 6),
+      hitFlash,
+      recoilKick: Math.max(0, player.recoilKick - dt * 6.5),
+      recoilLeft: Math.max(0, player.recoilLeft - dt * 7.5),
+      recoilRight: Math.max(0, player.recoilRight - dt * 7.5),
     },
-    events: energyStep.events,
+    events,
   };
 }

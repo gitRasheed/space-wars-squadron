@@ -33,7 +33,6 @@ async function ensureJar() {
   }
 }
 
-// Count updates after entry using the simulation's floating-point arithmetic.
 function ticksUntil(step) {
   for (let tick = 1; tick <= 1000; tick++) {
     if (step(tick)) return tick;
@@ -56,7 +55,7 @@ async function measureSimulation(work) {
     const world = createInitialWorld(1, true);
     assert.equal(dt, 1 / 60);
     assert.deepEqual(world.player.energy, {
-      boostMode: { kind: 'ready' }, engineCharge: 100, weaponCharge: 100, shieldCharge: 100,
+      overdrive: false, weaponState: 'ready', weaponCharge: 100, shieldCharge: 100, shieldRegenDelay: 0,
     });
     assert.equal(world.player.missilesReady, world.player.maxMissiles);
     const unit = 600;
@@ -67,30 +66,24 @@ async function measureSimulation(work) {
       return rounded;
     }
 
-    const initial = { ...world.player.energy, engineCharge: 75, weaponCharge: 50, shieldCharge: 50 };
-    const advance = (energy, boost, drift) => stepEnergy(energy, boost, drift, world.player.velocity, dt).energy;
-    const idle = advance(initial, false, false);
-    const boost = advance(initial, true, false);
-    const driftEntry = advance(initial, true, true);
-    const drift = advance(driftEntry, false, true);
-    const recovering = advance(boost, false, false);
-    const recovery = advance(recovering, false, false);
-    assert.equal(driftEntry.boostMode.kind, 'drifting');
-    assert.equal(driftEntry.weaponCharge, initial.weaponCharge);
-    let energy = driftEntry;
-    const driftLimit = ticksUntil(() => {
-      energy = advance(energy, false, true);
-      return energy.boostMode.kind === 'recovering';
+    const initial = { ...world.player.energy, weaponCharge: 50, shieldCharge: 50, shieldRegenDelay: 0 };
+    const idle = stepEnergy(initial, false, false, dt).energy;
+    const od = stepEnergy(initial, true, false, dt).energy;
+    const overheated = { ...initial, weaponState: 'overheated', weaponCharge: 50 };
+    const cooling = stepEnergy(overheated, false, false, dt).energy;
+    let ohState = { ...initial, weaponState: 'overheated', weaponCharge: 0 };
+    const overheatTicks = ticksUntil(() => {
+      ohState = stepEnergy(ohState, false, false, dt).energy;
+      return ohState.weaponState === 'ready';
     });
-    assert.ok(energy.engineCharge > 0, 'Drift ended by depletion');
-    function recoveryLength(start) {
-      let state = start;
-      assert.equal(state.boostMode.kind, 'recovering');
-      return ticksUntil(() => {
-        state = advance(state, true, true);
-        return state.boostMode.kind === 'ready';
-      });
-    }
+    const shot = spendWeaponCharge(initial, ENERGY_RULES.primaryShotCost);
+    assert.ok(shot !== null);
+    const hit = absorbShieldDamage(initial, COMBAT_TUNING.enemyBoltDamage).energy;
+    let delayState = hit;
+    const shieldRegenDelayTicks = ticksUntil(() => {
+      delayState = stepEnergy(delayState, false, false, dt).energy;
+      return delayState.shieldRegenDelay <= 0;
+    });
 
     const forward = { x: 0, y: 0, z: -1 };
     const contact = { id: 'target', position: { x: 0, y: 0, z: -50 } };
@@ -100,7 +93,6 @@ async function measureSimulation(work) {
       return lock.kind === 'locked';
     });
 
-    // Holding both triggers spends the initial rack, then fires each reload on arrival.
     const input = { ...NEUTRAL_INPUT, fireMissile: true, firePrimary: true };
     let player = world.player;
     const missiles = [];
@@ -130,22 +122,22 @@ async function measureSimulation(work) {
     assert.equal(missiles[0], 1);
     assert.equal(shots[0], 1);
     return {
-      Unit: unit, MaxMissiles: rack,
-      DriftThreshold: units(ENERGY_RULES.minDriftEngageCharge),
-      BoostThreshold: units(ENERGY_RULES.minBoostEngageCharge),
-      EngineRecharge: units(idle.engineCharge - initial.engineCharge),
-      RecoveryRecharge: units(recovery.engineCharge - recovering.engineCharge),
-      WeaponRecharge: units(idle.weaponCharge - initial.weaponCharge),
-      DriftWeaponRecharge: units(drift.weaponCharge - driftEntry.weaponCharge),
+      Unit: unit,
+      MaxMissiles: rack,
+      MinOverdriveShield: units(ENERGY_RULES.minOverdriveShield),
+      OverdriveDrain: units(initial.shieldCharge - od.shieldCharge),
       ShieldRecharge: units(idle.shieldCharge - initial.shieldCharge),
-      DriftDrain: units(initial.engineCharge - driftEntry.engineCharge),
-      BoostDrain: units(initial.engineCharge - boost.engineCharge),
-      BoostWeaponDraw: units(initial.weaponCharge - boost.weaponCharge),
-      ShotCost: units(initial.weaponCharge - spendWeaponCharge(initial, ENERGY_RULES.primaryShotCost).weaponCharge),
-      BoltDamage: units(initial.shieldCharge - absorbShieldDamage(initial, COMBAT_TUNING.enemyBoltDamage).energy.shieldCharge),
-      MaxDriftTicks: driftLimit, BoostRecovery: recoveryLength(recovering), DriftRecovery: recoveryLength(energy),
-      AcquireTicks: acquire, PrimaryCooldown: shots[1] - shots[0], MissileCooldown: missiles[1] - missiles[0],
-      FreshRearm: missiles[rack] - missiles[0], CarriedRearm: missiles[rack + 1] - missiles[rack],
+      WeaponRecharge: units(idle.weaponCharge - initial.weaponCharge),
+      OverheatCooldown: units(cooling.weaponCharge - overheated.weaponCharge),
+      ShotCost: units(initial.weaponCharge - shot.energy.weaponCharge),
+      BoltDamage: units(initial.shieldCharge - hit.shieldCharge),
+      ShieldRegenDelayTicks: shieldRegenDelayTicks,
+      OverheatTicks: overheatTicks,
+      AcquireTicks: acquire,
+      PrimaryCooldown: shots[1] - shots[0],
+      MissileCooldown: missiles[1] - missiles[0],
+      FreshRearm: missiles[rack] - missiles[0],
+      CarriedRearm: missiles[rack + 1] - missiles[rack],
     };
   } finally {
     await vite.close();
@@ -190,13 +182,12 @@ try {
   await writeFile(join(work, `${checkedModel}.tla`),
     `---- MODULE ${checkedModel} ----\nEXTENDS ${model}\n${agreement}\n====\n`);
 
-  // One BFS worker gives a shortest trace, starting at state 1.
   const probes = [
-    ['NeverRecovering', 'FlightInit', 3],
+    ['NeverOverdrive', 'FlightInit', 2],
+    ['NeverOverheated', 'FlightInit', 1 + measured.PrimaryCooldown + 1],
     ['NeverLocked', 'CombatInit', 1 + measured.AcquireTicks],
     ['NeverFiredLastMissile', 'CombatInit', 2 + (measured.MaxMissiles - 1) * measured.MissileCooldown],
     ['NeverFiredOnReload', 'CombatInit', 2 + measured.FreshRearm],
-    ['NeverAtDriftLimit', 'FlightInit', 1 + measured.MaxDriftTicks],
   ];
   for (const [invariant, init, states] of probes) {
     const config = `${invariant}.cfg`;
@@ -217,12 +208,12 @@ try {
   for (const [, action, , generated] of actions) {
     assert.ok(Number(generated) > 0, `TLC never exercised ${action}`);
   }
-  for (const action of ['Init', 'Fly', 'Recover', 'ShieldHit', 'CombatFrame']) {
+  for (const action of ['Init', 'Fly', 'ShieldHit', 'CombatFrame']) {
     assert.ok(actions.some((row) => row[1] === action), `Missing coverage for ${action}`);
   }
   console.log(output.split('\n')[0]);
   console.log(totals[0]);
-  console.log(`TLC checked recovery liveness and exercised ${actions.length} actions including Init.`);
+  console.log(`TLC checked overheat liveness and exercised ${actions.length} actions including Init.`);
 } finally {
   await rm(work, { recursive: true, force: true });
 }

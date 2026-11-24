@@ -11,21 +11,10 @@ export interface Quat {
   readonly w: number;
 }
 
-export type CameraMode = 'cockpit' | 'chase';
+export type CameraMode = 'cockpit';
 export type EnemyKind = 'raider' | 'striker';
-
-export type BoostMode =
-  | { readonly kind: 'ready' }
-  | { readonly kind: 'boosting' }
-  | {
-      readonly kind: 'drifting';
-      readonly driftVelocity: Vec3;
-      readonly elapsedSeconds: number;
-    }
-  | {
-      readonly kind: 'recovering';
-      readonly remainingSeconds: number;
-    };
+export type WeaponState = 'ready' | 'overheated';
+export type BarrelSide = 'left' | 'right';
 
 export type LockState =
   | { readonly kind: 'none' }
@@ -68,12 +57,10 @@ export interface FlightInput {
   readonly yaw: number;
   readonly roll: number;
   readonly throttleDelta: number;
-  readonly boost: boolean;
-  readonly drift: boolean;
+  readonly throttlePushEdge: boolean;
   readonly firePrimary: boolean;
   readonly fireMissile: boolean;
   readonly cycleTarget: boolean;
-  readonly toggleCamera: boolean;
   readonly toggleMute: boolean;
   readonly toggleMusic: boolean;
   readonly togglePause: boolean;
@@ -83,10 +70,11 @@ export interface FlightInput {
 }
 
 export interface EnergyState {
-  readonly boostMode: BoostMode;
-  readonly engineCharge: number;
+  readonly overdrive: boolean;
+  readonly weaponState: WeaponState;
   readonly weaponCharge: number;
   readonly shieldCharge: number;
+  readonly shieldRegenDelay: number;
 }
 
 export interface PlayerShipState {
@@ -108,6 +96,9 @@ export interface PlayerShipState {
   readonly proximityWarning: boolean;
   readonly hitFlash: number;
   readonly recoilKick: number;
+  readonly nextBarrel: BarrelSide;
+  readonly recoilLeft: number;
+  readonly recoilRight: number;
 }
 
 export interface WingmateState {
@@ -131,6 +122,8 @@ export interface EnemyShipState {
   readonly maxHull: number;
   readonly shields: number;
   readonly maxShields: number;
+  readonly shieldRegenDelay: number;
+  readonly shieldHitFlash: number;
   readonly fireCooldown: number;
   readonly phaseOffset: number;
 }
@@ -169,6 +162,7 @@ export interface ProjectileState {
   readonly id: string;
   readonly kind: 'bolt' | 'missile';
   readonly faction: 'friendly' | 'hostile';
+  readonly owner: 'player' | 'wingmate' | 'hostile';
   readonly position: Vec3;
   readonly velocity: Vec3;
   readonly targetId: string | null;
@@ -182,7 +176,7 @@ export interface ExplosionState {
   readonly radius: number;
   readonly elapsed: number;
   readonly duration: number;
-  readonly tint: 'amber' | 'emerald' | 'crimson';
+  readonly tint: 'amber' | 'emerald' | 'crimson' | 'cyan';
 }
 
 export interface RadioMessage {
@@ -192,13 +186,14 @@ export interface RadioMessage {
 }
 
 export type SimEvent =
-  | { readonly kind: 'cannon_fired'; readonly faction: 'friendly' | 'hostile' }
+  | { readonly kind: 'cannon_fired'; readonly faction: 'friendly' | 'hostile'; readonly barrel?: BarrelSide }
   | { readonly kind: 'missile_fired' }
   | { readonly kind: 'target_locked' }
-  | { readonly kind: 'hit_confirmed'; readonly isKill: boolean }
+  | { readonly kind: 'hit_confirmed'; readonly isKill: boolean; readonly shieldHit?: boolean }
+  | { readonly kind: 'shield_broken'; readonly position: Vec3 }
+  | { readonly kind: 'weapon_overheated' }
   | { readonly kind: 'player_damaged' }
-  | { readonly kind: 'boost_engaged' }
-  | { readonly kind: 'drift_engaged' }
+  | { readonly kind: 'overdrive_engaged' }
   | { readonly kind: 'subsystem_destroyed'; readonly label: string };
 
 export interface WorldState {
@@ -240,12 +235,10 @@ export const NEUTRAL_INPUT: FlightInput = {
   yaw: 0,
   roll: 0,
   throttleDelta: 0,
-  boost: false,
-  drift: false,
+  throttlePushEdge: false,
   firePrimary: false,
   fireMissile: false,
   cycleTarget: false,
-  toggleCamera: false,
   toggleMute: false,
   toggleMusic: false,
   togglePause: false,

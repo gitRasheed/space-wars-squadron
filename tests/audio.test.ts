@@ -78,7 +78,7 @@ afterEach(() => vi.unstubAllGlobals());
 describe('combat audio', () => {
   it('keeps every Web Audio path, including both turbines and alternating cannon panners, behind master', () => {
     const { ctx, tick } = cockpit();
-    tick({ kind: 'boost_engaged' }, { kind: 'cannon_fired', faction: 'hostile' });
+    tick({ kind: 'overdrive_engaged' }, { kind: 'cannon_fired', faction: 'hostile' });
     const outputs = ctx.nodes.filter(node => node.connections.includes(ctx.destination));
     expect(outputs).toHaveLength(1);
     expect(outputs[0]).toBeInstanceOf(Gain);
@@ -113,7 +113,7 @@ describe('combat audio', () => {
     expect(master).toBeInstanceOf(Gain);
     expect(musicGain).toBeInstanceOf(Gain);
     visibility(true);
-    tick({ kind: 'boost_engaged' });
+    tick({ kind: 'overdrive_engaged' });
     expect(ctx.suspend).toHaveBeenCalledOnce();
     expect(ctx.music[0]?.stop).toHaveBeenCalledOnce();
     expect((master as Gain).gain.value).toBe(0);
@@ -132,7 +132,7 @@ describe('combat audio', () => {
     expect(ctx.music[1]?.stop).toHaveBeenCalledOnce();
     expect(ctx.cues).toHaveLength(1);
     expect(audio.toggleMute()).toBe(true);
-    tick({ kind: 'boost_engaged' });
+    tick({ kind: 'overdrive_engaged' });
     expect((master as Gain).gain.value).toBe(0);
     expect(ctx.cues).toHaveLength(1);
     audio.destroy();
@@ -154,8 +154,8 @@ describe('combat audio', () => {
   it('dispatches the layered cues for each combat event', () => {
     const { ctx, tick } = cockpit();
     tick({ kind: 'hit_confirmed', isKill: false }, { kind: 'hit_confirmed', isKill: true },
-      { kind: 'target_locked' }, { kind: 'missile_fired' }, { kind: 'boost_engaged' },
-      { kind: 'drift_engaged' }, { kind: 'player_damaged' });
+      { kind: 'target_locked' }, { kind: 'missile_fired' }, { kind: 'overdrive_engaged' },
+      { kind: 'weapon_overheated' }, { kind: 'player_damaged' });
     const expected: CueId[] = ['hit-confirm', 'kill-confirm', 'explosion', 'lock-chirp',
       'missile-launch', 'boost', 'snap-turn', 'player-damage'];
     expect(ctx.cues).toHaveLength(expected.length);
@@ -168,23 +168,23 @@ describe('combat audio', () => {
     }
   });
 
-  it('smoothly raises both turbine pitches with speed and boost and closes them on teardown', () => {
+  it('smoothly raises both turbine pitches with speed and overdrive and closes them on teardown', () => {
     const { ctx, audio, world } = cockpit();
-    const run = (speed: number, mode: 'ready' | 'boosting') => {
+    const run = (speed: number, overdrive: boolean) => {
       audio.sync({ ...world, player: { ...world.player, velocity: { x: 0, y: 0, z: speed },
-        energy: { ...world.player.energy, boostMode: { kind: mode } } } });
+        energy: { ...world.player.energy, overdrive } } });
       return ctx.turbines.map(t => t.frequency.value);
     };
-    const idle = run(0, 'ready');
-    const cruise = run(102, 'ready');
-    const boosted = run(102, 'boosting');
-    const full = run(180, 'boosting');
+    const idle = run(0, false);
+    const cruise = run(102, false);
+    const overdriven = run(102, true);
+    const full = run(168, true);
     expect(idle).toEqual([49, 50.5]);
     expect(full[0]).toBeCloseTo(128);
     expect(full[1]).toBeCloseTo(132);
     for (const [i, turbine] of ctx.turbines.entries()) {
       expect(cruise[i]).toBeGreaterThan(idle[i] ?? Infinity);
-      expect(boosted[i]).toBeGreaterThan(cruise[i] ?? Infinity);
+      expect(overdriven[i]).toBeGreaterThan(cruise[i] ?? Infinity);
       expect(turbine.frequency.timeConstant).toBeGreaterThan(0);
       expect(turbine.connections[0]).toMatchObject({ type: 'lowpass', frequency: { value: 290 } });
     }

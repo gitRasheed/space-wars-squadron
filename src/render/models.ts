@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { FIGHTER_WEAPON_LAYOUT } from '../sim/combat';
+import { COCKPIT_GUN_LOCAL, FIGHTER_WEAPON_LAYOUT } from '../sim/combat';
 import type { AsteroidState, EnemyKind } from '../sim/types';
 import { FRIGATE_SUBSYSTEM_LAYOUT } from '../sim/world';
 import { SCENE_PALETTE, SUN_DIRECTION } from './palette';
@@ -666,6 +666,8 @@ export function buildPlayerFighterMesh(
 export interface CockpitRig {
   readonly root: THREE.Group;
   readonly throttleHandle: THREE.Group;
+  readonly barrelLeft: THREE.Group;
+  readonly barrelRight: THREE.Group;
   readonly muzzleLeft: THREE.Group;
   readonly muzzleRight: THREE.Group;
   readonly flashLight: THREE.PointLight;
@@ -727,19 +729,31 @@ export function buildCockpitRig(): CockpitRig {
       position: [side * 1.12, -0.72, -0.92],
       rotation: [0, 0, side * -0.16],
     });
-
-    const gunShroud = new THREE.CylinderGeometry(0.02, 0.044, 1.05, 8);
-    gunShroud.rotateX(Math.PI / 2);
-    addStyledPart(root, gunShroud, barrelMat, {
-      position: [side * 0.99, -0.54, -1.56],
-    });
-
-    const gunTip = new THREE.CylinderGeometry(0.014, 0.02, 0.2, 8);
-    gunTip.rotateX(Math.PI / 2);
-    addStyledPart(root, gunTip, bevelMat, {
-      position: [side * 0.99, -0.54, -2.18],
-    });
   }
+
+  const gunShroudGeo = new THREE.CylinderGeometry(0.024, 0.048, 1.08, 8);
+  gunShroudGeo.rotateX(Math.PI / 2);
+  const gunTipGeo = new THREE.CylinderGeometry(0.016, 0.024, 0.24, 8);
+  gunTipGeo.rotateX(Math.PI / 2);
+
+  function buildBarrelAssembly(side: -1 | 1): { readonly barrel: THREE.Group; readonly muzzle: THREE.Group } {
+    const barrel = new THREE.Group();
+    barrel.position.set(side * COCKPIT_GUN_LOCAL.x, COCKPIT_GUN_LOCAL.y, 0);
+    addStyledPart(barrel, gunShroudGeo, barrelMat, {
+      position: [0, 0, -(COCKPIT_GUN_LOCAL.forward - 0.76)],
+    });
+    addStyledPart(barrel, gunTipGeo, bevelMat, {
+      position: [0, 0, -(COCKPIT_GUN_LOCAL.forward - 0.12)],
+    });
+    const muzzle = buildMuzzleBurst(1.15);
+    muzzle.position.set(0, 0, -COCKPIT_GUN_LOCAL.forward);
+    barrel.add(muzzle);
+    root.add(barrel);
+    return { barrel, muzzle };
+  }
+
+  const leftGun = buildBarrelAssembly(-1);
+  const rightGun = buildBarrelAssembly(1);
 
   addStyledPart(root, new THREE.BoxGeometry(2.26, 0.048, 0.11), frameMat, {
     position: [0, 0.93, -1.12],
@@ -792,15 +806,15 @@ export function buildCockpitRig(): CockpitRig {
   });
   root.add(throttleHandle);
 
-  const muzzleLeft = buildMuzzleBurst();
-  muzzleLeft.position.set(-0.99, -0.54, -2.32);
-  root.add(muzzleLeft);
-
-  const muzzleRight = buildMuzzleBurst();
-  muzzleRight.position.set(0.99, -0.54, -2.32);
-  root.add(muzzleRight);
-
-  return { root, throttleHandle, muzzleLeft, muzzleRight, flashLight };
+  return {
+    root,
+    throttleHandle,
+    barrelLeft: leftGun.barrel,
+    barrelRight: rightGun.barrel,
+    muzzleLeft: leftGun.muzzle,
+    muzzleRight: rightGun.muzzle,
+    flashLight,
+  };
 }
 
 export function buildEnemyMesh(kind: EnemyKind, textures: HullTextureSet): THREE.Group {
@@ -1099,6 +1113,28 @@ export function buildEnemyMesh(kind: EnemyKind, textures: HullTextureSet): THREE
       root.add(engineGlow);
     }
   }
+
+  // Translucent faceted energy shield bubble: hidden at rest (ignored by turntable bounds),
+  // flares bright cyan on shield impact so players clearly read active enemy shields.
+  const shieldRadius = kind === 'striker' ? 11.2 : 9.4;
+  const shieldGeo = new THREE.IcosahedronGeometry(shieldRadius, 1);
+  const shieldShellMat = glowMat(0x52e5ff, 0.34, { hdrBoost: 1.9, additive: true });
+  shieldShellMat.side = THREE.DoubleSide;
+  const shieldBubble = new THREE.Mesh(shieldGeo, shieldShellMat);
+  shieldBubble.name = 'enemy-shield-bubble';
+  shieldBubble.visible = false;
+  const shieldWire = new THREE.LineSegments(
+    new THREE.EdgesGeometry(shieldGeo, 1),
+    new THREE.LineBasicMaterial({
+      color: new THREE.Color(0x9cf4ff).multiplyScalar(2.2),
+      transparent: true,
+      opacity: 0.75,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    }),
+  );
+  shieldBubble.add(shieldWire);
+  root.add(shieldBubble);
 
   return root;
 }
