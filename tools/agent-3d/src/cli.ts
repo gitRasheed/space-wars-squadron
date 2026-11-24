@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runAssetSession } from './browserRuntime.js';
+import { DEFAULT_TIMEOUT_MS, runAssetSession } from './browserRuntime.js';
 import { evaluateAssetGates } from './evaluate.js';
 import type { AxisDirection, Check3DReport, StyleCard, TurntableReport } from './types.js';
 
@@ -33,8 +33,8 @@ const VALID_BUDGET_KEYS = new Set([
 function usage(): string {
   return [
     'Usage:',
-    '  agent-3d check <asset.glb|factory.ts|factory.mjs> [--card <style-card.json>] [--out <report.json>]',
-    '  agent-3d turntable <asset.glb|factory.ts|factory.mjs> --out <dir> [--card <style-card.json>]',
+    '  agent-3d check <asset.glb|factory.ts|factory.mjs> [--card <style-card.json>] [--out <report.json>] [--timeout <ms>]',
+    '  agent-3d turntable <asset.glb|factory.ts|factory.mjs> --out <dir> [--card <style-card.json>] [--timeout <ms>]',
     'Exit codes: 0 pass, 1 gate violation, 2 invalid input / unsupported gate / renderer error',
   ].join('\n');
 }
@@ -191,7 +191,7 @@ function assertOutputDoesNotClobberInputs(outPath: string, inputPaths: readonly 
 }
 
 async function runCheck(args: readonly string[]): Promise<number> {
-  const { positional, flags } = parseArgs(args, new Set(['--card', '--out']));
+  const { positional, flags } = parseArgs(args, new Set(['--card', '--out', '--timeout']));
   const assetPath = positional[0];
   if (positional.length !== 1 || assetPath === undefined) {
     process.stderr.write(`${usage()}\n`);
@@ -206,6 +206,7 @@ async function runCheck(args: readonly string[]): Promise<number> {
 
   const session = await runAssetSession({
     assetPath,
+    timeoutMs: Number(flags.get('--timeout') ?? DEFAULT_TIMEOUT_MS),
     card,
     renderSheet: false,
   });
@@ -232,7 +233,7 @@ async function runCheck(args: readonly string[]): Promise<number> {
 }
 
 async function runTurntable(args: readonly string[]): Promise<number> {
-  const { positional, flags } = parseArgs(args, new Set(['--card', '--out']));
+  const { positional, flags } = parseArgs(args, new Set(['--card', '--out', '--timeout']));
   const assetPath = positional[0];
   const outDir = flags.get('--out');
   if (positional.length !== 1 || assetPath === undefined || outDir === undefined) {
@@ -248,6 +249,7 @@ async function runTurntable(args: readonly string[]): Promise<number> {
 
   const session = await runAssetSession({
     assetPath,
+    timeoutMs: Number(flags.get('--timeout') ?? DEFAULT_TIMEOUT_MS),
     card,
     renderSheet: true,
     contactSheetPath,

@@ -224,7 +224,31 @@ function isFiniteNum(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v);
 }
 
-function validateVoiceCommon(v: Record<string, unknown>, label: string): void {
+const RECIPE_KEYS = ['schemaVersion', 'kind', 'id', 'sampleRate', 'channels', 'encoding', 'seed', 'masterGainDb'];
+const ONE_SHOT_KEYS = [...RECIPE_KEYS, 'durationS', 'voices'];
+const LOOP_KEYS = [...RECIPE_KEYS, 'bpm', 'beats', 'loopWrap', 'tracks'];
+const TRACK_VOICE_KEYS = ['waveform', 'gainDb', 'pan', 'fmRatio', 'fmIndex', 'envelope', 'filter', 'drive'];
+const ONE_SHOT_VOICE_KEYS = ['id', ...TRACK_VOICE_KEYS, 'freqStartHz', 'freqEndHz', 'freqCurve', 'startS', 'durationS'];
+const TRACK_KEYS = ['id', 'voice', 'notes'];
+const NOTE_KEYS = ['startBeat', 'durationBeats', 'midi', 'velocity'];
+const ENVELOPE_KEYS = ['attackS', 'decayS', 'sustainLevel', 'releaseS'];
+const FILTER_KEYS = ['type', 'freqHz', 'q'];
+
+function rejectUnknownKeys(obj: Record<string, unknown>, allowed: readonly string[], where: string): void {
+  for (const key of Object.keys(obj)) {
+    if (!allowed.includes(key)) {
+      throw new RecipeError(`Unknown key "${key}" at ${where} (allowed: ${allowed.join(', ')})`);
+    }
+  }
+}
+
+function validateVoiceCommon(
+  v: Record<string, unknown>,
+  label: string,
+  where: string,
+  allowedKeys: readonly string[],
+): void {
+  rejectUnknownKeys(v, allowedKeys, where);
   if (typeof v['waveform'] !== 'string' || !VALID_WAVEFORMS.has(v['waveform'])) {
     throw new RecipeError(`${label} invalid waveform: ${String(v['waveform'])}`);
   }
@@ -249,6 +273,7 @@ function validateVoiceCommon(v: Record<string, unknown>, label: string): void {
     throw new RecipeError(`${label} missing envelope`);
   }
   const e = env as Record<string, unknown>;
+  rejectUnknownKeys(e, ENVELOPE_KEYS, `${where}.envelope`);
   if (!isFiniteNum(e['attackS']) || e['attackS'] < 0) {
     throw new RecipeError(`${label} envelope.attackS must be >= 0`);
   }
@@ -267,6 +292,7 @@ function validateVoiceCommon(v: Record<string, unknown>, label: string): void {
       throw new RecipeError(`${label} invalid filter object`);
     }
     const f = v['filter'] as Record<string, unknown>;
+    rejectUnknownKeys(f, FILTER_KEYS, `${where}.filter`);
     if (typeof f['type'] !== 'string' || !VALID_FILTERS.has(f['type'])) {
       throw new RecipeError(`${label} invalid filter.type: ${String(f['type'])}`);
     }
@@ -310,6 +336,7 @@ export function validateRecipe(raw: unknown): AudioRecipe {
   }
 
   if (obj['kind'] === 'one-shot') {
+    rejectUnknownKeys(obj, ONE_SHOT_KEYS, 'recipe');
     const dur = obj['durationS'];
     if (!isFiniteNum(dur) || dur <= 0 || dur > 30) {
       throw new RecipeError(`Invalid one-shot durationS: ${String(dur)}`);
@@ -317,7 +344,7 @@ export function validateRecipe(raw: unknown): AudioRecipe {
     if (!Array.isArray(obj['voices']) || obj['voices'].length === 0) {
       throw new RecipeError('One-shot recipe requires at least one voice');
     }
-    for (const rawVoice of obj['voices']) {
+    for (const [voiceIdx, rawVoice] of (obj['voices'] as unknown[]).entries()) {
       if (typeof rawVoice !== 'object' || rawVoice === null) {
         throw new RecipeError('Voice entry must be an object');
       }
@@ -325,7 +352,7 @@ export function validateRecipe(raw: unknown): AudioRecipe {
       if (typeof v['id'] !== 'string' || v['id'].trim().length === 0) {
         throw new RecipeError('Voice requires non-empty string id');
       }
-      validateVoiceCommon(v, `Voice '${v['id']}'`);
+      validateVoiceCommon(v, `Voice '${v['id']}'`, `voices[${voiceIdx}]`, ONE_SHOT_VOICE_KEYS);
       if (v['freqStartHz'] !== undefined && (!isFiniteNum(v['freqStartHz']) || v['freqStartHz'] <= 0)) {
         throw new RecipeError(`Voice '${v['id']}' invalid freqStartHz`);
       }
@@ -351,6 +378,7 @@ export function validateRecipe(raw: unknown): AudioRecipe {
   }
 
   if (obj['kind'] === 'loop') {
+    rejectUnknownKeys(obj, LOOP_KEYS, 'recipe');
     const bpm = obj['bpm'];
     const beats = obj['beats'];
     if (!isFiniteNum(bpm) || bpm < 30 || bpm > 300) {
@@ -365,26 +393,34 @@ export function validateRecipe(raw: unknown): AudioRecipe {
     if (!Array.isArray(obj['tracks']) || obj['tracks'].length === 0) {
       throw new RecipeError('Loop recipe requires at least one track');
     }
-    for (const rawTrack of obj['tracks']) {
+    for (const [trackIdx, rawTrack] of (obj['tracks'] as unknown[]).entries()) {
       if (typeof rawTrack !== 'object' || rawTrack === null) {
         throw new RecipeError('Track entry must be an object');
       }
       const track = rawTrack as Record<string, unknown>;
+      const trackWhere = `tracks[${trackIdx}]`;
+      rejectUnknownKeys(track, TRACK_KEYS, trackWhere);
       if (typeof track['id'] !== 'string' || track['id'].trim().length === 0) {
         throw new RecipeError('Track requires non-empty string id');
       }
       if (typeof track['voice'] !== 'object' || track['voice'] === null) {
         throw new RecipeError(`Track '${track['id']}' missing voice`);
       }
-      validateVoiceCommon(track['voice'] as Record<string, unknown>, `Track '${track['id']}' voice`);
+      validateVoiceCommon(
+        track['voice'] as Record<string, unknown>,
+        `Track '${track['id']}' voice`,
+        `${trackWhere}.voice`,
+        TRACK_VOICE_KEYS,
+      );
       if (!Array.isArray(track['notes'])) {
         throw new RecipeError(`Track '${track['id']}' missing notes array`);
       }
-      for (const rawNote of track['notes']) {
+      for (const [noteIdx, rawNote] of (track['notes'] as unknown[]).entries()) {
         if (typeof rawNote !== 'object' || rawNote === null) {
           throw new RecipeError(`Track '${track['id']}' note must be an object`);
         }
         const note = rawNote as Record<string, unknown>;
+        rejectUnknownKeys(note, NOTE_KEYS, `${trackWhere}.notes[${noteIdx}]`);
         if (!isFiniteNum(note['midi']) || note['midi'] < 0 || note['midi'] > 127) {
           throw new RecipeError(`Track '${track['id']}' MIDI pitch ${String(note['midi'])} out of range 0..127`);
         }

@@ -2,10 +2,13 @@ import fs from 'node:fs';
 import http from 'node:http';
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
 import { chromium } from 'playwright';
 import { inspectGlbSource } from './glbHeader.js';
 import type { AssetMetrics, GlbSourceInfo, StyleCard, ViewMetrics } from './types.js';
+
+export const DEFAULT_TIMEOUT_MS = 30000;
 
 const requireFromHere = createRequire(import.meta.url);
 // Works on Node 20.0.0+ without relying on import.meta.resolve (added in 20.6).
@@ -17,6 +20,7 @@ export interface BrowserSessionOptions {
   readonly assetPath: string;
   readonly card: StyleCard | null;
   readonly renderSheet: boolean;
+  readonly timeoutMs?: number;
   readonly contactSheetPath?: string;
 }
 
@@ -34,41 +38,8 @@ function buildRuntimeEntrySource(factoryImportPath: string | null): string {
   return `
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { deltaE76, hexSrgbToLinearRgb, linearRgbToLabD65, linearRgbToHexSrgb } from './color.js';
 ${importLine}
-
-function srgbToLin(c) {
-  const v = Math.max(0, Math.min(1, c));
-  return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
-}
-function linToSrgb(c) {
-  const v = Math.max(0, Math.min(1, c));
-  return v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
-}
-function hexToLin(hex) {
-  const clean = hex.trim().replace(/^#/, '');
-  return [
-    srgbToLin(parseInt(clean.slice(0, 2), 16) / 255),
-    srgbToLin(parseInt(clean.slice(2, 4), 16) / 255),
-    srgbToLin(parseInt(clean.slice(4, 6), 16) / 255),
-  ];
-}
-function linToHex(r, g, b) {
-  const b2 = (v) => Math.max(0, Math.min(255, Math.round(linToSrgb(v) * 255))).toString(16).padStart(2, '0');
-  return '#' + b2(r) + b2(g) + b2(b);
-}
-function linToLab(r, g, b) {
-  const x = r * 0.4124564 + g * 0.3575761 + b * 0.1804375;
-  const y = r * 0.2126729 + g * 0.7151522 + b * 0.072175;
-  const z = r * 0.0193339 + g * 0.119192 + b * 0.9503041;
-  const f = (t) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
-  const fx = f(x / 0.95047);
-  const fy = f(y / 1.0);
-  const fz = f(z / 1.08883);
-  return { l: 116 * fy - 16, a: 500 * (fx - fy), b: 200 * (fy - fz) };
-}
-function deltaE76(a, b) {
-  return Math.hypot(a.l - b.l, a.a - b.a, a.b - b.b);
-}
 
 function axisVec(name, fallback) {
   switch (name) {
@@ -325,7 +296,6 @@ function inspectRoot(root, inputKind, glbSource, card) {
     }
   }
 
-  // Palette assessment: strict linear material * active vertexColors * active instanceColor -> Lab D65.
   let palette = {
     status: 'skipped_no_palette',
     assessedMeshes: 0,
@@ -337,8 +307,8 @@ function inspectRoot(root, inputKind, glbSource, card) {
 
   if (card && card.palette && Object.keys(card.palette).length > 0) {
     const palEntries = Object.entries(card.palette).map(([role, hex]) => {
-      const lin = hexToLin(hex);
-      return { role, hex, lab: linToLab(lin[0], lin[1], lin[2]) };
+      const lin = hexSrgbToLinearRgb(hex);
+      return { role, hex, lab: linearRgbToLabD65(lin[0], lin[1], lin[2]) };
     });
 
     let assessedMeshes = 0;
@@ -349,7 +319,7 @@ function inspectRoot(root, inputKind, glbSource, card) {
 
     const evalLinearColor = (meshName, lr, lg, lb) => {
       sampledCorners += 1;
-      const lab = linToLab(lr, lg, lb);
+      const lab = linearRgbToLabD65(lr, lg, lb);
       let bestRole = '';
       let bestHex = '#000000';
       let bestD = Infinity;
@@ -365,7 +335,7 @@ function inspectRoot(root, inputKind, glbSource, card) {
         maxDelta = bestD;
         worst = {
           meshName,
-          hexSrgb: linToHex(lr, lg, lb),
+          hexSrgb: linearRgbToHexSrgb(lr, lg, lb),
           nearestRole: bestRole,
           nearestHex: bestHex,
           deltaE76: bestD,
@@ -384,10 +354,13 @@ function inspectRoot(root, inputKind, glbSource, card) {
 
       for (const span of spans) {
         const mat = span.material;
-        const hasBaseTexture =
-          Boolean(mat.map && mat.map.isTexture) ||
+        const emission = mat.emissive?.clone().multiplyScalar(mat.emissiveIntensity);
+        const hasEmissiveTexture = mat.emissiveMap?.isTexture && emission &&
+          (emission.r !== 0 || emission.g !== 0 || emission.b !== 0);
+        const hasColorTexture =
+          mat.map?.isTexture || hasEmissiveTexture ||
           (Boolean(mat.isShaderMaterial) && materialHasUniformTexture(mat));
-        if (hasBaseTexture) {
+        if (hasColorTexture) {
           meshHadTextured = true;
           continue;
         }
@@ -395,6 +368,11 @@ function inspectRoot(root, inputKind, glbSource, card) {
         const matR = mat.color ? mat.color.r : 1;
         const matG = mat.color ? mat.color.g : 1;
         const matB = mat.color ? mat.color.b : 1;
+        const sample = (r, g, b) => evalLinearColor(meshName,
+          THREE.MathUtils.clamp(r + (emission?.r ?? 0), 0, 1),
+          THREE.MathUtils.clamp(g + (emission?.g ?? 0), 0, 1),
+          THREE.MathUtils.clamp(b + (emission?.b ?? 0), 0, 1),
+        );
         const useVertexColors = Boolean(mat.vertexColors) && Boolean(colorAttr);
         const hasInstColor = Boolean(mesh.isInstancedMesh && mesh.instanceColor);
 
@@ -412,15 +390,14 @@ function inspectRoot(root, inputKind, glbSource, card) {
               const vi = idx ? idx.getX(i) : i;
               if (seen.has(vi)) continue;
               seen.add(vi);
-              evalLinearColor(
-                meshName,
+              sample(
                 matR * ir * colorAttr.getX(vi),
                 matG * ig * colorAttr.getY(vi),
                 matB * ib * colorAttr.getZ(vi),
               );
             }
           } else {
-            evalLinearColor(meshName, matR * ir, matG * ig, matB * ib);
+            sample(matR * ir, matG * ig, matB * ib);
           }
         }
       }
@@ -555,7 +532,10 @@ function renderContactSheet(root, worldBox, center, radius, card) {
   ctx.fillStyle = '#0d101a';
   ctx.fillRect(0, 0, sheetCanvas.width, sheetCanvas.height);
 
-  const maskMat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
+  const mask = (color, side) => new THREE.MeshBasicMaterial({ color, side, toneMapped: false });
+  const doubleMask = mask(0xff0000, THREE.DoubleSide);
+  const frontMask = mask(0xffff00, THREE.FrontSide);
+  const exemptMask = mask(0xffffff, THREE.DoubleSide);
   const gl = renderer.getContext();
   const pixelBuf = new Uint8Array(tileW * tileH * 4);
   const aspect = tileW / tileH;
@@ -564,11 +544,21 @@ function renderContactSheet(root, worldBox, center, radius, card) {
   const tanHalfH = tanHalfV * aspect;
   const corners = worldBox ? boxCorners(worldBox) : [];
 
-  const instancedWithColor = [];
-  root.traverse((obj) => {
-    if (obj.isInstancedMesh && obj.instanceColor) {
-      instancedWithColor.push({ mesh: obj, saved: obj.instanceColor });
-    }
+  const maskObjects = [];
+  root.traverseVisible((obj) => {
+    if (!obj.material) return;
+    const maskFor = (material, frontPass) => {
+      if (!material?.visible) return material;
+      if (!obj.isMesh || material.side !== THREE.FrontSide) return exemptMask;
+      return frontPass ? frontMask : doubleMask;
+    };
+    const materialsFor = (frontPass) => Array.isArray(obj.material)
+      ? obj.material.map(mat => maskFor(mat, frontPass))
+      : maskFor(obj.material, frontPass);
+    maskObjects.push({
+      obj, original: obj.material, double: materialsFor(false), front: materialsFor(true),
+      instanceColor: obj.instanceColor,
+    });
   });
 
   const views = [];
@@ -626,8 +616,6 @@ function renderContactSheet(root, worldBox, center, radius, card) {
     cam.lookAt(center);
     cam.updateMatrixWorld();
 
-    // 1. Beauty render
-    scene.overrideMaterial = null;
     scene.background = new THREE.Color(0x161926);
     renderer.render(scene, cam);
     gl.readPixels(0, 0, tileW, tileH, gl.RGBA, gl.UNSIGNED_BYTE, pixelBuf);
@@ -652,29 +640,41 @@ function renderContactSheet(root, worldBox, center, radius, card) {
     ctx.textAlign = 'left';
     ctx.fillText(def.id, dx + 10, dy + 17);
 
-    // 2. Internal foreground mask (temporarily strip instanceColor so dark instances stay white in the mask).
-    for (const item of instancedWithColor) {
-      item.mesh.instanceColor = null;
-    }
     try {
-      scene.overrideMaterial = maskMat;
+      for (const item of maskObjects) {
+        item.obj.material = item.double;
+        if (item.instanceColor) item.obj.instanceColor = null;
+      }
       scene.background = new THREE.Color(0x000000);
       renderer.render(scene, cam);
+
+      // Preserve nearest-surface depth so an inside-out shell cannot fill its mask with far faces.
+      scene.background = null;
+      renderer.autoClear = false;
+      for (const item of maskObjects) item.obj.material = item.front;
+      renderer.render(scene, cam);
     } finally {
-      for (const item of instancedWithColor) {
-        item.mesh.instanceColor = item.saved;
+      renderer.autoClear = true;
+      for (const item of maskObjects) {
+        item.obj.material = item.original;
+        if (item.instanceColor) item.obj.instanceColor = item.instanceColor;
       }
-      scene.overrideMaterial = null;
     }
 
     gl.readPixels(0, 0, tileW, tileH, gl.RGBA, gl.UNSIGNED_BYTE, pixelBuf);
     let covered = 0;
+    let frontSidePixels = 0;
+    let culledPixels = 0;
     let edgeClipped = false;
     for (let y = 0; y < tileH; y += 1) {
       for (let x = 0; x < tileW; x += 1) {
         const off = (y * tileW + x) * 4;
         if (pixelBuf[off] > 128) {
           covered += 1;
+          if (pixelBuf[off + 2] <= 128) {
+            frontSidePixels += 1;
+            if (pixelBuf[off + 1] <= 128) culledPixels += 1;
+          }
           if (x === 0 || x === tileW - 1 || y === 0 || y === tileH - 1) {
             edgeClipped = true;
           }
@@ -686,12 +686,15 @@ function renderContactSheet(root, worldBox, center, radius, card) {
       id: def.id,
       ortho: def.ortho,
       coverageRatio: covered / (tileW * tileH),
+      culledFrontSideRatio: frontSidePixels ? culledPixels / frontSidePixels : 0,
       edgeClipped,
       beautyUniqueColors: beautyBuckets.size,
     });
   }
 
-  maskMat.dispose();
+  doubleMask.dispose();
+  frontMask.dispose();
+  exemptMask.dispose();
   renderer.dispose();
   return {
     views,
@@ -699,7 +702,7 @@ function renderContactSheet(root, worldBox, center, radius, card) {
   };
 }
 
-globalThis.__AGENT_3D_RUN__ = async ({ inputKind, glbUrl, glbSource, card, renderSheet }) => {
+export async function run({ inputKind, glbUrl, glbSource, card, renderSheet }) {
   let root;
   if (inputKind === 'glb') {
     const resp = await fetch(glbUrl);
@@ -733,14 +736,33 @@ globalThis.__AGENT_3D_RUN__ = async ({ inputKind, glbUrl, glbSource, card, rende
     views,
     sheetDataUrl,
   };
-};
+}
 `;
+}
+
+async function withTimeout<T>(execution: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`Asset execution timed out after ${ms} ms`)), ms);
+    });
+    return await Promise.race([execution, deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function runAssetSession(options: BrowserSessionOptions): Promise<BrowserSessionResult> {
   const absAsset = path.resolve(options.assetPath);
   if (!fs.existsSync(absAsset) || !fs.statSync(absAsset).isFile()) {
     throw new Error(`Asset file not found: ${absAsset}`);
+  }
+  if (path.extname(absAsset).toLowerCase() === '.gltf') {
+    throw new Error('Unsupported .gltf input. Supply a binary .glb or a Three.js factory module.');
+  }
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647) {
+    throw new Error('--timeout must be a positive integer in milliseconds (at most 2147483647)');
   }
   const isGlb = absAsset.toLowerCase().endsWith('.glb');
   const glbSource: GlbSourceInfo | null = isGlb ? inspectGlbSource(absAsset) : null;
@@ -750,7 +772,7 @@ export async function runAssetSession(options: BrowserSessionOptions): Promise<B
   const bundleResult = await esbuild.build({
     stdin: {
       contents: buildRuntimeEntrySource(isGlb ? null : absAsset),
-      resolveDir: path.dirname(absAsset),
+      resolveDir: path.dirname(fileURLToPath(import.meta.url)),
       loader: 'ts',
     },
     bundle: true,
@@ -772,7 +794,7 @@ export async function runAssetSession(options: BrowserSessionOptions): Promise<B
   const server = http.createServer((req, res) => {
     if (req.url === '/' || req.url === '/index.html') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end('<!doctype html><html><body><script type="module" src="/harness.js"></script></body></html>');
+      res.end('<!doctype html><html><body></body></html>');
       return;
     }
     if (req.url === '/harness.js') {
@@ -812,28 +834,23 @@ export async function runAssetSession(options: BrowserSessionOptions): Promise<B
     const pageErrors: string[] = [];
     page.on('pageerror', (err) => pageErrors.push(err.message));
 
-    await page.goto(baseUrl, { waitUntil: 'networkidle' });
-    await page.waitForFunction(() => typeof (globalThis as Record<string, unknown>)['__AGENT_3D_RUN__'] === 'function');
-
-    const payload = await page.evaluate(
-      async (params) => {
-        const runner = (globalThis as Record<string, unknown>)['__AGENT_3D_RUN__'] as (
-          p: typeof params,
-        ) => Promise<{
-          metrics: AssetMetrics;
-          views: ViewMetrics[];
-          sheetDataUrl: string | null;
-        }>;
-        return runner(params);
-      },
-      {
-        inputKind: isGlb ? 'glb' : 'factory',
-        glbUrl: `${baseUrl}/asset.glb`,
-        glbSource,
-        card: options.card,
-        renderSheet: options.renderSheet,
-      },
-    );
+    await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+    const execution = page.evaluate(async (params) => {
+      const { run } = await import(params.harnessUrl);
+      return run(params) as Promise<{
+        metrics: AssetMetrics;
+        views: ViewMetrics[];
+        sheetDataUrl: string | null;
+      }>;
+    }, {
+      harnessUrl: `${baseUrl}/harness.js`,
+      inputKind: isGlb ? 'glb' : 'factory',
+      glbUrl: `${baseUrl}/asset.glb`,
+      glbSource,
+      card: options.card,
+      renderSheet: options.renderSheet,
+    });
+    const payload = await withTimeout(execution, timeoutMs);
 
     if (pageErrors.length > 0) {
       throw new Error(`Browser page errors: ${pageErrors.join('; ')}`);

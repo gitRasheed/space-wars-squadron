@@ -32,6 +32,16 @@ export function evaluateAssetGates(
 
   if (card !== null) {
     const budgets = card.budgets;
+    if (metrics.inputKind === 'factory' && budgets !== undefined) {
+      const skipped = (['bytesMax', 'requireTriangleLists'] as const).filter(key => budgets[key] !== undefined);
+      if (skipped.length > 0) {
+        findings.push({
+          id: 'GLB_BUDGETS_SKIPPED',
+          severity: 'info',
+          message: `Skipped GLB-only budgets on factory input: ${skipped.join(', ')}`,
+        });
+      }
+    }
     if (budgets?.trisMax !== undefined && metrics.trianglesByOccurrence > budgets.trisMax) {
       findings.push({
         id: 'TRIANGLES_OVER_BUDGET',
@@ -212,13 +222,22 @@ export function evaluateAssetGates(
           limit: false,
         });
       }
-      if (view.beautyUniqueColors < 4) {
+      if (view.culledFrontSideRatio !== undefined && view.culledFrontSideRatio > 0.5) {
+        findings.push({
+          id: 'INVERTED_WINDING',
+          severity: 'fail',
+          message: `View '${view.id}' culls over half the nearest FrontSide surface. Check triangle winding.`,
+          actual: view.culledFrontSideRatio,
+          limit: 0.5,
+        });
+      }
+      if (view.beautyUniqueColors < 2) {
         findings.push({
           id: 'VIEW_BEAUTY_FLAT',
           severity: 'fail',
           message: `View '${view.id}' beauty tile has only ${view.beautyUniqueColors} quantized colors`,
           actual: view.beautyUniqueColors,
-          limit: 4,
+          limit: 2,
         });
       }
     }

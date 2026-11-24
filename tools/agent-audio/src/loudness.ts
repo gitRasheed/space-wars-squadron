@@ -40,20 +40,36 @@ function kWeightingStages(sampleRate: SupportedSampleRate): readonly [BiquadCoef
   return [stage1, stage2];
 }
 
-function applyBiquad(input: Float64Array, c: BiquadCoeffs): Float64Array {
-  const out = new Float64Array(input.length);
+// K-weighted energy of each 100 ms hop, zero-padding the input up to frames.
+function hopEnergies(
+  input: Float64Array,
+  frames: number,
+  hopFrames: number,
+  [s1, s2]: readonly [BiquadCoeffs, BiquadCoeffs],
+): Float64Array {
+  const out = new Float64Array(Math.floor(frames / hopFrames));
   let x1 = 0;
   let x2 = 0;
   let y1 = 0;
   let y2 = 0;
-  for (let i = 0; i < input.length; i += 1) {
-    const x0 = input[i] ?? 0;
-    const y0 = c.b0 * x0 + c.b1 * x1 + c.b2 * x2 - c.a1 * y1 - c.a2 * y2;
-    out[i] = y0;
-    x2 = x1;
-    x1 = x0;
-    y2 = y1;
-    y1 = y0;
+  let z1 = 0;
+  let z2 = 0;
+  for (let h = 0; h < out.length; h += 1) {
+    let sq = 0;
+    const end = (h + 1) * hopFrames;
+    for (let i = h * hopFrames; i < end; i += 1) {
+      const x0 = input[i] ?? 0;
+      const y0 = s1.b0 * x0 + s1.b1 * x1 + s1.b2 * x2 - s1.a1 * y1 - s1.a2 * y2;
+      const z0 = s2.b0 * y0 + s2.b1 * y1 + s2.b2 * y2 - s2.a1 * z1 - s2.a2 * z2;
+      x2 = x1;
+      x1 = x0;
+      y2 = y1;
+      y1 = y0;
+      z2 = z1;
+      z1 = z0;
+      sq += z0 * z0;
+    }
+    out[h] = sq;
   }
   return out;
 }
@@ -72,10 +88,10 @@ function besselI0(x: number): number {
 // 4-phase, 16-tap/phase Kaiser-windowed sinc interpolator (4x oversampling) for accurate BS.1770-4 true peak.
 const TAPS_PER_PHASE = 16;
 const HALF_TAPS = TAPS_PER_PHASE / 2;
-const TRUE_PEAK_PHASES: readonly (readonly number[])[] = (() => {
+const TRUE_PEAK_TAPS: Float64Array = (() => {
   const beta = 7.0;
   const i0Beta = besselI0(beta);
-  const phases: number[][] = [];
+  const flat = new Float64Array(4 * TAPS_PER_PHASE);
   for (let phase = 0; phase < 4; phase += 1) {
     const frac = phase / 4;
     const taps: number[] = [];
@@ -87,9 +103,12 @@ const TRUE_PEAK_PHASES: readonly (readonly number[])[] = (() => {
       taps.push(sinc * win);
     }
     const sum = taps.reduce((a, b) => a + b, 0);
-    phases.push(taps.map((v) => v / sum));
+    flat.set(
+      taps.map((v) => v / sum),
+      phase * TAPS_PER_PHASE,
+    );
   }
-  return phases;
+  return flat;
 })();
 
 export function measureTruePeak(channels: readonly Float64Array[]): {
@@ -109,12 +128,20 @@ export function measureTruePeak(channels: readonly Float64Array[]): {
     }
     const n = buf.length;
     for (let i = -HALF_TAPS; i < n + HALF_TAPS; i += 1) {
-      for (const taps of TRUE_PEAK_PHASES) {
+      const base = i - (HALF_TAPS - 1);
+      const interior = base >= 0 && base + TAPS_PER_PHASE <= n;
+      for (let p = 0; p < TRUE_PEAK_TAPS.length; p += TAPS_PER_PHASE) {
         let acc = 0;
-        for (let k = 0; k < TAPS_PER_PHASE; k += 1) {
-          const idx = i + k - (HALF_TAPS - 1);
-          if (idx >= 0 && idx < n) {
-            acc += (buf[idx] ?? 0) * (taps[k] ?? 0);
+        if (interior) {
+          for (let k = 0; k < TAPS_PER_PHASE; k += 1) {
+            acc += (buf[base + k] ?? 0) * (TRUE_PEAK_TAPS[p + k] ?? 0);
+          }
+        } else {
+          for (let k = 0; k < TAPS_PER_PHASE; k += 1) {
+            const idx = base + k;
+            if (idx >= 0 && idx < n) {
+              acc += (buf[idx] ?? 0) * (TRUE_PEAK_TAPS[p + k] ?? 0);
+            }
           }
         }
         const abs = Math.abs(acc);
@@ -135,25 +162,26 @@ export function measureTruePeak(channels: readonly Float64Array[]): {
   };
 }
 
+const HOPS_PER_BLOCK = 4;
+
 function blockEnergies(
-  weightedChannels: readonly Float64Array[],
-  blockFrames: number,
-  hopFrames: number,
+  channels: readonly Float64Array[],
+  sampleRate: SupportedSampleRate,
+  frames: number,
 ): readonly number[] {
-  const n = weightedChannels[0]?.length ?? 0;
-  if (n < blockFrames) {
-    return [];
-  }
+  const hopFrames = Math.round(0.1 * sampleRate);
+  const stages = kWeightingStages(sampleRate);
+  const perChannel = channels.map((ch) => hopEnergies(ch, frames, hopFrames, stages));
+  const blocks = Math.max(0, Math.floor(frames / hopFrames) - HOPS_PER_BLOCK + 1);
   const energies: number[] = [];
-  for (let start = 0; start + blockFrames <= n; start += hopFrames) {
+  for (let b = 0; b < blocks; b += 1) {
     let sumEnergy = 0;
-    for (const ch of weightedChannels) {
+    for (const hops of perChannel) {
       let sq = 0;
-      for (let i = start; i < start + blockFrames; i += 1) {
-        const v = ch[i] ?? 0;
-        sq += v * v;
+      for (let h = b; h < b + HOPS_PER_BLOCK; h += 1) {
+        sq += hops[h] ?? 0;
       }
-      sumEnergy += sq / blockFrames;
+      sumEnergy += sq / (HOPS_PER_BLOCK * hopFrames);
     }
     energies.push(sumEnergy);
   }
@@ -166,11 +194,7 @@ export function measureLoudness(
 ): LoudnessMetrics {
   const truePeak = measureTruePeak(channels);
   const frames = channels[0]?.length ?? 0;
-  const blockFrames = Math.round(0.4 * sampleRate);
-  const hopFrames = Math.round(0.1 * sampleRate);
-  const [stage1, stage2] = kWeightingStages(sampleRate);
-
-  const weighted = channels.map((ch) => applyBiquad(applyBiquad(ch, stage1), stage2));
+  const blockFrames = HOPS_PER_BLOCK * Math.round(0.1 * sampleRate);
 
   let momentaryMaxLufs: number | null = null;
   let momentaryPadded = false;
@@ -180,18 +204,13 @@ export function measureLoudness(
   if (frames < blockFrames) {
     momentaryPadded = true;
     integratedReason = 'duration_below_400ms';
-    const padded = channels.map((ch) => {
-      const buf = new Float64Array(blockFrames);
-      buf.set(ch);
-      return applyBiquad(applyBiquad(buf, stage1), stage2);
-    });
-    const energies = blockEnergies(padded, blockFrames, hopFrames);
+    const energies = blockEnergies(channels, sampleRate, blockFrames);
     const e0 = energies[0] ?? 0;
     if (e0 > 0) {
       momentaryMaxLufs = -0.691 + 10 * Math.log10(e0);
     }
   } else {
-    const energies = blockEnergies(weighted, blockFrames, hopFrames);
+    const energies = blockEnergies(channels, sampleRate, frames);
     const blockLoudness = energies.map((e) => (e > 0 ? -0.691 + 10 * Math.log10(e) : -Infinity));
     let maxM = -Infinity;
     for (const l of blockLoudness) {

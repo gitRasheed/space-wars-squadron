@@ -7,19 +7,29 @@ description: Inspect 3D assets (.glb or Three.js factory modules) with determini
 
 Headless 3D verification and visual iteration for coding agents (Three.js + Playwright Chromium WebGL).
 
-## Install & Commands
+## Run from a checkout
+
+Use Node.js 20 or later. From `tools/agent-3d/`, install the locked dependencies and the Chromium version Playwright expects.
 
 ```bash
-npm install -g agent-3d   # or npx agent-3d (Node >= 20)
-
-# Mechanical geometry, budget, bounds, and authored flat-color check
-agent-3d check path/to/model.glb --card style-card.json --out report.json
-
-# 9-view labeled contact sheet + internal silhouette framing mask + mechanical gate
-agent-3d turntable path/to/factory.ts --card style-card.json --out out/turntable
+npm ci
+npx playwright install chromium
+npm run build
+node dist/cli.js check path/to/model.glb --card style-card.json --out report.json
+node dist/cli.js turntable path/to/factory.ts --card style-card.json --out out/turntable
 ```
 
-Exit codes: `0` pass, `1` measured violation, `2` invalid input, unavailable renderer, or unsupported required gate (e.g., `requirePaletteOnTextured: true` on a textured mesh).
+To run the CLI from another directory, pack the checkout once with `npm pack`, then point npx at the local tarball.
+
+```bash
+npx --package=/absolute/path/to/agent-3d-0.1.0.tgz -- agent-3d check ./model.glb
+```
+
+Both commands accept `--timeout <ms>` (default `30000`) for browser execution, including factory loading. Exit code `0` means the asset passed, `1` means a gate failed, and `2` means invalid input, a timeout, a renderer error, or an unsupported required gate.
+
+`check` measures geometry and authored colors. For untextured materials it adds emissive color times intensity to the linear base color after vertex and instance tinting, then clamps to the sRGB gamut for the palette comparison. Maps that supply base color or emission require visual review. The byte and primitive-mode budgets apply only to GLB files. Factory reports list skipped budgets.
+
+`turntable` also writes a nine-view contact sheet. A uniformly colored tile fails the beauty gate. The winding gate flags a view when backface culling hides more than half of the nearest surface area drawn with `FrontSide` materials. An open, one-sided panel can trigger this gate when seen from behind. Intentionally double-sided or back-sided materials are exempt.
 
 ## Minimal `style-card.json`
 

@@ -92,6 +92,7 @@ export interface ViewMetrics {
   readonly id: string;
   readonly ortho: boolean;
   readonly coverageRatio: number;
+  readonly culledFrontSideRatio?: number;
   readonly edgeClipped: boolean;
   readonly beautyUniqueColors: number;
 }

@@ -1,11 +1,3 @@
-export function nextPowerOfTwo(n: number): number {
-  let p = 1;
-  while (p < n) {
-    p <<= 1;
-  }
-  return p;
-}
-
 export function fftInPlace(re: Float64Array, im: Float64Array): void {
   const n = re.length;
   for (let i = 1, j = 0; i < n; i += 1) {

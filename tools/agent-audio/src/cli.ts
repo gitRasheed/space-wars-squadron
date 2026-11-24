@@ -2,34 +2,31 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkAudio } from './analyze.js';
+import { checkAudio, DEFAULT_LOOP_DISCONTINUITY_RATIO, DEFAULT_THRESHOLDS } from './analyze.js';
 import { writeInspectionPngs } from './png.js';
 import { RecipeError, renderRecipe, validateRecipe } from './synth.js';
-import { WavError, type CheckThresholds } from './types.js';
+import { THRESHOLD_KEYS, WavError, type CheckThresholds } from './types.js';
 import { encodeWav, readWavFile } from './wav.js';
 
-const KNOWN_THRESHOLD_KEYS = new Set<keyof CheckThresholds>([
-  'maxTruePeakDbtp',
-  'maxDcOffset',
-  'maxFullScaleSamples',
-  'maxLeadingSilenceS',
-  'maxEndEdgeRatio',
-  'maxClickRatio',
-  'minMomentaryLufs',
-  'maxMomentaryLufs',
-  'minIntegratedLufs',
-  'maxIntegratedLufs',
-  'maxLoopDiscontinuityRatio',
-  'maxLoopWrapDelta',
-  'maxStereoBalanceDb',
-]);
+const KNOWN_THRESHOLD_KEYS: ReadonlySet<string> = new Set(THRESHOLD_KEYS);
 
 function usage(): string {
+  const keyWidth = Math.max(...THRESHOLD_KEYS.map((key) => key.length));
+  const thresholdLines = THRESHOLD_KEYS.map((key) => {
+    const loopDefault =
+      key === 'maxLoopDiscontinuityRatio' ? `${DEFAULT_LOOP_DISCONTINUITY_RATIO} with --loop` : 'off';
+    return `  ${key.padEnd(keyWidth)}  ${DEFAULT_THRESHOLDS[key] ?? loopDefault}`;
+  });
   return [
     'Usage:',
     '  agent-audio render <recipe.json> --out <file.wav>',
-    '  agent-audio check <file.wav> [--loop] [--png <dir>] [--out <report.json>] [--thresholds <json>]',
+    '  agent-audio check <file.wav> [--loop] [--png <dir>] [--out <report.json>] [--thresholds <json | file.json>]',
+    '  agent-audio --help',
+    '',
     'Exit codes: 0 pass, 1 gate fail, 2 input/tool error',
+    '',
+    'Threshold keys for --thresholds, with defaults:',
+    ...thresholdLines,
   ].join('\n');
 }
 
@@ -77,7 +74,7 @@ function parseThresholds(raw: string | undefined): CheckThresholds {
   }
   const validated: Record<string, number> = {};
   for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-    if (!KNOWN_THRESHOLD_KEYS.has(k as keyof CheckThresholds)) {
+    if (!KNOWN_THRESHOLD_KEYS.has(k)) {
       throw new Error(`Unknown threshold key: ${k}`);
     }
     if (typeof v !== 'number' || !Number.isFinite(v)) {
@@ -161,6 +158,10 @@ function runCheck(args: readonly string[]): number {
 }
 
 export function main(argv: readonly string[]): number {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    process.stdout.write(`${usage()}\n`);
+    return 0;
+  }
   const cmd = argv[0];
   try {
     if (cmd === 'render') {

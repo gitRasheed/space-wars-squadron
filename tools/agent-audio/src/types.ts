@@ -29,8 +29,28 @@ export class WavError extends Error {
 
 export type FindingSeverity = 'fail' | 'warn' | 'info';
 
+export const FINDING_CODES = [
+  'SILENT_AUDIO',
+  'TRUE_PEAK_EXCEEDED',
+  'FULL_SCALE_SAMPLES',
+  'DC_OFFSET',
+  'LEADING_SILENCE',
+  'CUT_TAIL',
+  'IMPULSE_CLICK',
+  'LOOP_SEAM_DISCONTINUITY',
+  'LOOP_WRAP_DELTA',
+  'STEREO_IMBALANCE',
+  'STEREO_PHASE_INVERTED',
+  'LOUDNESS_MOMENTARY_LOW',
+  'LOUDNESS_MOMENTARY_HIGH',
+  'LOUDNESS_INTEGRATED_LOW',
+  'LOUDNESS_INTEGRATED_HIGH',
+] as const;
+
+export type FindingCode = (typeof FINDING_CODES)[number];
+
 export interface CheckFinding {
-  readonly code: string;
+  readonly code: FindingCode;
   readonly severity: FindingSeverity;
   readonly message: string;
   readonly channel?: number;
@@ -86,27 +106,33 @@ export interface StereoMetrics {
   readonly correlation: number | null;
 }
 
-export interface CheckThresholds {
-  readonly maxTruePeakDbtp?: number;
-  readonly maxDcOffset?: number;
-  readonly maxFullScaleSamples?: number;
-  readonly maxLeadingSilenceS?: number;
-  readonly maxEndEdgeRatio?: number;
-  readonly maxClickRatio?: number;
-  readonly minMomentaryLufs?: number;
-  readonly maxMomentaryLufs?: number;
-  readonly minIntegratedLufs?: number;
-  readonly maxIntegratedLufs?: number;
-  readonly maxLoopDiscontinuityRatio?: number;
-  readonly maxLoopWrapDelta?: number;
-  readonly maxStereoBalanceDb?: number;
-}
+export const THRESHOLD_KEYS = [
+  'maxTruePeakDbtp',
+  'maxDcOffset',
+  'maxFullScaleSamples',
+  'maxLeadingSilenceS',
+  'maxEndEdgeRatio',
+  'maxClickRatio',
+  'minMomentaryLufs',
+  'maxMomentaryLufs',
+  'minIntegratedLufs',
+  'maxIntegratedLufs',
+  'maxLoopDiscontinuityRatio',
+  'maxLoopWrapDelta',
+  'maxStereoBalanceDb',
+  'minStereoCorrelation',
+] as const;
+
+export type ThresholdKey = (typeof THRESHOLD_KEYS)[number];
+
+export type CheckThresholds = { readonly [K in ThresholdKey]?: number };
 
 export interface CheckReport {
   readonly schemaVersion: 'agent-audio/check/v1';
   readonly ok: boolean;
   readonly file: string;
   readonly loopChecked: boolean;
+  readonly referenceLevelDbfs: number | null;
   readonly format: {
     readonly sampleRateHz: SupportedSampleRate;
     readonly channels: SupportedChannels;
@@ -168,7 +194,10 @@ export interface NoteEvent {
 
 export interface MusicTrackSpec {
   readonly id: string;
-  readonly voice: Omit<VoiceSpec, 'id' | 'freqStartHz' | 'freqEndHz' | 'startS' | 'durationS'>;
+  readonly voice: Omit<
+    VoiceSpec,
+    'id' | 'freqStartHz' | 'freqEndHz' | 'freqCurve' | 'startS' | 'durationS'
+  >;
   readonly notes: readonly NoteEvent[];
 }
 
