@@ -29,6 +29,10 @@ export default tseslint.config(
               group: ['three', 'three/*'],
               message: 'Three.js belongs only in src/render/. Keep simulation and input pure.',
             },
+            {
+              group: ['**/tools/*', '../tools/*', '../../tools/*'],
+              message: 'Keep src/ and tests/ decoupled from standalone MIT packages in tools/.',
+            },
           ],
         },
       ],
@@ -37,7 +41,17 @@ export default tseslint.config(
   {
     files: ['src/render/**/*.ts'],
     rules: {
-      'no-restricted-imports': 'off',
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['**/tools/*', '../tools/*', '../../tools/*'],
+              message: 'Keep src/render/ decoupled from standalone MIT packages in tools/.',
+            },
+          ],
+        },
+      ],
     },
   },
   {

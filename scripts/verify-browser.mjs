@@ -5,7 +5,7 @@ import { stripVTControlCharacters } from 'node:util';
 import { chromium } from 'playwright';
 
 const REQUESTED_PORT = process.env.VERIFY_PORT;
-const OUT_DIR = path.resolve(process.cwd(), 'artifacts', 'verify');
+const OUT_DIR = path.resolve(process.cwd(), process.env.VERIFY_OUT_DIR ?? path.join('artifacts', 'verify'));
 
 function assertCondition(condition, message) {
   if (!condition) {

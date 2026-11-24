@@ -732,6 +732,13 @@ export function stepCombat(ctx: CombatStepInput): CombatStepOutput {
   };
 }
 
+// Single source of truth for player fighter wing-cannon mount offsets (read by combat.ts and models.ts).
+export const FIGHTER_WEAPON_LAYOUT = {
+  muzzleX: 6.45,
+  muzzleY: 0,
+  muzzleForward: 1.9,
+} as const;
+
 export interface PlayerFireSolution {
   readonly leadPoint: Vec3 | null;
   readonly convergencePoint: Vec3;
@@ -744,7 +751,7 @@ export function computePlayerFireSolution(
 ): PlayerFireSolution {
   const playerForward = forwardOf(player.orientation);
   const right = rightOf(player.orientation);
-  const down = scale(upOf(player.orientation), -1.0);
+  const up = upOf(player.orientation);
 
   const leadPoint =
     target !== null
@@ -776,8 +783,8 @@ export function computePlayerFireSolution(
 
   const barrels = ([-1, 1] as const).map((side) => {
     const muzzle = add(
-      add(player.position, scale(playerForward, 5)),
-      add(scale(right, side * 3.1), down),
+      add(player.position, scale(playerForward, FIGHTER_WEAPON_LAYOUT.muzzleForward)),
+      add(scale(right, side * FIGHTER_WEAPON_LAYOUT.muzzleX), scale(up, FIGHTER_WEAPON_LAYOUT.muzzleY)),
     );
     return {
       muzzle,

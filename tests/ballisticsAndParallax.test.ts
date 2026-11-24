@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { computeCameraPose, projectPointFromPose } from '../src/render/cameraPose';
 import { computeHudReticlePoint } from '../src/render/cockpitHud';
-import { buildHostileFrigateMesh } from '../src/render/models';
+import { buildHostileFrigateMesh, buildPlayerFighterMesh } from '../src/render/models';
 import type { HullTextureSet } from '../src/render/textures';
-import { COMBAT_TUNING, computePlayerFireSolution, findTargetContact } from '../src/sim/combat';
+import {
+  COMBAT_TUNING,
+  computePlayerFireSolution,
+  FIGHTER_WEAPON_LAYOUT,
+  findTargetContact,
+} from '../src/sim/combat';
 import {
   add,
   computeLeadPoint,
@@ -141,6 +146,8 @@ describe('ballistic lead solver, HUD convergence, unreachable guards, pause free
       { cameraMode: 'chase', targetPos: vec3(0, 0, -90), liveFov: 68 },
       // 6 deg off-axis at 260 m during a mid-boost FOV lerp (triggers aim assist + off-center projection).
       { cameraMode: 'chase', targetPos: vec3(27.3, 6, -258.5), liveFov: 74.2 },
+      // Long-range 640 m engagement in cockpit view.
+      { cameraMode: 'cockpit', targetPos: vec3(-18, 9, -639.7), liveFov: 68 },
     ];
 
     for (const scenario of scenarios) {
@@ -240,5 +247,18 @@ describe('ballistic lead solver, HUD convergence, unreachable guards, pause free
       expect(mesh?.position.y).toBe(subsys.localOffset.y);
       expect(mesh?.position.z).toBe(subsys.localOffset.z);
     }
+  });
+
+  it('keeps chase-cam fighter muzzle burst positions locked to FIGHTER_WEAPON_LAYOUT', () => {
+    const stubTextures = {
+      fighterHull: undefined,
+    } as unknown as HullTextureSet;
+    const rig = buildPlayerFighterMesh(0xe88332, stubTextures);
+    expect(rig.muzzleLeft.position.x).toBe(-FIGHTER_WEAPON_LAYOUT.muzzleX);
+    expect(rig.muzzleLeft.position.y).toBe(FIGHTER_WEAPON_LAYOUT.muzzleY);
+    expect(rig.muzzleLeft.position.z).toBe(-FIGHTER_WEAPON_LAYOUT.muzzleForward);
+    expect(rig.muzzleRight.position.x).toBe(FIGHTER_WEAPON_LAYOUT.muzzleX);
+    expect(rig.muzzleRight.position.y).toBe(FIGHTER_WEAPON_LAYOUT.muzzleY);
+    expect(rig.muzzleRight.position.z).toBe(-FIGHTER_WEAPON_LAYOUT.muzzleForward);
   });
 });

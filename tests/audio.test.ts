@@ -3,7 +3,7 @@ import { COMBAT_LOOP_SCORE } from '../src/audio/combatScore';
 import { createSynthAudio } from '../src/audio/synthAudio';
 import { DEFAULT_SORTIE_SEED } from '../src/sim/types';
 import { createInitialWorld } from '../src/sim/world';
-import combatLoopRecipe from '../tools/agent-audio/recipes/combat-loop.recipe.json';
+import combatLoopRecipe from '../src/audio/combat-loop.recipe.json';
 
 interface MockAudioNode {
   readonly kind: string;
@@ -243,7 +243,7 @@ describe('synthAudio master bus isolation, victory SFX, tab-hide safety, and rec
     }
   });
 
-  it('keeps in-game COMBAT_LOOP_SCORE voice parameters and notes in exact parity with tools/agent-audio/recipes/combat-loop.recipe.json', () => {
+  it('keeps in-game COMBAT_LOOP_SCORE voice parameters and notes in exact parity with src/audio/combat-loop.recipe.json', () => {
     expect(COMBAT_LOOP_SCORE.bpm).toBe(combatLoopRecipe.bpm);
     expect(COMBAT_LOOP_SCORE.beats).toBe(combatLoopRecipe.beats);
     expect(COMBAT_LOOP_SCORE.masterGainDb).toBe(combatLoopRecipe.masterGainDb);

@@ -272,20 +272,6 @@ export function computeLeadPoint(
   return add(targetPos, scale(relVel, timeToImpact));
 }
 
-export function computeGunBoresightPoint(
-  shooterPos: Vec3,
-  shooterOrientation: Quat,
-  referenceAimPoint: Vec3 | null,
-  defaultRange = 420,
-): Vec3 {
-  const fwd = forwardOf(shooterOrientation);
-  const range =
-    referenceAimPoint !== null
-      ? clamp(distance(shooterPos, referenceAimPoint), 15, 2000)
-      : defaultRange;
-  return add(shooterPos, scale(fwd, range));
-}
-
 export function nextRandom(state: number): { readonly nextState: number; readonly value: number } {
   // Mulberry32 step keeps sortie spawning deterministic across headless tests.
   const nextState = (state + 0x6d2b79f5) | 0;

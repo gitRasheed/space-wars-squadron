@@ -68,6 +68,13 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
 
   let cssWidth = 1280;
   let cssHeight = 720;
+  let lastHudTick = -1;
+  let hitMarkerAlpha = 0;
+  let hitMarkerKill = false;
+
+  function hudScale(): number {
+    return clamp(cssHeight / 720, 0.85, 1.45);
+  }
 
   function canopyBounds(): {
     readonly left: number;
@@ -75,11 +82,12 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     readonly top: number;
     readonly bottom: number;
   } {
+    const s = hudScale();
     return {
       left: 34,
       right: cssWidth - 34,
       top: 56,
-      bottom: cssHeight - BOTTOM_SAFE_HEIGHT - 16,
+      bottom: cssHeight - Math.round(BOTTOM_SAFE_HEIGHT * s) - 16,
     };
   }
 
@@ -184,11 +192,12 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     const boostKind = p.energy.boostMode.kind;
     const isDrifting = boostKind === 'drifting';
 
+    const s = hudScale();
     ctx.strokeStyle = isDrifting ? CYAN : 'rgba(244, 180, 89, 0.88)';
     ctx.lineWidth = 1.5;
 
-    const gap = 8;
-    const arm = 10;
+    const gap = 8 * s;
+    const arm = 10 * s;
     ctx.beginPath();
     ctx.moveTo(cx - gap - arm, cy);
     ctx.lineTo(cx - gap, cy);
@@ -203,7 +212,27 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     ctx.fillStyle = isDrifting ? CYAN : AMBER;
     ctx.fillRect(cx - 1.5, cy - 1.5, 3, 3);
 
-    const arcRadius = 46;
+    if (hitMarkerAlpha > 0.02) {
+      const inner = (6 + (1 - hitMarkerAlpha) * 3) * s;
+      const outer = (14 + (1 - hitMarkerAlpha) * 5) * s;
+      ctx.save();
+      ctx.globalAlpha = clamp(hitMarkerAlpha, 0, 1);
+      ctx.strokeStyle = hitMarkerKill ? CRIMSON : HUD_PALETTE.boostGold;
+      ctx.lineWidth = hitMarkerKill ? 2.4 : 1.9;
+      ctx.beginPath();
+      ctx.moveTo(cx - outer, cy - outer);
+      ctx.lineTo(cx - inner, cy - inner);
+      ctx.moveTo(cx + outer, cy - outer);
+      ctx.lineTo(cx + inner, cy - inner);
+      ctx.moveTo(cx - outer, cy + outer);
+      ctx.lineTo(cx - inner, cy + inner);
+      ctx.moveTo(cx + outer, cy + outer);
+      ctx.lineTo(cx + inner, cy + inner);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    const arcRadius = 46 * s;
     const arcSpan = 0.72;
     const leftStart = Math.PI - arcSpan;
     const leftEnd = Math.PI + arcSpan;
@@ -460,7 +489,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     const fwd = forwardOf(world.player.orientation);
     const right = rightOf(world.player.orientation);
     const up = upOf(world.player.orientation);
-    const radarRange = 1300;
+    const radarRange = 760;
 
     function drawBlip(pos: Vec3, color: string, size: number, isSquare = false, bracketed = false): void {
       const rel = sub(pos, world.player.position);
@@ -550,15 +579,17 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     audioMuted: boolean,
     musicEnabled: boolean,
   ): void {
+    const s = hudScale();
+    const radarRadius = Math.round(RADAR_RADIUS * s);
     const cx = cssWidth * 0.5;
-    const radarY = cssHeight - RADAR_RADIUS - 16;
+    const radarY = cssHeight - radarRadius - 16;
     const p = world.player;
 
-    drawRadar(world, cx, radarY, RADAR_RADIUS);
+    drawRadar(world, cx, radarY, radarRadius);
 
-    const barW = 108;
-    const leftBarX = cx - RADAR_RADIUS - barW - 18;
-    const rightBarX = cx + RADAR_RADIUS + 18;
+    const barW = Math.round(108 * s);
+    const leftBarX = cx - radarRadius - barW - 18;
+    const rightBarX = cx + radarRadius + 18;
 
     ctx.font = 'bold 19px "Courier New", monospace';
     ctx.fillStyle = HUD_PALETTE.warmWhite;
@@ -615,7 +646,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     );
 
     if (p.proximityWarning) {
-      drawPillLabel('PROXIMITY', cx, radarY - RADAR_RADIUS - 12, CRIMSON, 'center');
+      drawPillLabel('PROXIMITY', cx, radarY - radarRadius - 12, CRIMSON, 'center');
     }
   }
 
@@ -749,6 +780,24 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     musicEnabled: boolean,
   ): void {
     ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+    if (world.tick < lastHudTick) {
+      hitMarkerAlpha = 0;
+      hitMarkerKill = false;
+    } else if (world.tick > lastHudTick) {
+      const tickDelta = Math.min(world.tick - lastHudTick, 10);
+      hitMarkerAlpha = Math.max(0, hitMarkerAlpha - tickDelta * 0.09);
+      for (const evt of world.events) {
+        if (evt.kind === 'subsystem_destroyed') {
+          hitMarkerAlpha = 1;
+          hitMarkerKill = true;
+        } else if (evt.kind === 'hit_confirmed') {
+          hitMarkerAlpha = 1;
+          hitMarkerKill = evt.isKill;
+        }
+      }
+    }
+    lastHudTick = world.tick;
 
     if (world.player.hitFlash > 0.01) {
       ctx.fillStyle = `rgba(255, 65, 85, ${world.player.hitFlash * 0.28})`;

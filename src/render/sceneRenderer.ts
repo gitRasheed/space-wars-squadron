@@ -56,13 +56,16 @@ function createTrail(color: number, maxPoints: number, opacity: number): TrailLi
   geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(maxPoints * 3), 3));
   geo.setDrawRange(0, 0);
   const mat = new THREE.LineBasicMaterial({
-    color,
+    color: new THREE.Color(color).multiplyScalar(1.65),
     transparent: true,
     opacity,
     depthWrite: false,
+    blending: THREE.AdditiveBlending,
   });
+  const line = new THREE.Line(geo, mat);
+  line.frustumCulled = false;
   return {
-    line: new THREE.Line(geo, mat),
+    line,
     points: [],
     maxPoints,
   };
@@ -195,9 +198,15 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   const boltGeo = new THREE.BoxGeometry(0.45, 0.45, 13);
   const missileGeo = new THREE.ConeGeometry(0.7, 5.8, 5);
   missileGeo.rotateX(-Math.PI / 2);
-  const friendlyBoltMat = new THREE.MeshBasicMaterial({ color: SCENE_PALETTE.friendlyBolt });
-  const hostileBoltMat = new THREE.MeshBasicMaterial({ color: SCENE_PALETTE.hostileBolt });
-  const missileMat = new THREE.MeshBasicMaterial({ color: SCENE_PALETTE.missile });
+  const friendlyBoltMat = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(SCENE_PALETTE.friendlyBolt).multiplyScalar(2.6),
+  });
+  const hostileBoltMat = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(SCENE_PALETTE.hostileBolt).multiplyScalar(2.6),
+  });
+  const missileMat = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(SCENE_PALETTE.missile).multiplyScalar(2.4),
+  });
 
   const explosionGeo = new THREE.IcosahedronGeometry(1, 1);
   const ringGeo = new THREE.RingGeometry(0.84, 1.08, 20);
@@ -225,6 +234,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     depthWrite: false,
   });
   const dustPoints = new THREE.Points(dustGeo, dustMat);
+  dustPoints.frustumCulled = false;
   scene.add(dustPoints);
 
   const streakCount = 46;
@@ -239,17 +249,25 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   const streakGeo = new THREE.BufferGeometry();
   streakGeo.setAttribute('position', new THREE.BufferAttribute(streakVertices, 3));
   const streakMat = new THREE.LineBasicMaterial({
-    color: SCENE_PALETTE.streakBoost,
+    color: new THREE.Color(SCENE_PALETTE.streakBoost).multiplyScalar(1.9),
     transparent: true,
     opacity: 0,
     depthWrite: false,
+    blending: THREE.AdditiveBlending,
   });
   const speedStreaks = new THREE.LineSegments(streakGeo, streakMat);
+  speedStreaks.frustumCulled = false;
   camera.add(speedStreaks);
 
   const scratchVec = new THREE.Vector3();
   const scratchDir = new THREE.Vector3();
+  const scratchVelCam = new THREE.Vector3();
+  const scratchCamInv = new THREE.Quaternion();
+  const scratchBankEuler = new THREE.Euler();
+  const scratchBankQuat = new THREE.Quaternion();
   const scratchUp = new THREE.Vector3(0, 1, 0);
+  const scratchRight = new THREE.Vector3();
+  const scratchCamUp = new THREE.Vector3();
   const destroyedSubMat = new THREE.MeshToonMaterial({ color: SCENE_PALETTE.destroyedSubsystem });
   const initialSubMaterials = new Map<string, THREE.Material>();
   for (const [id, mesh] of frigateRig.subsystemMeshes) {
@@ -278,6 +296,8 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   ]);
 
   let lastTick = -1;
+  let lastRenderTimeMs = 0;
+  let shakeIntensity = 0;
 
   function updateDustField(center: Vec3): void {
     const posAttr = dustGeo.getAttribute('position') as THREE.BufferAttribute;
@@ -297,31 +317,53 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     posAttr.needsUpdate = true;
   }
 
-  function updateSpeedStreaks(world: WorldState): void {
+  function updateSpeedStreaks(world: WorldState, dt: number): void {
     const boostKind = world.player.energy.boostMode.kind;
-    const targetOpacity = boostKind === 'boosting' ? 0.38 : boostKind === 'drifting' ? 0.28 : 0;
-    streakMat.opacity += (targetOpacity - streakMat.opacity) * 0.2;
+    const targetOpacity = boostKind === 'boosting' ? 0.52 : boostKind === 'drifting' ? 0.42 : 0;
+    const alpha = 1 - Math.exp(-12 * dt);
+    streakMat.opacity += (targetOpacity - streakMat.opacity) * alpha;
     speedStreaks.visible = streakMat.opacity > 0.01;
     if (!speedStreaks.visible) {
       return;
     }
-    streakMat.color.setHex(
-      boostKind === 'drifting' ? SCENE_PALETTE.streakDrift : SCENE_PALETTE.streakBoost,
-    );
+    streakMat.color
+      .setHex(boostKind === 'drifting' ? SCENE_PALETTE.streakDrift : SCENE_PALETTE.streakBoost)
+      .multiplyScalar(1.9);
+
+    // Transform actual ship velocity into camera space so snap-turn drift streaks flow along real drift vector.
+    scratchCamInv.copy(camera.quaternion).invert();
+    scratchVelCam
+      .set(world.player.velocity.x, world.player.velocity.y, world.player.velocity.z)
+      .applyQuaternion(scratchCamInv);
+    const speed = scratchVelCam.length();
+    if (speed > 1e-3) {
+      scratchVelCam.divideScalar(speed);
+    } else {
+      scratchVelCam.set(0, 0, -1);
+    }
+
     const posAttr = streakGeo.getAttribute('position') as THREE.BufferAttribute;
     const travel = (world.tick * 5.2) % 90;
-    const length = boostKind === 'boosting' ? 13 : 7;
+    const length = boostKind === 'boosting' ? 14 : 9.5;
     for (let i = 0; i < streakCount; i += 1) {
       const base = streakBase[i];
       if (base === undefined) {
         continue;
       }
-      let z = base.z + travel;
-      if (z > -4) {
-        z -= 90;
-      }
-      posAttr.setXYZ(i * 2, base.x, base.y, z);
-      posAttr.setXYZ(i * 2 + 1, base.x, base.y, z - length);
+      // Particles rush past the camera opposite to camera-space velocity.
+      let sx = base.x - scratchVelCam.x * travel;
+      let sy = base.y - scratchVelCam.y * travel;
+      let sz = base.z - scratchVelCam.z * travel;
+      sx = ((((sx + 45) % 90) + 90) % 90) - 45;
+      sy = ((((sy + 45) % 90) + 90) % 90) - 45;
+      sz = -(((((-sz - 4) % 90) + 90) % 90) + 4);
+      posAttr.setXYZ(i * 2, sx, sy, sz);
+      posAttr.setXYZ(
+        i * 2 + 1,
+        sx + scratchVelCam.x * length,
+        sy + scratchVelCam.y * length,
+        sz + scratchVelCam.z * length,
+      );
     }
     posAttr.needsUpdate = true;
   }
@@ -450,15 +492,19 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
               ? SCENE_PALETTE.explosionEmerald
               : SCENE_PALETTE.explosionAmber;
         const sphereMat = new THREE.MeshBasicMaterial({
-          color,
+          color: new THREE.Color(color).multiplyScalar(2.6),
           transparent: true,
           opacity: 0.94,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
         });
         const ringMat = new THREE.MeshBasicMaterial({
-          color: SCENE_PALETTE.explosionRing,
+          color: new THREE.Color(SCENE_PALETTE.explosionRing).multiplyScalar(2.8),
           side: THREE.DoubleSide,
           transparent: true,
-          opacity: 0.88,
+          opacity: 0.9,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
         });
         const sphere = new THREE.Mesh(explosionGeo, sphereMat);
         const ring = new THREE.Mesh(ringGeo, ringMat);
@@ -476,9 +522,13 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
             z: Math.sin(phi),
           };
           const shardMat = new THREE.MeshBasicMaterial({
-            color: i % 2 === 0 ? color : SCENE_PALETTE.explosionShardHighlight,
+            color: new THREE.Color(
+              i % 2 === 0 ? color : SCENE_PALETTE.explosionShardHighlight,
+            ).multiplyScalar(2.4),
             transparent: true,
             opacity: 0.95,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
           });
           const mesh = new THREE.Mesh(shardGeo, shardMat);
           scene.add(mesh);
@@ -492,7 +542,25 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
       const scaleRadius = Math.max(0.5, exp.radius * (0.25 + t * 0.95));
       entry.sphere.position.set(exp.position.x, exp.position.y, exp.position.z);
       entry.sphere.scale.setScalar(scaleRadius * (1 - t * 0.35));
-      (entry.sphere.material as THREE.MeshBasicMaterial).opacity = Math.max(0, 1 - t);
+      const sphereMat = entry.sphere.material as THREE.MeshBasicMaterial;
+      if (t < 0.22) {
+        sphereMat.color.setHex(0xfff8e8).multiplyScalar(3.1);
+      } else if (t < 0.58) {
+        sphereMat.color
+          .setHex(
+            exp.tint === 'emerald' ? SCENE_PALETTE.explosionEmerald : SCENE_PALETTE.explosionAmber,
+          )
+          .multiplyScalar(2.5);
+      } else {
+        sphereMat.color
+          .setHex(
+            exp.tint === 'emerald'
+              ? SCENE_PALETTE.explosionEmerald
+              : SCENE_PALETTE.explosionCrimson,
+          )
+          .multiplyScalar(1.65);
+      }
+      sphereMat.opacity = Math.max(0, 1 - t);
 
       entry.ring.position.set(exp.position.x, exp.position.y, exp.position.z);
       entry.ring.scale.setScalar(scaleRadius * 1.55);
@@ -551,12 +619,13 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     frigateRig.shieldRing.rotation.z = world.tick * 0.035;
   }
 
-  function updateCamera(world: WorldState): void {
+  function updateCamera(world: WorldState, dt: number): void {
     const player = world.player;
     const boostKind = player.energy.boostMode.kind;
     const pose = computeCameraPose(player, world.cameraMode);
-    if (Math.abs(camera.fov - pose.targetFov) > 0.1) {
-      camera.fov += (pose.targetFov - camera.fov) * 0.16;
+    if (Math.abs(camera.fov - pose.targetFov) > 0.05) {
+      const fovAlpha = 1 - Math.exp(-10 * dt);
+      camera.fov += (pose.targetFov - camera.fov) * fovAlpha;
       camera.updateProjectionMatrix();
     }
 
@@ -565,6 +634,14 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     playerRig.root.visible = !isCockpit;
     playerLeftTrail.line.visible = !isCockpit;
     playerRightTrail.line.visible = !isCockpit;
+
+    const firingGlow = player.recoilKick > 0.35;
+    playerRig.muzzleLeft.visible = !isCockpit && firingGlow;
+    playerRig.muzzleRight.visible = !isCockpit && firingGlow;
+    if (firingGlow) {
+      playerRig.muzzleLeft.rotation.z = world.tick * 0.9;
+      playerRig.muzzleRight.rotation.z = -world.tick * 0.9;
+    }
 
     camera.position.set(pose.position.x, pose.position.y, pose.position.z);
     if (pose.orientation !== null) {
@@ -587,7 +664,6 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
       const throttleZ = boostKind === 'boosting' ? -0.96 : -0.82 - player.throttle * 0.12;
       cockpitRig.throttleHandle.position.z = throttleZ;
 
-      const firingGlow = player.recoilKick > 0.5;
       cockpitRig.muzzleLeft.visible = firingGlow;
       cockpitRig.muzzleRight.visible = firingGlow;
       cockpitRig.muzzleLeft.rotation.z = world.tick * 0.9;
@@ -598,13 +674,28 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
       camera.up.copy(scratchUp);
       camera.lookAt(pose.lookAt.x, pose.lookAt.y, pose.lookAt.z);
     }
+
+    if (shakeIntensity > 0.005) {
+      const amp = shakeIntensity * (isCockpit ? 0.14 : 0.45);
+      const phase = world.tick * 1.73;
+      scratchRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
+      scratchCamUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
+      camera.position.addScaledVector(scratchRight, Math.sin(phase * 3.1) * amp);
+      camera.position.addScaledVector(scratchCamUp, Math.cos(phase * 4.3) * amp);
+    }
   }
 
   function render(world: WorldState): void {
+    const nowMs = typeof performance !== 'undefined' ? performance.now() : 0;
+    const rawDt = lastRenderTimeMs > 0 ? (nowMs - lastRenderTimeMs) / 1000 : 1 / 60;
+    lastRenderTimeMs = nowMs;
+    const dt = Math.min(Math.max(rawDt, 1 / 240), 0.05);
+
     const tickReset = world.tick < lastTick;
     const tickAdvanced = world.tick > lastTick;
     lastTick = world.tick;
     if (tickReset) {
+      shakeIntensity = 0;
       clearTrail(playerLeftTrail);
       clearTrail(playerRightTrail);
       clearTrail(wingmateTrail);
@@ -613,8 +704,34 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
       }
     }
 
+    if (tickAdvanced) {
+      for (const evt of world.events) {
+        if (evt.kind === 'player_damaged') {
+          shakeIntensity = Math.min(1, shakeIntensity + 0.55);
+        } else if (evt.kind === 'subsystem_destroyed') {
+          shakeIntensity = Math.min(1, shakeIntensity + 0.65);
+        } else if (evt.kind === 'hit_confirmed') {
+          shakeIntensity = Math.min(1, shakeIntensity + (evt.isKill ? 0.34 : 0.12));
+        } else if (evt.kind === 'cannon_fired' && evt.faction === 'friendly') {
+          shakeIntensity = Math.min(1, shakeIntensity + 0.045);
+        }
+      }
+    }
+    shakeIntensity *= Math.exp(-10 * dt);
+    if (shakeIntensity < 0.004) {
+      shakeIntensity = 0;
+    }
+
     const player = world.player;
     setPose(playerRig.root, player.position, player.orientation);
+    if (world.cameraMode === 'chase') {
+      // Visual-only chase-cam roll/pitch banking gives the fighter lively weight without affecting sim aim.
+      const bankRoll = Math.max(-0.34, Math.min(0.34, -player.angularVelocity.y * 0.28));
+      const bankPitch = Math.max(-0.16, Math.min(0.16, player.angularVelocity.x * 0.12));
+      scratchBankEuler.set(bankPitch, 0, bankRoll);
+      scratchBankQuat.setFromEuler(scratchBankEuler);
+      playerRig.root.quaternion.multiply(scratchBankQuat);
+    }
     setPose(wingmateRig.root, world.wingmate.position, world.wingmate.orientation);
     setPose(carrierMesh, world.friendlyCarrier.position, world.friendlyCarrier.orientation);
     setPose(frigateRig.root, world.hostileFrigate.position, world.hostileFrigate.orientation);
@@ -623,7 +740,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     const boostKind = player.energy.boostMode.kind;
     const flicker = 0.92 + ((world.tick * 13) % 7) * 0.03;
     const plumeScale =
-      (boostKind === 'boosting' ? 2.25 : boostKind === 'drifting' ? 1.5 : 0.95) * flicker;
+      (boostKind === 'boosting' ? 1.78 : boostKind === 'drifting' ? 1.28 : 0.82) * flicker;
     for (const plume of playerRig.plumes) {
       plume.scale.set(1, 1, plumeScale);
     }
@@ -641,10 +758,10 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
       );
     }
 
-    updateCamera(world);
+    updateCamera(world, dt);
     backdrop.position.copy(camera.position);
     updateDustField(player.position);
-    updateSpeedStreaks(world);
+    updateSpeedStreaks(world, dt);
     syncAsteroids(world);
     syncEnemies(world, tickAdvanced);
     syncProjectiles(world, tickAdvanced);
