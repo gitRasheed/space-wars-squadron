@@ -49,8 +49,10 @@ export function projectPointFromPose(
   point: Vec3,
   width: number,
   height: number,
+  fovOverride?: number,
 ): { readonly x: number; readonly y: number; readonly inFront: boolean } {
-  const camera = new THREE.PerspectiveCamera(pose.targetFov, width / Math.max(1, height), 0.25, 12000);
+  const fov = fovOverride ?? pose.targetFov;
+  const camera = new THREE.PerspectiveCamera(fov, width / Math.max(1, height), 0.25, 12000);
   camera.position.set(pose.position.x, pose.position.y, pose.position.z);
   if (pose.orientation !== null) {
     camera.quaternion.set(pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w);

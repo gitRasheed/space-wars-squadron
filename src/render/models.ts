@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { AsteroidState, EnemyKind } from '../sim/types';
+import { FRIGATE_SUBSYSTEM_LAYOUT } from '../sim/world';
 import { SCENE_PALETTE, SUN_DIRECTION } from './palette';
 import type { HullTextureSet } from './textures';
 
@@ -1464,26 +1465,31 @@ export function buildHostileFrigateMesh(textures: HullTextureSet): HostileFrigat
     root.add(drive);
   }
 
-  // Seat targetable shield dome cleanly inside an armored hexagonal collar with tight flush collar ring (no Saturn tilt).
+  // Seat targetable shield dome from shared sim layout so visual mesh and hitbox cannot drift.
+  const domePos = FRIGATE_SUBSYSTEM_LAYOUT.shieldDome.localOffset;
   const domeCollar = new THREE.CylinderGeometry(16.5, 19.5, 9, 6);
-  addStyledPart(root, domeCollar, darkArmorMat, { position: [0, 27, -30], edgeAngle: 35 });
+  addStyledPart(root, domeCollar, darkArmorMat, {
+    position: [domePos.x, domePos.y - 4, domePos.z],
+    edgeAngle: 35,
+  });
 
   const shieldDome = addStyledPart(
     root,
     new THREE.IcosahedronGeometry(12.5, 2),
     toonMat(SCENE_PALETTE.shieldDome, { emissive: 0xd42288, emissiveIntensity: 0.95 }),
-    { position: [0, 31, -30] },
+    { position: [domePos.x, domePos.y, domePos.z] },
   );
 
   const shieldRing = new THREE.Mesh(
     new THREE.TorusGeometry(15.2, 1.15, 8, 24),
     glowMat(0xff8ad8, 0.78),
   );
-  shieldRing.position.set(0, 30.5, -30);
+  shieldRing.position.set(domePos.x, domePos.y - 0.5, domePos.z);
   shieldRing.rotation.x = Math.PI * 0.5;
   root.add(shieldRing);
 
-  // Integrated ventral clamp-core housing with twin armored mandibles framing the targetable reactor core.
+  // Integrated ventral clamp-core housing anchored directly to shared sim layout.
+  const clampPos = FRIGATE_SUBSYSTEM_LAYOUT.clampCore.localOffset;
   addStyledPart(
     root,
     createTaperedBoxGeometry({
@@ -1494,25 +1500,25 @@ export function buildHostileFrigateMesh(textures: HullTextureSet): HostileFrigat
       length: 44,
     }),
     armorMat,
-    { position: [0, -21, 62], edgeAngle: 35 },
+    { position: [clampPos.x, clampPos.y + 7, clampPos.z], edgeAngle: 35 },
   );
   const clampCore = addStyledPart(
     root,
     new THREE.OctahedronGeometry(13.5, 1),
     toonMat(SCENE_PALETTE.clampCore, { emissive: 0xd6400e, emissiveIntensity: 0.95 }),
-    { position: [0, -28, 62] },
+    { position: [clampPos.x, clampPos.y, clampPos.z] },
   );
 
   for (const side of [-1, 1] as const) {
     addStyledPart(root, new THREE.BoxGeometry(7, 22, 24), darkArmorMat, {
-      position: [side * 18, -24, 62],
+      position: [clampPos.x + side * 18, clampPos.y + 4, clampPos.z],
       rotation: [0, 0, side * 0.18],
     });
   }
 
   const subsystemMeshes = new Map<string, THREE.Mesh>([
-    ['sub-shield-dome', shieldDome],
-    ['sub-clamp-core', clampCore],
+    [FRIGATE_SUBSYSTEM_LAYOUT.shieldDome.id, shieldDome],
+    [FRIGATE_SUBSYSTEM_LAYOUT.clampCore.id, clampCore],
   ]);
 
   return { root, subsystemMeshes, shieldRing };

@@ -28,6 +28,23 @@ function createFriendlyCarrier(): CapitalShipState {
   };
 }
 
+export const FRIGATE_SUBSYSTEM_LAYOUT = {
+  shieldDome: {
+    id: 'sub-shield-dome',
+    label: 'SHIELD DOME',
+    localOffset: vec3(0, 31, -30),
+    radius: 16,
+    maxHull: 140,
+  },
+  clampCore: {
+    id: 'sub-clamp-core',
+    label: 'TOW CLAMP',
+    localOffset: vec3(0, -28, 62),
+    radius: 16,
+    maxHull: 140,
+  },
+} as const;
+
 function createHostileFrigate(): CapitalShipState {
   return {
     id: 'frigate-aegis',
@@ -40,20 +57,20 @@ function createHostileFrigate(): CapitalShipState {
     maxHull: 1000,
     subsystems: [
       {
-        id: 'sub-shield-dome',
-        label: 'SHIELD DOME',
-        localOffset: vec3(0, 28, -32),
-        radius: 16,
-        hull: 140,
-        maxHull: 140,
+        id: FRIGATE_SUBSYSTEM_LAYOUT.shieldDome.id,
+        label: FRIGATE_SUBSYSTEM_LAYOUT.shieldDome.label,
+        localOffset: FRIGATE_SUBSYSTEM_LAYOUT.shieldDome.localOffset,
+        radius: FRIGATE_SUBSYSTEM_LAYOUT.shieldDome.radius,
+        hull: FRIGATE_SUBSYSTEM_LAYOUT.shieldDome.maxHull,
+        maxHull: FRIGATE_SUBSYSTEM_LAYOUT.shieldDome.maxHull,
       },
       {
-        id: 'sub-clamp-core',
-        label: 'TOW CLAMP',
-        localOffset: vec3(0, -20, 62),
-        radius: 16,
-        hull: 140,
-        maxHull: 140,
+        id: FRIGATE_SUBSYSTEM_LAYOUT.clampCore.id,
+        label: FRIGATE_SUBSYSTEM_LAYOUT.clampCore.label,
+        localOffset: FRIGATE_SUBSYSTEM_LAYOUT.clampCore.localOffset,
+        radius: FRIGATE_SUBSYSTEM_LAYOUT.clampCore.radius,
+        hull: FRIGATE_SUBSYSTEM_LAYOUT.clampCore.maxHull,
+        maxHull: FRIGATE_SUBSYSTEM_LAYOUT.clampCore.maxHull,
       },
     ],
   };
@@ -275,7 +292,7 @@ export function stepWorld(
         cameraMode,
       };
     }
-    if (input.togglePause || input.launchBriefing) {
+    if (!input.pauseRequested && (input.togglePause || input.launchBriefing)) {
       return {
         ...world,
         cameraMode,
@@ -303,7 +320,7 @@ export function stepWorld(
     };
   }
 
-  if (input.togglePause) {
+  if (input.pauseRequested || input.togglePause) {
     return {
       ...world,
       cameraMode,

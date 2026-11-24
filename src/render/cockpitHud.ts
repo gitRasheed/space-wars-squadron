@@ -1,5 +1,6 @@
 import {
   COMBAT_TUNING,
+  computePlayerFireSolution,
   findTargetContact,
   listHostileContacts,
   subsystemWorldPosition,
@@ -7,7 +8,6 @@ import {
 import {
   add,
   clamp,
-  computeGunBoresightPoint,
   computeLeadPoint,
   distance,
   dot,
@@ -21,6 +21,25 @@ import {
 import type { Vec3, WorldState } from '../sim/types';
 import { HUD_PALETTE } from './palette';
 import type { ProjectedPoint } from './sceneRenderer';
+
+export function computeHudReticlePoint(
+  world: WorldState,
+  project: (point: Vec3, width: number, height: number) => ProjectedPoint,
+  width: number,
+  height: number,
+): { readonly x: number; readonly y: number } {
+  const selected = findTargetContact(
+    world.player.selectedTargetId,
+    world.enemies,
+    world.hostileFrigate,
+  );
+  const solution = computePlayerFireSolution(world.player, selected);
+  const projected = project(solution.convergencePoint, width, height);
+  if (!projected.inFront) {
+    return { x: width * 0.5, y: height * 0.5 };
+  }
+  return { x: projected.x, y: projected.y };
+}
 
 export interface CockpitHud {
   readonly resize: (width: number, height: number) => void;
@@ -151,31 +170,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     world: WorldState,
     project: (point: Vec3, width: number, height: number) => ProjectedPoint,
   ): { readonly x: number; readonly y: number } {
-    const selected = findTargetContact(
-      world.player.selectedTargetId,
-      world.enemies,
-      world.hostileFrigate,
-    );
-    const referenceLead =
-      selected !== null
-        ? computeLeadPoint(
-            world.player.position,
-            world.player.velocity,
-            selected.position,
-            selected.velocity,
-            COMBAT_TUNING.boltSpeed,
-          )
-        : null;
-    const boresight = computeGunBoresightPoint(
-      world.player.position,
-      world.player.orientation,
-      referenceLead,
-    );
-    const projected = project(boresight, cssWidth, cssHeight);
-    if (!projected.inFront) {
-      return { x: cssWidth * 0.5, y: cssHeight * 0.5 };
-    }
-    return { x: projected.x, y: projected.y };
+    return computeHudReticlePoint(world, project, cssWidth, cssHeight);
   }
 
   function drawReticleCluster(
@@ -377,7 +372,11 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
           contact.position,
           contact.velocity,
           COMBAT_TUNING.boltSpeed,
+          COMBAT_TUNING.boltTtl,
         );
+        if (lead === null) {
+          continue;
+        }
         const projLead = project(lead, cssWidth, cssHeight);
         const leadDist = Math.hypot(projLead.x - projected.x, projLead.y - projected.y);
         const leadInCanopy =

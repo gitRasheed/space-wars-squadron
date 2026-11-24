@@ -290,26 +290,19 @@ function stepPlayerWeapons(
       energy = spent;
       primaryCooldown = COMBAT_TUNING.primaryFireInterval;
       recoilKick = 1;
-      const right = rightOf(player.orientation);
-      const down = scale(upOf(player.orientation), -1.0);
-      const aimDir = computeAimAssistDirection(
-        player.position,
-        player.velocity,
-        playerForward,
-        selectedContact,
-      );
+      const fireSolution = computePlayerFireSolution(player, selectedContact);
 
-      for (const side of [-1, 1] as const) {
-        const muzzle = add(
-          add(player.position, scale(playerForward, 5)),
-          add(scale(right, side * 3.1), down),
-        );
+      for (let i = 0; i < fireSolution.barrels.length; i += 1) {
+        const barrel = fireSolution.barrels[i];
+        if (barrel === undefined) {
+          continue;
+        }
         spawned.push({
-          id: `pb-${tick}-${side > 0 ? 'r' : 'l'}`,
+          id: `pb-${tick}-${i === 0 ? 'l' : 'r'}`,
           kind: 'bolt',
           faction: 'friendly',
-          position: muzzle,
-          velocity: add(player.velocity, scale(aimDir, COMBAT_TUNING.boltSpeed)),
+          position: barrel.muzzle,
+          velocity: add(player.velocity, scale(barrel.direction, COMBAT_TUNING.boltSpeed)),
           targetId: null,
           damage: COMBAT_TUNING.boltDamage,
           ttl: COMBAT_TUNING.boltTtl,
@@ -739,28 +732,64 @@ export function stepCombat(ctx: CombatStepInput): CombatStepOutput {
   };
 }
 
-function computeAimAssistDirection(
-  shooterPos: Vec3,
-  shooterVel: Vec3,
-  playerForward: Vec3,
+export interface PlayerFireSolution {
+  readonly leadPoint: Vec3 | null;
+  readonly convergencePoint: Vec3;
+  readonly barrels: readonly { readonly muzzle: Vec3; readonly direction: Vec3 }[];
+}
+
+export function computePlayerFireSolution(
+  player: PlayerShipState,
   target: TargetContact | null,
-): Vec3 {
-  if (target === null) {
-    return playerForward;
+): PlayerFireSolution {
+  const playerForward = forwardOf(player.orientation);
+  const right = rightOf(player.orientation);
+  const down = scale(upOf(player.orientation), -1.0);
+
+  const leadPoint =
+    target !== null
+      ? computeLeadPoint(
+          player.position,
+          player.velocity,
+          target.position,
+          target.velocity,
+          COMBAT_TUNING.boltSpeed,
+          COMBAT_TUNING.boltTtl,
+        )
+      : null;
+
+  let aimDir = playerForward;
+  if (leadPoint !== null) {
+    const toLead = normalize(sub(leadPoint, player.position));
+    // Subtle gimbal convergence inside a 7-degree cone makes leading shots feel crisp with mouse aim.
+    if (dot(playerForward, toLead) >= 0.992) {
+      aimDir = normalize(lerpVec3(playerForward, toLead, 0.72));
+    }
   }
-  const leadPoint = computeLeadPoint(
-    shooterPos,
-    shooterVel,
-    target.position,
-    target.velocity,
-    COMBAT_TUNING.boltSpeed,
-  );
-  const toLead = normalize(sub(leadPoint, shooterPos));
-  // Subtle gimbal convergence inside a 7-degree cone makes leading shots feel crisp with mouse aim.
-  if (dot(playerForward, toLead) >= 0.992) {
-    return normalize(lerpVec3(playerForward, toLead, 0.72));
-  }
-  return playerForward;
+
+  const maxBoltReach = COMBAT_TUNING.boltSpeed * COMBAT_TUNING.boltTtl;
+  const convergenceRange =
+    leadPoint !== null
+      ? clamp(distance(player.position, leadPoint), 15, maxBoltReach)
+      : 420;
+  const convergencePoint = add(player.position, scale(aimDir, convergenceRange));
+
+  const barrels = ([-1, 1] as const).map((side) => {
+    const muzzle = add(
+      add(player.position, scale(playerForward, 5)),
+      add(scale(right, side * 3.1), down),
+    );
+    return {
+      muzzle,
+      direction: normalize(sub(convergencePoint, muzzle)),
+    };
+  });
+
+  return {
+    leadPoint,
+    convergencePoint,
+    barrels,
+  };
 }
 
 function resolveTargetPosition(
@@ -860,25 +889,28 @@ function stepWingmate(
     dist > 90 &&
     dot(forwardOf(orientation), desiredDir) > 0.94
   ) {
-    fireCooldown = 0.62;
     const lead = computeLeadPoint(
       position,
       velocity,
       target.position,
       target.velocity,
       COMBAT_TUNING.boltSpeed,
+      1.4,
     );
-    const shotDir = normalize(sub(lead, position));
-    projectile = {
-      id: `wb-${tick}`,
-      kind: 'bolt',
-      faction: 'friendly',
-      position: add(position, scale(shotDir, 6)),
-      velocity: add(velocity, scale(shotDir, COMBAT_TUNING.boltSpeed)),
-      targetId: null,
-      damage: 11,
-      ttl: 1.4,
-    };
+    if (lead !== null) {
+      fireCooldown = 0.62;
+      const shotDir = normalize(sub(lead, position));
+      projectile = {
+        id: `wb-${tick}`,
+        kind: 'bolt',
+        faction: 'friendly',
+        position: add(position, scale(shotDir, 6)),
+        velocity: add(velocity, scale(shotDir, COMBAT_TUNING.boltSpeed)),
+        targetId: null,
+        damage: 11,
+        ttl: 1.4,
+      };
+    }
   }
 
   return {

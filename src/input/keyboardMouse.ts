@@ -33,9 +33,12 @@ export function createInputChannel(
   let queuedToggleMute = false;
   let queuedToggleMusic = false;
   let queuedTogglePause = false;
+  let queuedPauseRequested = false;
   let wasPointerLocked = false;
+  let lockedBeforePause = false;
+  let resumeOnPointerLock = false;
 
-  function clearHeldInputs(preservePause = false): void {
+  function clearHeldInputs(): void {
     heldKeys.clear();
     mouseLeftHeld = false;
     mouseRightHeld = false;
@@ -46,9 +49,9 @@ export function createInputChannel(
     queuedFireMissile = false;
     queuedToggleMute = false;
     queuedToggleMusic = false;
-    if (!preservePause) {
-      queuedTogglePause = false;
-    }
+    queuedTogglePause = false;
+    queuedPauseRequested = false;
+    resumeOnPointerLock = false;
     steering =
       steering.kind === 'pointer_locked'
         ? { kind: 'pointer_locked', dx: 0, dy: 0 }
@@ -74,8 +77,12 @@ export function createInputChannel(
       } else if (code === 'KeyV') {
         queuedToggleCamera = true;
       } else if (code === 'Enter') {
+        lockedBeforePause = false;
+        resumeOnPointerLock = false;
         queuedLaunchBriefing = true;
       } else if (code === 'KeyR') {
+        lockedBeforePause = false;
+        resumeOnPointerLock = false;
         queuedRestartSortie = true;
       } else if (code === 'KeyE') {
         queuedFireMissile = true;
@@ -84,6 +91,10 @@ export function createInputChannel(
       } else if (code === 'KeyN') {
         queuedToggleMusic = true;
       } else if (code === 'Escape' || code === 'KeyP') {
+        if (isOverlayOpen()) {
+          lockedBeforePause = false;
+          resumeOnPointerLock = false;
+        }
         queuedTogglePause = true;
       }
     }
@@ -97,12 +108,24 @@ export function createInputChannel(
 
   function onMouseDown(event: MouseEvent): void {
     if (event.button === 0) {
-      if (document.pointerLockElement !== canvas) {
-        void Promise.resolve(canvas.requestPointerLock()).catch(() => undefined);
-      }
+      const needsLock = document.pointerLockElement !== canvas;
       if (isOverlayOpen()) {
+        if (lockedBeforePause && needsLock) {
+          resumeOnPointerLock = true;
+          void Promise.resolve(canvas.requestPointerLock()).catch(() => {
+            resumeOnPointerLock = false;
+          });
+          return;
+        }
+        if (needsLock) {
+          void Promise.resolve(canvas.requestPointerLock()).catch(() => undefined);
+        }
+        lockedBeforePause = false;
         queuedLaunchBriefing = true;
         return;
+      }
+      if (needsLock) {
+        void Promise.resolve(canvas.requestPointerLock()).catch(() => undefined);
       }
       mouseLeftHeld = true;
     } else if (event.button === 2) {
@@ -145,30 +168,38 @@ export function createInputChannel(
 
   function onPointerLockChange(): void {
     const nowLocked = document.pointerLockElement === canvas;
-    // Browsers intercept Escape to release pointer lock without firing keydown('Escape').
-    // Treat an unexpected pointer-lock exit during active flight as an immediate pause.
-    if (wasPointerLocked && !nowLocked && !isOverlayOpen()) {
-      clearHeldInputs(true);
-      queuedTogglePause = true;
+    if (!wasPointerLocked && nowLocked && resumeOnPointerLock) {
+      resumeOnPointerLock = false;
+      lockedBeforePause = false;
+      queuedLaunchBriefing = true;
+    } else if (wasPointerLocked && !nowLocked && !isOverlayOpen()) {
+      // Browsers intercept Escape to release pointer lock without firing keydown('Escape').
+      lockedBeforePause = true;
+      clearHeldInputs();
+      queuedPauseRequested = true;
     }
     wasPointerLocked = nowLocked;
     steering = nowLocked ? { kind: 'pointer_locked', dx: 0, dy: 0 } : { kind: 'idle' };
   }
 
+  function onPointerLockError(): void {
+    resumeOnPointerLock = false;
+  }
+
   function onWindowBlur(): void {
     const shouldAutoPause = !isOverlayOpen();
-    clearHeldInputs(true);
+    clearHeldInputs();
     if (shouldAutoPause) {
-      queuedTogglePause = true;
+      queuedPauseRequested = true;
     }
   }
 
   function onVisibilityChange(): void {
     if (document.hidden) {
       const shouldAutoPause = !isOverlayOpen();
-      clearHeldInputs(true);
+      clearHeldInputs();
       if (shouldAutoPause) {
-        queuedTogglePause = true;
+        queuedPauseRequested = true;
       }
     }
   }
@@ -179,6 +210,7 @@ export function createInputChannel(
   window.addEventListener('blur', onWindowBlur);
   document.addEventListener('visibilitychange', onVisibilityChange);
   document.addEventListener('pointerlockchange', onPointerLockChange);
+  document.addEventListener('pointerlockerror', onPointerLockError);
   canvas.addEventListener('mousedown', onMouseDown);
   canvas.addEventListener('mousemove', onMouseMove);
   canvas.addEventListener('contextmenu', onContextMenu);
@@ -220,6 +252,7 @@ export function createInputChannel(
       toggleMute: queuedToggleMute,
       toggleMusic: queuedToggleMusic,
       togglePause: queuedTogglePause,
+      pauseRequested: queuedPauseRequested,
     };
 
     queuedCycleTarget = false;
@@ -230,6 +263,7 @@ export function createInputChannel(
     queuedToggleMute = false;
     queuedToggleMusic = false;
     queuedTogglePause = false;
+    queuedPauseRequested = false;
 
     return input;
   }
@@ -241,6 +275,7 @@ export function createInputChannel(
     window.removeEventListener('blur', onWindowBlur);
     document.removeEventListener('visibilitychange', onVisibilityChange);
     document.removeEventListener('pointerlockchange', onPointerLockChange);
+    document.removeEventListener('pointerlockerror', onPointerLockError);
     canvas.removeEventListener('mousedown', onMouseDown);
     canvas.removeEventListener('mousemove', onMouseMove);
     canvas.removeEventListener('contextmenu', onContextMenu);

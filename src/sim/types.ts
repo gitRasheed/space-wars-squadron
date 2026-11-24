@@ -77,6 +77,7 @@ export interface FlightInput {
   readonly toggleMute: boolean;
   readonly toggleMusic: boolean;
   readonly togglePause: boolean;
+  readonly pauseRequested: boolean;
   readonly launchBriefing: boolean;
   readonly restartSortie: boolean;
 }
@@ -248,6 +249,7 @@ export const NEUTRAL_INPUT: FlightInput = {
   toggleMute: false,
   toggleMusic: false,
   togglePause: false,
+  pauseRequested: false,
   launchBriefing: false,
   restartSortie: false,
 };

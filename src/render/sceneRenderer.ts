@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { add, forwardOf, rightOf, scale } from '../sim/math';
 import type { Quat, Vec3, WorldState } from '../sim/types';
+import { FRIGATE_SUBSYSTEM_LAYOUT } from '../sim/world';
 import { computeCameraPose } from './cameraPose';
 import {
   buildAsteroidMesh,
@@ -536,7 +537,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
         mesh.material = destroyedSubMat;
         mesh.scale.setScalar(0.55);
       } else {
-        if (subsys.id === 'sub-shield-dome') {
+        if (subsys.id === FRIGATE_SUBSYSTEM_LAYOUT.shieldDome.id) {
           shieldAlive = true;
         }
         const originalMat = initialSubMaterials.get(subsys.id);

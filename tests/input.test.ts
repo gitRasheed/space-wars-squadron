@@ -91,8 +91,8 @@ describe('input deadzone and channel merging', () => {
       const sampled = channel.sample();
       expect(sampled.fireMissile).toBe(false);
       expect(sampled.toggleMute).toBe(false);
-      // Losing window focus while active also auto-pauses so raiders cannot kill the player off-tab.
-      expect(sampled.togglePause).toBe(true);
+      // Losing window focus while active sends idempotent pauseRequested so raiders cannot kill the player off-tab.
+      expect(sampled.pauseRequested).toBe(true);
       channel.destroy();
     } finally {
       Object.defineProperty(globalThis, 'window', { value: originalWindow, configurable: true });
@@ -100,7 +100,7 @@ describe('input deadzone and channel merging', () => {
     }
   });
 
-  it('triggers pause on Escape, KeyP, and Chrome pointer-lock exit during active flight without double-toggling on overlay', () => {
+  it('triggers idempotent pause on pointer-lock exit, clears pending resume on blur, and waits for pointer lock on click-resume', () => {
     const fakeWindow = createListenerTarget();
     const fakeDocument: ReturnType<typeof createListenerTarget> & {
       hidden: boolean;
@@ -126,29 +126,43 @@ describe('input deadzone and channel merging', () => {
         () => overlayOpen,
       );
 
-      // Direct Escape and KeyP trigger togglePause; KeyN triggers toggleMusic.
+      // Direct Escape and KeyN work when unlocked.
       fakeWindow.emit('keydown', { code: 'Escape', repeat: false, preventDefault: () => undefined });
       fakeWindow.emit('keydown', { code: 'KeyN', repeat: false, preventDefault: () => undefined });
       const first = channel.sample();
       expect(first.togglePause).toBe(true);
       expect(first.toggleMusic).toBe(true);
 
-      // Pointer lock exit while active (Chrome swallows Escape on unlock) pauses automatically.
+      // Pointer lock exit while active (Chrome swallows Escape) queues idempotent pauseRequested.
       fakeDocument.pointerLockElement = fakeCanvas;
       fakeDocument.emit('pointerlockchange', {});
-      expect(channel.sample().togglePause).toBe(false);
+      expect(channel.sample().pauseRequested).toBe(false);
 
       fakeDocument.pointerLockElement = null;
       fakeDocument.emit('pointerlockchange', {});
-      expect(channel.sample().togglePause).toBe(true);
-
-      // Pointer lock exit while overlay is already open (e.g. paused via KeyP) does NOT double-toggle.
-      fakeDocument.pointerLockElement = fakeCanvas;
-      fakeDocument.emit('pointerlockchange', {});
+      expect(channel.sample().pauseRequested).toBe(true);
       overlayOpen = true;
-      fakeDocument.pointerLockElement = null;
+
+      // Clicking Resume during Chrome's Escape cooldown (pointerlockerror) keeps overlay open instead of dropping into cursor steering.
+      fakeCanvas.emit('mousedown', { button: 0 });
+      fakeDocument.emit('pointerlockerror', {});
+      expect(channel.sample().launchBriefing).toBe(false);
+
+      // Retrying click once cooldown clears resumes cleanly on lock acquisition.
+      fakeCanvas.emit('mousedown', { button: 0 });
+      fakeDocument.pointerLockElement = fakeCanvas;
       fakeDocument.emit('pointerlockchange', {});
-      expect(channel.sample().togglePause).toBe(false);
+      expect(channel.sample().launchBriefing).toBe(true);
+      overlayOpen = false;
+
+      // Focus loss while paused clears a queued KeyP resume instead of letting it survive tab switch.
+      overlayOpen = true;
+      fakeWindow.emit('keydown', { code: 'KeyP', repeat: false, preventDefault: () => undefined });
+      fakeWindow.emit('blur', {});
+      const afterBlur = channel.sample();
+      expect(afterBlur.togglePause).toBe(false);
+      expect(afterBlur.launchBriefing).toBe(false);
+      expect(afterBlur.pauseRequested).toBe(false);
 
       channel.destroy();
     } finally {

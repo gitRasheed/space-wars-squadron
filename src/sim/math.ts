@@ -218,8 +218,8 @@ export function solveInterceptTime(
   relPos: Vec3,
   relVel: Vec3,
   projectileSpeed: number,
-  maxSeconds = 2.5,
-): number {
+  maxSeconds = 1.9,
+): number | null {
   const s = Math.max(projectileSpeed, 1);
   const rDotR = dot(relPos, relPos);
   if (rDotR <= 1e-8) {
@@ -249,8 +249,10 @@ export function solveInterceptTime(
     }
   }
 
-  const fallback = Math.sqrt(rDotR) / s;
-  return clamp(t ?? fallback, 0, maxSeconds);
+  if (t === null || t > maxSeconds) {
+    return null;
+  }
+  return t;
 }
 
 export function computeLeadPoint(
@@ -259,10 +261,14 @@ export function computeLeadPoint(
   targetPos: Vec3,
   targetVel: Vec3,
   projectileSpeed: number,
-): Vec3 {
+  maxSeconds = 1.9,
+): Vec3 | null {
   const relPos = sub(targetPos, shooterPos);
   const relVel = sub(targetVel, shooterVel);
-  const timeToImpact = solveInterceptTime(relPos, relVel, projectileSpeed, 2.5);
+  const timeToImpact = solveInterceptTime(relPos, relVel, projectileSpeed, maxSeconds);
+  if (timeToImpact === null) {
+    return null;
+  }
   return add(targetPos, scale(relVel, timeToImpact));
 }
 

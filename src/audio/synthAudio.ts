@@ -1,6 +1,6 @@
 import { len } from '../sim/math';
 import type { SimEvent, WorldState } from '../sim/types';
-import { COMBAT_LOOP_SCORE, midiToHz, type ScoreTrack } from './combatScore';
+import { renderCombatLoopStereo } from './combatScore';
 
 export interface SynthAudio {
   readonly unlock: () => void;
@@ -12,7 +12,7 @@ export interface SynthAudio {
   readonly destroy: () => void;
 }
 
-const MUSIC_LOOKAHEAD_S = 0.18;
+const MUSIC_MIX_GAIN = 0.42;
 
 export function createSynthAudio(): SynthAudio {
   let ctx: AudioContext | null = null;
@@ -21,35 +21,40 @@ export function createSynthAudio(): SynthAudio {
   let engineOsc: OscillatorNode | null = null;
   let engineGain: GainNode | null = null;
   let noiseBuffer: AudioBuffer | null = null;
+  let musicBuffer: AudioBuffer | null = null;
+  let musicSource: AudioBufferSourceNode | null = null;
   let muted = false;
   let musicEnabled = true;
-  let loopOriginS: number | null = null;
-  let scheduledUntilS = 0;
-  let scheduledMusicOscs: { readonly osc: OscillatorNode; readonly stopAt: number }[] = [];
 
-  function stopScheduledMusic(now: number): void {
-    for (const item of scheduledMusicOscs) {
-      if (item.stopAt > now) {
-        try {
-          item.osc.stop(now + 0.02);
-        } catch {
-          // Oscillator may already have stopped.
-        }
+  function stopMusicSource(): void {
+    if (musicSource !== null) {
+      try {
+        musicSource.stop();
+      } catch {
+        // Source may already have stopped.
       }
+      musicSource = null;
     }
-    scheduledMusicOscs = [];
   }
 
   function onVisibilityChange(): void {
     if (ctx === null || masterGain === null) {
       return;
     }
+    const now = ctx.currentTime;
     if (document.hidden) {
-      masterGain.gain.setTargetAtTime(0, ctx.currentTime, 0.015);
-      loopOriginS = null;
+      masterGain.gain.setTargetAtTime(0, now, 0.015);
+      if (musicGain !== null) {
+        musicGain.gain.setTargetAtTime(0, now, 0.01);
+      }
+      if (engineGain !== null) {
+        engineGain.gain.setTargetAtTime(0, now, 0.01);
+      }
+      stopMusicSource();
       void ctx.suspend();
     } else if (!muted) {
-      masterGain.gain.setTargetAtTime(1, ctx.currentTime, 0.015);
+      // Restore master bus only; music and engine remain silenced until sync() observes active flight.
+      masterGain.gain.setTargetAtTime(1, now, 0.015);
       void ctx.resume();
     }
   }
@@ -75,6 +80,22 @@ export function createSynthAudio(): SynthAudio {
     return buffer;
   }
 
+  function ensureMusicBuffer(audio: AudioContext): AudioBuffer | null {
+    if (musicBuffer !== null) {
+      return musicBuffer;
+    }
+    if (typeof audio.createBuffer !== 'function') {
+      return null;
+    }
+    const sampleRate = audio.sampleRate || 48000;
+    const rendered = renderCombatLoopStereo(sampleRate);
+    const buffer = audio.createBuffer(2, rendered.left.length, sampleRate);
+    buffer.getChannelData(0).set(rendered.left);
+    buffer.getChannelData(1).set(rendered.right);
+    musicBuffer = buffer;
+    return buffer;
+  }
+
   function ensureContext(): AudioContext | null {
     if (ctx !== null) {
       return ctx;
@@ -89,7 +110,7 @@ export function createSynthAudio(): SynthAudio {
     masterGain.connect(ctx.destination);
 
     musicGain = ctx.createGain();
-    musicGain.gain.value = musicEnabled ? 0.72 : 0;
+    musicGain.gain.value = 0;
     musicGain.connect(masterGain);
 
     engineOsc = ctx.createOscillator();
@@ -125,7 +146,7 @@ export function createSynthAudio(): SynthAudio {
       unlock();
     } else if (masterGain !== null && ctx !== null) {
       masterGain.gain.setTargetAtTime(0, ctx.currentTime, 0.015);
-      loopOriginS = null;
+      stopMusicSource();
     }
     return muted;
   }
@@ -133,50 +154,12 @@ export function createSynthAudio(): SynthAudio {
   function toggleMusic(): boolean {
     musicEnabled = !musicEnabled;
     if (musicGain !== null && ctx !== null) {
-      musicGain.gain.setTargetAtTime(musicEnabled ? 0.72 : 0, ctx.currentTime, 0.03);
+      musicGain.gain.setTargetAtTime(musicEnabled ? MUSIC_MIX_GAIN : 0, ctx.currentTime, 0.03);
     }
     if (!musicEnabled) {
-      loopOriginS = null;
+      stopMusicSource();
     }
     return musicEnabled;
-  }
-
-  function scheduleScoreNote(
-    audio: AudioContext,
-    bus: GainNode,
-    track: ScoreTrack,
-    startS: number,
-    durationS: number,
-    midi: number,
-    velocity: number,
-  ): void {
-    const osc = audio.createOscillator();
-    const filter = audio.createBiquadFilter();
-    const gain = audio.createGain();
-
-    osc.type = track.waveform;
-    osc.frequency.setValueAtTime(midiToHz(midi), startS);
-
-    filter.type = 'lowpass';
-    filter.frequency.value = track.filterHz;
-    filter.Q.value = track.filterQ;
-
-    const peak = Math.max(0.0005, track.gain * velocity);
-    const attackEnd = startS + Math.min(track.attackS, durationS * 0.4);
-    const releaseStart = Math.max(attackEnd, startS + durationS);
-    const stopAt = releaseStart + track.releaseS;
-
-    gain.gain.setValueAtTime(0.0001, startS);
-    gain.gain.exponentialRampToValueAtTime(peak, attackEnd);
-    gain.gain.exponentialRampToValueAtTime(peak * 0.35, releaseStart);
-    gain.gain.exponentialRampToValueAtTime(0.0001, stopAt);
-
-    osc.connect(filter);
-    filter.connect(gain);
-    gain.connect(bus);
-    osc.start(startS);
-    osc.stop(stopAt + 0.02);
-    scheduledMusicOscs.push({ osc, stopAt: stopAt + 0.02 });
   }
 
   function syncMusic(audio: AudioContext, isActive: boolean): void {
@@ -184,56 +167,32 @@ export function createSynthAudio(): SynthAudio {
       return;
     }
     const now = audio.currentTime;
-    if (scheduledMusicOscs.length > 0) {
-      scheduledMusicOscs = scheduledMusicOscs.filter((item) => item.stopAt > now);
-    }
-    const shouldPlay = !muted && musicEnabled && isActive && audio.state === 'running';
+    const shouldPlay =
+      !muted &&
+      musicEnabled &&
+      isActive &&
+      audio.state === 'running' &&
+      !document.hidden;
     if (!shouldPlay) {
-      musicGain.gain.setTargetAtTime(0, now, 0.04);
-      stopScheduledMusic(now);
-      loopOriginS = null;
+      musicGain.gain.setTargetAtTime(0, now, 0.03);
+      stopMusicSource();
       return;
     }
 
-    musicGain.gain.setTargetAtTime(0.72, now, 0.05);
-    const beatS = 60 / COMBAT_LOOP_SCORE.bpm;
-    const loopDurationS = COMBAT_LOOP_SCORE.beats * beatS;
-
-    if (loopOriginS === null || now - scheduledUntilS > loopDurationS) {
-      loopOriginS = now + 0.02;
-      scheduledUntilS = now;
-    }
-
-    const windowStart = Math.max(scheduledUntilS, now);
-    const windowEnd = now + MUSIC_LOOKAHEAD_S;
-    if (windowEnd <= windowStart) {
+    musicGain.gain.setTargetAtTime(MUSIC_MIX_GAIN, now, 0.05);
+    if (musicSource !== null || typeof audio.createBufferSource !== 'function') {
       return;
     }
-
-    const firstCycle = Math.max(0, Math.floor((windowStart - loopOriginS) / loopDurationS));
-    const lastCycle = Math.max(firstCycle, Math.floor((windowEnd - loopOriginS) / loopDurationS));
-
-    for (let cycle = firstCycle; cycle <= lastCycle; cycle += 1) {
-      const cycleStart = loopOriginS + cycle * loopDurationS;
-      for (const track of COMBAT_LOOP_SCORE.tracks) {
-        for (const note of track.notes) {
-          const noteStart = cycleStart + note.startBeat * beatS;
-          if (noteStart >= windowStart && noteStart < windowEnd) {
-            scheduleScoreNote(
-              audio,
-              musicGain,
-              track,
-              noteStart,
-              note.durationBeats * beatS,
-              note.midi,
-              note.velocity,
-            );
-          }
-        }
-      }
+    const buffer = ensureMusicBuffer(audio);
+    if (buffer === null) {
+      return;
     }
-
-    scheduledUntilS = windowEnd;
+    const src = audio.createBufferSource();
+    src.buffer = buffer;
+    src.loop = true;
+    src.connect(musicGain);
+    src.start(now);
+    musicSource = src;
   }
 
   function playTone(
@@ -370,16 +329,15 @@ export function createSynthAudio(): SynthAudio {
     engineGain.gain.setTargetAtTime(isActive ? 0.038 : 0, now, 0.08);
     syncMusic(ctx, isActive);
 
-    if (isActive) {
-      for (const event of world.events) {
-        handleEvent(event);
-      }
+    // Always play the tick's emitted events (e.g., killing/winning shot explosions on victory/failed transition).
+    for (const event of world.events) {
+      handleEvent(event);
     }
   }
 
   function destroy(): void {
     document.removeEventListener('visibilitychange', onVisibilityChange);
-    loopOriginS = null;
+    stopMusicSource();
     if (ctx !== null) {
       void ctx.close();
       ctx = null;

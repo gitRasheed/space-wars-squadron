@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { computeCameraPose, projectPointFromPose } from '../src/render/cameraPose';
-import { COMBAT_TUNING } from '../src/sim/combat';
+import { computeHudReticlePoint } from '../src/render/cockpitHud';
+import { buildHostileFrigateMesh } from '../src/render/models';
+import type { HullTextureSet } from '../src/render/textures';
+import { COMBAT_TUNING, computePlayerFireSolution, findTargetContact } from '../src/sim/combat';
 import {
-  computeGunBoresightPoint,
+  add,
   computeLeadPoint,
   distance,
+  dot,
   normalize,
   quatLookAt,
+  scale,
   solveInterceptTime,
   sub,
   vec3,
@@ -16,22 +21,37 @@ import {
   FIXED_DT,
   NEUTRAL_INPUT,
   type CameraMode,
+  type Vec3,
   type WorldState,
 } from '../src/sim/types';
 import { createInitialWorld, stepWorld } from '../src/sim/world';
 
-describe('ballistic lead solver, camera parallax invariance, and pause freeze', () => {
+describe('ballistic lead solver, HUD convergence, unreachable guards, pause freeze, and frigate layout', () => {
   it('solves exact quadratic intercept and scores a real hit on a fast crossing enemy in stepWorld', () => {
     const shooterPos = vec3(0, 0, 0);
     const shooterVel = vec3(0, 0, -60);
     const targetPos = vec3(-120, 25, -360);
     const targetVel = vec3(110, -20, 40);
 
-    const t = solveInterceptTime(sub(targetPos, shooterPos), sub(targetVel, shooterVel), COMBAT_TUNING.boltSpeed);
-    const lead = computeLeadPoint(shooterPos, shooterVel, targetPos, targetVel, COMBAT_TUNING.boltSpeed);
+    const t = solveInterceptTime(
+      sub(targetPos, shooterPos),
+      sub(targetVel, shooterVel),
+      COMBAT_TUNING.boltSpeed,
+      COMBAT_TUNING.boltTtl,
+    );
+    expect(t).not.toBeNull();
+    const lead = computeLeadPoint(
+      shooterPos,
+      shooterVel,
+      targetPos,
+      targetVel,
+      COMBAT_TUNING.boltSpeed,
+      COMBAT_TUNING.boltTtl,
+    );
+    expect(lead).not.toBeNull();
+    if (t === null || lead === null) return;
     expect(Math.abs(distance(shooterPos, lead) - COMBAT_TUNING.boltSpeed * t)).toBeLessThan(1e-3);
 
-    // End-to-end simulation proof: orient fighter straight at lead, fire once, step until hit.
     const base = createInitialWorld(DEFAULT_SORTIE_SEED, true);
     const baseEnemy = base.enemies[0];
     expect(baseEnemy).toBeDefined();
@@ -75,35 +95,96 @@ describe('ballistic lead solver, camera parallax invariance, and pause freeze', 
     expect(hitConfirmed).toBe(true);
   });
 
-  it('maintains sub-pixel reticle-to-lead alignment across both cockpit and chase cameras at all combat ranges', () => {
+  it('returns null for unreachable receding targets and intercepts beyond bolt TTL', () => {
+    // 300 m away, receding at 700 m/s (> 580 m/s boltSpeed): no positive intercept exists.
+    expect(
+      solveInterceptTime(vec3(0, 0, -300), vec3(90, 0, -700), COMBAT_TUNING.boltSpeed, COMBAT_TUNING.boltTtl),
+    ).toBeNull();
+    expect(
+      computeLeadPoint(
+        vec3(0, 0, 0),
+        vec3(0, 0, 0),
+        vec3(0, 0, -300),
+        vec3(90, 0, -700),
+        COMBAT_TUNING.boltSpeed,
+        COMBAT_TUNING.boltTtl,
+      ),
+    ).toBeNull();
+
+    // 1,400 m crossing shot: mathematical intercept exists (~2.44 s) but exceeds 1.9 s bolt TTL.
+    expect(
+      computeLeadPoint(
+        vec3(0, 0, 0),
+        vec3(0, 0, 0),
+        vec3(0, 0, -1400),
+        vec3(120, 0, 0),
+        COMBAT_TUNING.boltSpeed,
+        COMBAT_TUNING.boltTtl,
+      ),
+    ).toBeNull();
+  });
+
+  it('projects the real HUD reticle onto the exact crossing point of both spawned bolts across cockpit/chase cams, aim assist, and mid-FOV transitions', () => {
     const width = 1280;
     const height = 720;
     const base = createInitialWorld(DEFAULT_SORTIE_SEED, true);
+    const baseEnemy = base.enemies[0];
+    expect(baseEnemy).toBeDefined();
+    if (baseEnemy === undefined) return;
 
-    for (const cameraMode of ['cockpit', 'chase'] as const satisfies readonly CameraMode[]) {
-      for (const range of [90, 260, 640]) {
-        const targetPos = vec3(45, -18, -range);
-        const targetVel = vec3(-85, 22, 35);
-        const lead = computeLeadPoint(
-          base.player.position,
-          base.player.velocity,
-          targetPos,
-          targetVel,
-          COMBAT_TUNING.boltSpeed,
-        );
-        const orientedPlayer = {
+    const scenarios: readonly {
+      readonly cameraMode: CameraMode;
+      readonly targetPos: Vec3;
+      readonly liveFov: number;
+    }[] = [
+      { cameraMode: 'cockpit', targetPos: vec3(0, 0, -90), liveFov: 68 },
+      { cameraMode: 'chase', targetPos: vec3(0, 0, -90), liveFov: 68 },
+      // 6 deg off-axis at 260 m during a mid-boost FOV lerp (triggers aim assist + off-center projection).
+      { cameraMode: 'chase', targetPos: vec3(27.3, 6, -258.5), liveFov: 74.2 },
+    ];
+
+    for (const scenario of scenarios) {
+      const world: WorldState = {
+        ...base,
+        cameraMode: scenario.cameraMode,
+        player: {
           ...base.player,
-          orientation: quatLookAt(normalize(sub(lead, base.player.position))),
-        };
-        const pose = computeCameraPose(orientedPlayer, cameraMode);
-        const boresight = computeGunBoresightPoint(orientedPlayer.position, orientedPlayer.orientation, lead);
-        const projReticle = projectPointFromPose(pose, boresight, width, height);
-        const projLead = projectPointFromPose(pose, lead, width, height);
+          position: vec3(0, 0, 0),
+          velocity: vec3(0, 0, 0),
+          orientation: quatLookAt(vec3(0, 0, -1)),
+          selectedTargetId: baseEnemy.id,
+        },
+        enemies: [
+          {
+            ...baseEnemy,
+            position: scenario.targetPos,
+            velocity: vec3(0, 0, 0),
+            fireCooldown: 99,
+          },
+        ],
+      };
 
-        expect(projReticle.inFront).toBe(true);
-        expect(projLead.inFront).toBe(true);
-        const pxError = Math.hypot(projReticle.x - projLead.x, projReticle.y - projLead.y);
-        expect(pxError).toBeLessThan(0.5);
+      const pose = computeCameraPose(world.player, world.cameraMode);
+      const liveProject = (point: Vec3, w: number, h: number) =>
+        projectPointFromPose(pose, point, w, h, scenario.liveFov);
+
+      // Measure actual HUD reticle coordinates from production cockpitHud.ts.
+      const hudReticle = computeHudReticlePoint(world, liveProject, width, height);
+
+      // Fire real bolts from combat.ts and intersect both trajectories with the convergence plane.
+      const selected = findTargetContact(world.player.selectedTargetId, world.enemies, world.hostileFrigate);
+      const fireSolution = computePlayerFireSolution(world.player, selected);
+      expect(fireSolution.barrels.length).toBe(2);
+
+      const planeNormal = normalize(sub(fireSolution.convergencePoint, world.player.position));
+      for (const barrel of fireSolution.barrels) {
+        const denom = dot(barrel.direction, planeNormal);
+        expect(denom).toBeGreaterThan(0.5);
+        const distToPlane = dot(sub(fireSolution.convergencePoint, barrel.muzzle), planeNormal) / denom;
+        const crossingWorld = add(barrel.muzzle, scale(barrel.direction, distToPlane));
+        const crossingScreen = liveProject(crossingWorld, width, height);
+        const pxErr = Math.hypot(crossingScreen.x - hudReticle.x, crossingScreen.y - hudReticle.y);
+        expect(pxErr).toBeLessThan(0.5);
       }
     }
   });
@@ -122,6 +203,10 @@ describe('ballistic lead solver, camera parallax invariance, and pause freeze', 
     world = stepWorld(world, { ...NEUTRAL_INPUT, togglePause: true }, FIXED_DT);
     expect(world.phase.kind).toBe('paused');
 
+    // Idempotent pauseRequested never unpauses when already paused.
+    world = stepWorld(world, { ...NEUTRAL_INPUT, pauseRequested: true }, FIXED_DT);
+    expect(world.phase.kind).toBe('paused');
+
     for (let i = 0; i < 90; i += 1) {
       world = stepWorld(world, { ...NEUTRAL_INPUT, firePrimary: true, boost: true, pitch: 1 }, FIXED_DT);
     }
@@ -138,5 +223,22 @@ describe('ballistic lead solver, camera parallax invariance, and pause freeze', 
 
     world = stepWorld(world, NEUTRAL_INPUT, FIXED_DT);
     expect(world.tick).toBe(prePauseTick + 1);
+  });
+
+  it('keeps Frigate visual subsystem mesh positions locked to simulation hitbox localOffsets', () => {
+    const world = createInitialWorld(DEFAULT_SORTIE_SEED, true);
+    const stubTextures = {
+      frigateHull: undefined,
+    } as unknown as HullTextureSet;
+    const rig = buildHostileFrigateMesh(stubTextures);
+
+    expect(world.hostileFrigate.subsystems.length).toBeGreaterThan(0);
+    for (const subsys of world.hostileFrigate.subsystems) {
+      const mesh = rig.subsystemMeshes.get(subsys.id);
+      expect(mesh).toBeDefined();
+      expect(mesh?.position.x).toBe(subsys.localOffset.x);
+      expect(mesh?.position.y).toBe(subsys.localOffset.y);
+      expect(mesh?.position.z).toBe(subsys.localOffset.z);
+    }
   });
 });
