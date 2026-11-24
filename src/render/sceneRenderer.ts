@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { add, forwardOf, rightOf, scale } from '../sim/math';
-import type { Quat, Vec3, WorldState } from '../sim/types';
+import { FIXED_DT, type Quat, type Vec3, type WorldState } from '../sim/types';
 import { FRIGATE_SUBSYSTEM_LAYOUT } from '../sim/world';
 import { computeCameraPose } from './cameraPose';
 import {
@@ -18,7 +18,7 @@ import {
   type HostileFrigateRig,
 } from './models';
 import { LIGHT_PALETTE, SCENE_PALETTE, SUN_DIRECTION } from './palette';
-import { createStylizedPostPass } from './postProcess';
+import { CAMERA_CLIP, createStylizedPostPass } from './postProcess';
 import { createHullTextureSet } from './textures';
 
 export interface ProjectedPoint {
@@ -36,14 +36,12 @@ export interface SceneRenderer {
 
 interface TrailLine {
   readonly line: THREE.Line;
-  readonly points: Vec3[];
   readonly maxPoints: number;
 }
 
 interface ExplosionVisual {
   readonly sphere: THREE.Mesh;
   readonly ring: THREE.Mesh;
-  readonly shards: readonly { readonly mesh: THREE.Mesh; readonly dir: Vec3 }[];
 }
 
 function setPose(obj: THREE.Object3D, pos: Vec3, quat: Quat): void {
@@ -53,10 +51,18 @@ function setPose(obj: THREE.Object3D, pos: Vec3, quat: Quat): void {
 
 function createTrail(color: number, maxPoints: number, opacity: number): TrailLine {
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(maxPoints * 3), 3));
+  const positions = new THREE.Float32BufferAttribute(maxPoints * 3, 3).setUsage(THREE.DynamicDrawUsage);
+  const colors = new THREE.Float32BufferAttribute(maxPoints * 3, 3);
+  for (let i = 0; i < maxPoints; i++) {
+    const fade = (1 - i / (maxPoints - 1)) ** 2;
+    colors.setXYZ(i, fade, fade, fade);
+  }
+  geo.setAttribute('position', positions);
+  geo.setAttribute('color', colors);
   geo.setDrawRange(0, 0);
   const mat = new THREE.LineBasicMaterial({
-    color: new THREE.Color(color).multiplyScalar(1.65),
+    color: new THREE.Color(color).multiplyScalar(1.95),
+    vertexColors: true,
     transparent: true,
     opacity,
     depthWrite: false,
@@ -66,30 +72,120 @@ function createTrail(color: number, maxPoints: number, opacity: number): TrailLi
   line.frustumCulled = false;
   return {
     line,
-    points: [],
     maxPoints,
   };
 }
 
 function pushTrailPoint(trail: TrailLine, point: Vec3): void {
-  trail.points.push(point);
-  if (trail.points.length > trail.maxPoints) {
-    trail.points.shift();
-  }
-  const attr = trail.line.geometry.getAttribute('position') as THREE.BufferAttribute;
-  for (let i = 0; i < trail.points.length; i += 1) {
-    const p = trail.points[i];
-    if (p !== undefined) {
-      attr.setXYZ(i, p.x, p.y, p.z);
-    }
-  }
-  attr.needsUpdate = true;
-  trail.line.geometry.setDrawRange(0, trail.points.length);
+  const geometry = trail.line.geometry;
+  const count = Math.min(geometry.drawRange.count + 1, trail.maxPoints);
+  const positions = geometry.getAttribute('position') as THREE.BufferAttribute;
+  positions.array.copyWithin(3, 0, (count - 1) * 3);
+  positions.setXYZ(0, point.x, point.y, point.z);
+  positions.needsUpdate = true;
+  geometry.setDrawRange(0, count);
 }
 
 function clearTrail(trail: TrailLine): void {
-  trail.points.length = 0;
   trail.line.geometry.setDrawRange(0, 0);
+}
+
+function createSparkPool() {
+  const capacity = 384;
+  const mesh = new THREE.InstancedMesh(
+    new THREE.OctahedronGeometry(1),
+    new THREE.MeshBasicMaterial({
+      blending: THREE.AdditiveBlending,
+      transparent: true,
+      depthWrite: false,
+    }),
+    capacity,
+  );
+  mesh.frustumCulled = false;
+  mesh.count = 0;
+  mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  const slots = Array.from({ length: capacity }, () => ({
+    origin: new THREE.Vector3(),
+    velocity: new THREE.Vector3(),
+    rotation: new THREE.Quaternion(),
+    color: new THREE.Color(),
+    born: 0,
+    lifetime: 0,
+    width: 0,
+    length: 0,
+  }));
+  const pose = new THREE.Object3D();
+  const axis = new THREE.Vector3(0, 0, 1);
+  const direction = new THREE.Vector3();
+  const light = new THREE.Color();
+  const colors = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 3), 3);
+  mesh.instanceColor = colors.setUsage(THREE.DynamicDrawUsage);
+  let cursor = 0;
+
+  function emit(
+    origin: Vec3,
+    tick: number,
+    tint: number,
+    speed: number,
+    size: number,
+    lifetime: number,
+    drift?: Vec3,
+  ): void {
+    const spark = slots[cursor];
+    if (spark === undefined) throw new RangeError('Spark pool cursor outside capacity');
+    cursor = (cursor + 1) % capacity;
+    direction.randomDirection();
+    spark.origin.copy(origin);
+    spark.velocity.copy(direction).multiplyScalar(speed);
+    if (drift) spark.velocity.add(drift);
+    spark.rotation.setFromUnitVectors(axis, direction);
+    spark.color.setHex(tint).multiplyScalar(2 + Math.random());
+    spark.born = tick;
+    spark.lifetime = lifetime;
+    spark.width = size;
+    spark.length = size * (2 + 4 * Math.random());
+  }
+
+  function burst(origin: Vec3, tick: number, tint: number, radius: number, drift?: Vec3): void {
+    const count = Math.min(48, Math.round(6 + radius));
+    for (let i = 0; i < count; i++) {
+      const size = (0.18 + 0.038 * radius) * (0.6 + Math.random());
+      emit(
+        origin, tick, i % 3 === 0 ? SCENE_PALETTE.explosionShardHighlight : tint,
+        radius * (2 + 3 * Math.random()), size, 0.25 + size * 0.24 + Math.random() * 0.3, drift,
+      );
+    }
+  }
+
+  function update(tick: number): void {
+    let count = 0;
+    for (let i = 0; i < capacity; i++) {
+      const spark = slots[i];
+      if (spark === undefined) continue;
+      const age = (tick - spark.born) * FIXED_DT;
+      if (age < 0 || age >= spark.lifetime) continue;
+      const fade = 1 - age / spark.lifetime;
+      pose.position.copy(spark.origin).addScaledVector(spark.velocity, age);
+      pose.quaternion.copy(spark.rotation);
+      pose.scale.set(spark.width * fade, spark.width * fade, spark.length * fade);
+      pose.updateMatrix();
+      mesh.setMatrixAt(count, pose.matrix);
+      mesh.setColorAt(count, light.copy(spark.color).multiplyScalar(fade));
+      count++;
+    }
+    mesh.count = count;
+    if (count > 0) {
+      mesh.instanceMatrix.needsUpdate = true;
+      colors.needsUpdate = true;
+    }
+  }
+
+  function clear(): void {
+    for (const spark of slots) spark.lifetime = 0;
+    mesh.count = 0;
+  }
+
+  return { mesh, emit, burst, update, clear };
 }
 
 function disposeObject3D(
@@ -138,13 +234,12 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     antialias: false,
     powerPreference: 'high-performance',
   });
-  renderer.setPixelRatio(1);
 
   const postPass = createStylizedPostPass();
   const textures = createHullTextureSet();
 
   const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(68, 16 / 9, 0.25, 12000);
+  const camera = new THREE.PerspectiveCamera(68, 16 / 9, CAMERA_CLIP.near, CAMERA_CLIP.far);
   scene.add(camera);
 
   const sunLight = new THREE.DirectionalLight(LIGHT_PALETTE.sunColor, LIGHT_PALETTE.sunIntensity);
@@ -210,7 +305,8 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
 
   const explosionGeo = new THREE.IcosahedronGeometry(1, 1);
   const ringGeo = new THREE.RingGeometry(0.84, 1.08, 20);
-  const shardGeo = new THREE.OctahedronGeometry(0.6, 0);
+  const sparks = createSparkPool();
+  scene.add(sparks.mesh);
 
   const dustCount = 150;
   const dustPositions = new Float32Array(dustCount * 3);
@@ -248,7 +344,14 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   }
   const streakGeo = new THREE.BufferGeometry();
   streakGeo.setAttribute('position', new THREE.BufferAttribute(streakVertices, 3));
+  const streakColors = new THREE.Float32BufferAttribute(streakCount * 6, 3);
+  for (let i = 0; i < streakCount; i++) {
+    streakColors.setXYZ(i * 2, 1, 1, 1);
+    streakColors.setXYZ(i * 2 + 1, 0.04, 0.04, 0.04);
+  }
+  streakGeo.setAttribute('color', streakColors);
   const streakMat = new THREE.LineBasicMaterial({
+    vertexColors: true,
     color: new THREE.Color(SCENE_PALETTE.streakBoost).multiplyScalar(1.9),
     transparent: true,
     opacity: 0,
@@ -261,6 +364,8 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
 
   const scratchVec = new THREE.Vector3();
   const scratchDir = new THREE.Vector3();
+  const exhaustVelocity = new THREE.Vector3();
+  const exhaustOrigin = new THREE.Vector3();
   const scratchVelCam = new THREE.Vector3();
   const scratchCamInv = new THREE.Quaternion();
   const scratchBankEuler = new THREE.Euler();
@@ -281,7 +386,6 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     missileGeo,
     explosionGeo,
     ringGeo,
-    shardGeo,
     dustGeo,
     streakGeo,
   ]);
@@ -296,6 +400,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   ]);
 
   let lastTick = -1;
+  let lastPlayerIntegrity = 0;
   let lastRenderTimeMs = 0;
   let shakeIntensity = 0;
 
@@ -427,7 +532,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     }
   }
 
-  function syncProjectiles(world: WorldState, tickAdvanced: boolean): void {
+  function syncProjectiles(world: WorldState, tickAdvanced: boolean, emitExhaust: boolean): void {
     const activeIds = new Set<string>();
     for (const proj of world.projectiles) {
       activeIds.add(proj.id);
@@ -460,6 +565,11 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
         }
         if (tickAdvanced) {
           pushTrailPoint(trail, proj.position);
+        }
+        if (emitExhaust) {
+          exhaustOrigin.copy(proj.position).addScaledVector(scratchDir, -3);
+          exhaustVelocity.copy(proj.velocity).multiplyScalar(0.55);
+          sparks.emit(exhaustOrigin, world.tick, SCENE_PALETTE.missileTrail, 4, 0.28, 0.38, exhaustVelocity);
         }
       }
     }
@@ -511,31 +621,9 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
         scene.add(sphere);
         scene.add(ring);
 
-        const shardCount = exp.radius > 14 ? 10 : 0;
-        const shards: { readonly mesh: THREE.Mesh; readonly dir: Vec3 }[] = [];
-        for (let i = 0; i < shardCount; i += 1) {
-          const phi = (i / shardCount) * Math.PI * 2;
-          const elev = ((i % 3) - 1) * 0.55;
-          const dir: Vec3 = {
-            x: Math.cos(phi),
-            y: elev,
-            z: Math.sin(phi),
-          };
-          const shardMat = new THREE.MeshBasicMaterial({
-            color: new THREE.Color(
-              i % 2 === 0 ? color : SCENE_PALETTE.explosionShardHighlight,
-            ).multiplyScalar(2.4),
-            transparent: true,
-            opacity: 0.95,
-            blending: THREE.AdditiveBlending,
-            depthWrite: false,
-          });
-          const mesh = new THREE.Mesh(shardGeo, shardMat);
-          scene.add(mesh);
-          shards.push({ mesh, dir });
-        }
-
-        entry = { sphere, ring, shards };
+        // Hit and subsystem events share this explosion's impact position, even across skipped ticks.
+        sparks.burst(exp.position, world.tick - exp.elapsed / FIXED_DT, color, exp.radius);
+        entry = { sphere, ring };
         explosionVisuals.set(exp.id, entry);
       }
       const t = exp.elapsed / Math.max(exp.duration, 0.01);
@@ -566,18 +654,6 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
       entry.ring.scale.setScalar(scaleRadius * 1.55);
       entry.ring.lookAt(camera.position);
       (entry.ring.material as THREE.MeshBasicMaterial).opacity = Math.max(0, (1 - t) * 0.88);
-
-      for (const shard of entry.shards) {
-        const dist = exp.radius * 2.1 * t;
-        shard.mesh.position.set(
-          exp.position.x + shard.dir.x * dist,
-          exp.position.y + shard.dir.y * dist,
-          exp.position.z + shard.dir.z * dist,
-        );
-        shard.mesh.rotation.set(t * 7, t * 5, t * 4);
-        shard.mesh.scale.setScalar(Math.max(0.2, (1 - t) * 2.6));
-        (shard.mesh.material as THREE.MeshBasicMaterial).opacity = Math.max(0, 1 - t);
-      }
     }
     for (const [id, entry] of explosionVisuals) {
       if (!activeIds.has(id)) {
@@ -585,10 +661,6 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
         scene.remove(entry.ring);
         (entry.sphere.material as THREE.Material).dispose();
         (entry.ring.material as THREE.Material).dispose();
-        for (const shard of entry.shards) {
-          scene.remove(shard.mesh);
-          (shard.mesh.material as THREE.Material).dispose();
-        }
         explosionVisuals.delete(id);
       }
     }
@@ -691,10 +763,13 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     lastRenderTimeMs = nowMs;
     const dt = Math.min(Math.max(rawDt, 1 / 240), 0.05);
 
+    const player = world.player;
     const tickReset = world.tick < lastTick;
     const tickAdvanced = world.tick > lastTick;
+    const emitExhaust = Math.floor(world.tick / 3) > Math.floor(lastTick / 3);
     lastTick = world.tick;
     if (tickReset) {
+      sparks.clear();
       shakeIntensity = 0;
       clearTrail(playerLeftTrail);
       clearTrail(playerRightTrail);
@@ -704,9 +779,12 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
       }
     }
 
+    const integrity = player.hull + player.energy.shieldCharge;
     if (tickAdvanced) {
+      let playerHit = integrity < lastPlayerIntegrity;
       for (const evt of world.events) {
         if (evt.kind === 'player_damaged') {
+          playerHit = true;
           shakeIntensity = Math.min(1, shakeIntensity + 0.55);
         } else if (evt.kind === 'subsystem_destroyed') {
           shakeIntensity = Math.min(1, shakeIntensity + 0.65);
@@ -716,13 +794,16 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
           shakeIntensity = Math.min(1, shakeIntensity + 0.045);
         }
       }
+      if (playerHit) {
+        sparks.burst(player.position, world.tick, SCENE_PALETTE.explosionCrimson, 8, player.velocity);
+      }
     }
+    lastPlayerIntegrity = integrity;
     shakeIntensity *= Math.exp(-10 * dt);
     if (shakeIntensity < 0.004) {
       shakeIntensity = 0;
     }
 
-    const player = world.player;
     setPose(playerRig.root, player.position, player.orientation);
     if (world.cameraMode === 'chase') {
       // Visual-only chase-cam roll/pitch banking gives the fighter lively weight without affecting sim aim.
@@ -743,6 +824,13 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
       (boostKind === 'boosting' ? 1.78 : boostKind === 'drifting' ? 1.28 : 0.82) * flicker;
     for (const plume of playerRig.plumes) {
       plume.scale.set(1, 1, plumeScale);
+      if (emitExhaust && (boostKind === 'boosting' || boostKind === 'drifting')) {
+        plume.localToWorld(exhaustOrigin.set(0, 0, 4.6));
+        scratchDir.set(0, 0, 22).applyQuaternion(playerRig.root.quaternion);
+        exhaustVelocity.copy(player.velocity).multiplyScalar(0.74).add(scratchDir);
+        const tint = boostKind === 'boosting' ? SCENE_PALETTE.streakBoost : SCENE_PALETTE.streakDrift;
+        sparks.emit(exhaustOrigin, world.tick, tint, 5, 0.14 + Math.random() * 0.1, 0.4, exhaustVelocity);
+      }
     }
 
     if (tickAdvanced) {
@@ -764,8 +852,9 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     updateSpeedStreaks(world, dt);
     syncAsteroids(world);
     syncEnemies(world, tickAdvanced);
-    syncProjectiles(world, tickAdvanced);
+    syncProjectiles(world, tickAdvanced, emitExhaust);
     syncExplosions(world);
+    if (tickAdvanced || tickReset) sparks.update(world.tick);
 
     camera.updateMatrixWorld();
     renderer.setRenderTarget(postPass.target);
@@ -778,8 +867,8 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     const safeHeight = Math.max(1, height);
     camera.aspect = safeWidth / safeHeight;
     camera.updateProjectionMatrix();
-    renderer.setSize(safeWidth, safeHeight, false);
     postPass.resize(safeWidth, safeHeight);
+    renderer.setSize(postPass.target.width, postPass.target.height, false);
   }
 
   function projectWorldPoint(point: Vec3, width: number, height: number): ProjectedPoint {
@@ -794,6 +883,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   }
 
   function destroy(): void {
+    sparks.mesh.dispose();
     disposeObject3D(scene, sharedGeometries, sharedMaterials);
     for (const geo of sharedGeometries) {
       geo.dispose();

@@ -7,7 +7,9 @@ export interface StylizedPostPass {
   readonly destroy: () => void;
 }
 
-const MAX_INTERNAL_HEIGHT = 900;
+export const CAMERA_CLIP = { near: 0.25, far: 12000 } as const;
+
+const MAX_INTERNAL_HEIGHT = 1440;
 
 export function createStylizedPostPass(): StylizedPostPass {
   const target = new THREE.WebGLRenderTarget(1280, 720, {
@@ -16,6 +18,7 @@ export function createStylizedPostPass(): StylizedPostPass {
     format: THREE.RGBAFormat,
     type: THREE.HalfFloatType,
     samples: 4,
+    depthTexture: new THREE.DepthTexture(1280, 720, THREE.UnsignedIntType),
     depthBuffer: true,
     stencilBuffer: false,
   });
@@ -111,11 +114,11 @@ export function createStylizedPostPass(): StylizedPostPass {
     `,
   });
 
-  // Pass 3: Neutral highlight rolloff, HDR bloom composite, vignette before dither+quantize.
   const compositeUniforms = {
     tDiffuse: { value: target.texture },
     tBloom: { value: bloomTargetB.texture },
-    uResolution: { value: new THREE.Vector2(1280, 720) },
+    tDepth: { value: target.depthTexture },
+    uInkStep: { value: new THREE.Vector2(1 / 1280, 1 / 720) },
   };
   const compositeMat = new THREE.ShaderMaterial({
     uniforms: compositeUniforms,
@@ -125,31 +128,29 @@ export function createStylizedPostPass(): StylizedPostPass {
     fragmentShader: `
       uniform sampler2D tDiffuse;
       uniform sampler2D tBloom;
-      uniform vec2 uResolution;
+      uniform sampler2D tDepth;
+      uniform vec2 uInkStep;
       varying vec2 vUv;
 
-      float bayer4(vec2 p) {
-        vec2 c = mod(floor(p), 4.0);
-        int idx = int(c.y) * 4 + int(c.x);
-        if (idx == 0) return 0.0 / 16.0;
-        if (idx == 1) return 8.0 / 16.0;
-        if (idx == 2) return 2.0 / 16.0;
-        if (idx == 3) return 10.0 / 16.0;
-        if (idx == 4) return 12.0 / 16.0;
-        if (idx == 5) return 4.0 / 16.0;
-        if (idx == 6) return 14.0 / 16.0;
-        if (idx == 7) return 6.0 / 16.0;
-        if (idx == 8) return 3.0 / 16.0;
-        if (idx == 9) return 11.0 / 16.0;
-        if (idx == 10) return 1.0 / 16.0;
-        if (idx == 11) return 9.0 / 16.0;
-        if (idx == 12) return 15.0 / 16.0;
-        if (idx == 13) return 7.0 / 16.0;
-        if (idx == 14) return 13.0 / 16.0;
-        return 5.0 / 16.0;
+      float viewDistance(vec2 uv) {
+        float depth = texture2D(tDepth, uv).r;
+        return ${CAMERA_CLIP.near} / mix(1.0, ${CAMERA_CLIP.near / CAMERA_CLIP.far}, depth);
       }
 
-      // Khronos PBR Neutral-inspired highlight rolloff preserves cel palette hues while rolling HDR glows cleanly to white.
+      float inkCoverage(float peak) {
+        float center = viewDistance(vUv);
+        if (center > 1600.0 || peak >= 0.95) return 0.0;
+
+        vec2 dx = vec2(uInkStep.x, 0.0);
+        vec2 dy = vec2(0.0, uInkStep.y);
+        float acrossX = max(viewDistance(vUv - dx), viewDistance(vUv + dx));
+        float acrossY = max(viewDistance(vUv - dy), viewDistance(vUv + dy));
+        float depthJump = (max(acrossX, acrossY) - center) / center;
+        return smoothstep(0.035, 0.12, depthJump)
+             * (1.0 - smoothstep(450.0, 1600.0, center))
+             * (1.0 - smoothstep(0.68, 0.95, peak));
+      }
+
       vec3 neutralToneMap(vec3 color) {
         const float startCompression = 0.8 - 0.04;
         const float desaturation = 0.15;
@@ -172,7 +173,9 @@ export function createStylizedPostPass(): StylizedPostPass {
       void main() {
         vec3 baseLinear = texture2D(tDiffuse, vUv).rgb;
         vec3 bloomLinear = texture2D(tBloom, vUv).rgb;
-        vec3 combined = baseLinear + bloomLinear * 0.42;
+        float ink = inkCoverage(max(baseLinear.r, max(baseLinear.g, baseLinear.b)));
+        vec3 inkColor = min(baseLinear, vec3(0.009, 0.011, 0.022));
+        vec3 combined = mix(baseLinear, inkColor, ink * 0.88) + bloomLinear * 0.42;
 
         vec2 centered = vUv * 2.0 - 1.0;
         float vignette = clamp(1.0 - dot(centered, centered) * 0.14, 0.78, 1.0);
@@ -180,11 +183,8 @@ export function createStylizedPostPass(): StylizedPostPass {
 
         vec3 displayColor = linearToSrgb(neutralToneMap(combined));
 
-        vec2 pixelCoord = vUv * uResolution;
-        float dither = (bayer4(pixelCoord) - 0.5) * (0.85 / 48.0);
-        displayColor = floor(clamp(displayColor + dither, 0.0, 1.0) * 48.0 + 0.5) / 48.0;
-
-        gl_FragColor = vec4(displayColor, 1.0);
+        float grain = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+        gl_FragColor = vec4(displayColor + (grain - 0.5) / 255.0, 1.0);
       }
     `,
   });
@@ -201,7 +201,7 @@ export function createStylizedPostPass(): StylizedPostPass {
   function resize(cssWidth: number, cssHeight: number): void {
     const safeW = Math.max(1, Math.round(cssWidth));
     const safeH = Math.max(1, Math.round(cssHeight));
-    const scale = safeH > MAX_INTERNAL_HEIGHT ? MAX_INTERNAL_HEIGHT / safeH : 1;
+    const scale = Math.min(globalThis.devicePixelRatio || 1, MAX_INTERNAL_HEIGHT / safeH);
     const internalW = Math.max(1, Math.round(safeW * scale));
     const internalH = Math.max(1, Math.round(safeH * scale));
     const halfW = Math.max(1, Math.round(internalW * 0.5));
@@ -213,7 +213,8 @@ export function createStylizedPostPass(): StylizedPostPass {
 
     extractUniforms.uTexel.value.set(1 / halfW, 1 / halfH);
     blurVUniforms.uTexel.value.set(1 / halfW, 1 / halfH);
-    compositeUniforms.uResolution.value.set(internalW, internalH);
+    const inkWidth = Math.max(1, internalH / 800);
+    compositeUniforms.uInkStep.value.set(inkWidth / internalW, inkWidth / internalH);
   }
 
   function renderToScreen(renderer: THREE.WebGLRenderer): void {
