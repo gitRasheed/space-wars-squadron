@@ -231,8 +231,11 @@ function createDiamondPrismGeometry(spec: TaperedBoxSpec): THREE.CylinderGeometr
 function createSweptWingGeometry(): THREE.ExtrudeGeometry {
   const shape = new THREE.Shape();
   shape.moveTo(0, -1.85);
-  shape.lineTo(5.5, -0.5);
-  shape.lineTo(5.65, 0.95);
+  shape.lineTo(3.2, -0.94);
+  shape.lineTo(5.6, 0.03);
+  shape.lineTo(5.65, 1.13);
+  shape.lineTo(3.6, 1.18);
+  shape.lineTo(2.85, 1.7);
   shape.lineTo(0.45, 1.95);
   shape.lineTo(0, 1.75);
   shape.closePath();
@@ -253,8 +256,9 @@ function createSweptWingGeometry(): THREE.ExtrudeGeometry {
 function createDaggerSponsonGeometry(): THREE.ExtrudeGeometry {
   const shape = new THREE.Shape();
   shape.moveTo(0, -1.6);
-  shape.lineTo(3.8, -6.2);
-  shape.lineTo(4.4, -5.2);
+  shape.lineTo(4.1, -6.65);
+  shape.lineTo(4.46, -6.15);
+  shape.lineTo(3.92, -2.35);
   shape.lineTo(2.4, 3.6);
   shape.lineTo(0, 2.8);
   shape.closePath();
@@ -295,6 +299,19 @@ function createHexSolarVaneGeometry(): THREE.ExtrudeGeometry {
   geo.translate(-0.21, 0, 0);
   scaleUvs(geo, 8.0);
   return geo;
+}
+
+function createCowling(radius: number, depth: number, sides: number): THREE.LatheGeometry {
+  const wall = [
+    new THREE.Vector2(radius * 1.08, 0),
+    new THREE.Vector2(radius, depth * 0.8),
+    new THREE.Vector2(radius * 0.93, depth),
+    new THREE.Vector2(radius * 0.75, depth),
+    new THREE.Vector2(radius * 0.64, depth * 0.22),
+  ];
+  const geometry = new THREE.LatheGeometry(wall, sides);
+  geometry.rotateX(Math.PI / 2);
+  return geometry;
 }
 
 export interface FighterMeshRig {
@@ -384,9 +401,14 @@ export function buildPlayerFighterMesh(
     slateMat,
     { position: [0, -0.66, -3.45], hullOutline: 1.04 },
   );
-  addStyledPart(root, new THREE.BoxGeometry(0.66, 0.28, 0.24), darkMat, {
+  addStyledPart(root, new THREE.BoxGeometry(0.67, 0.26, 0.12), darkMat, {
     position: [0, -0.58, -5.36],
   });
+  for (const side of [-1, 1]) {
+    addStyledPart(root, new THREE.BoxGeometry(0.14, 0.36, 0.48), ivoryMat, {
+      position: [side * 0.38, -0.58, -5.29], rotation: [0, 0, side * -0.24],
+    });
+  }
 
   // 2. Raised tapered mid-fuselage turtledeck (clean solid armor plates — no stretched flank UV grid).
   addStyledPart(
@@ -497,6 +519,13 @@ export function buildPlayerFighterMesh(
   canopyGeo.scale(0.68, 0.54, 1.52);
   addStyledPart(root, canopyGeo, canopyMat, { position: [0, 1.24, -1.25] });
 
+  for (const dz of [-0.68, 0.64]) {
+    const section = Math.sqrt(1 - (dz / (1.06 * 1.52)) ** 2);
+    const frame = new THREE.TorusGeometry(1, 0.062, 4, 12, Math.PI);
+    frame.scale(0.74 * section, 0.59 * section, 1.8);
+    addStyledPart(root, frame, gunmetalMat, { position: [0, 1.24, -1.25 + dz] });
+  }
+
   const sensorDomeGeo = new THREE.CylinderGeometry(0.42, 0.52, 0.42, 8);
   addStyledPart(root, sensorDomeGeo, slateMat, { position: [0, 1.24, 1.1] });
   addStyledPart(root, new THREE.SphereGeometry(0.38, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.5), ivoryMat, {
@@ -522,11 +551,11 @@ export function buildPlayerFighterMesh(
   // 4. Muscular airfoil S-foils with thick root fairings and integrated wingtip cannon pods (no floating dots).
   const wingGeo = createSweptWingGeometry();
   const rootFairingGeo = createTaperedBoxGeometry({
-    frontWidth: 2.3,
-    frontHeight: 0.88,
-    backWidth: 2.4,
-    backHeight: 0.72,
-    length: 3.3,
+    frontWidth: 1.1,
+    frontHeight: 0.6,
+    backWidth: 2.15,
+    backHeight: 0.82,
+    length: 4.2,
   });
   const tipPodGeo = new THREE.CylinderGeometry(0.32, 0.4, 2.65, 8);
   tipPodGeo.rotateX(Math.PI / 2);
@@ -553,14 +582,14 @@ export function buildPlayerFighterMesh(
     addStyledPart(
       pivot,
       createTaperedBoxGeometry({
-        frontWidth: 1.35,
-        frontHeight: 0.54,
-        backWidth: 1.15,
-        backHeight: 0.54,
-        length: 1.7,
+        frontWidth: 0.53,
+        frontHeight: 0.65,
+        backWidth: 0.85,
+        backHeight: 0.65,
+        length: 1.36,
       }),
       stripeMat,
-      { position: [4.45, 0, 0.28] },
+      { position: [4.45, 0, 0.46], rotation: [0, -0.2, 0] },
     );
     // Seated wingtip pod + visible gunmetal barrel + directly attached orange muzzle ring.
     addStyledPart(pivot, tipPodGeo, slateMat, { position: [5.58, 0, -0.05], hullOutline: 1.04 });
@@ -578,8 +607,7 @@ export function buildPlayerFighterMesh(
   const plumes: THREE.Group[] = [];
   const shroudGeo = new THREE.CylinderGeometry(0.84, 1.02, 3.4, 10);
   shroudGeo.rotateX(Math.PI / 2);
-  const nozzleGeo = new THREE.CylinderGeometry(0.62, 0.82, 1.25, 10);
-  nozzleGeo.rotateX(Math.PI / 2);
+  const nozzleGeo = createCowling(0.78, 1.15, 10);
 
   for (const side of [-1, 1] as const) {
     addStyledPart(root, shroudGeo, slateMat, {
@@ -589,20 +617,20 @@ export function buildPlayerFighterMesh(
     addStyledPart(root, new THREE.BoxGeometry(0.45, 0.36, 2.2), ivoryMat, {
       position: [side * 1.42, 0.92, 3.85],
     });
-    addStyledPart(root, nozzleGeo, darkMat, { position: [side * 1.42, 0.04, 6.0] });
+    addStyledPart(root, nozzleGeo, darkMat, { position: [side * 1.42, 0.04, 5.6] });
 
-    const recessRing = new THREE.Mesh(new THREE.RingGeometry(0.42, 0.62, 10), outerPlumeMat);
-    recessRing.position.set(side * 1.42, 0.04, 6.64);
+    const recessRing = new THREE.Mesh(new THREE.RingGeometry(0.33, 0.54, 10), outerPlumeMat);
+    recessRing.position.set(side * 1.42, 0.04, 5.96);
     root.add(recessRing);
 
-    const bellGlow = new THREE.Mesh(new THREE.CircleGeometry(0.44, 10), innerPlumeMat);
-    bellGlow.position.set(side * 1.42, 0.04, 6.66);
+    const bellGlow = new THREE.Mesh(new THREE.CircleGeometry(0.34, 10), innerPlumeMat);
+    bellGlow.position.set(side * 1.42, 0.04, 5.97);
     root.add(bellGlow);
 
     const plumeGroup = new THREE.Group();
-    plumeGroup.position.set(side * 1.42, 0.04, 6.7);
+    plumeGroup.position.set(side * 1.42, 0.04, 6.0);
 
-    const outerCone = new THREE.Mesh(new THREE.ConeGeometry(0.64, 5.2, 9), outerPlumeMat);
+    const outerCone = new THREE.Mesh(new THREE.ConeGeometry(0.42, 5.2, 9), outerPlumeMat);
     outerCone.rotation.x = Math.PI / 2;
     outerCone.position.set(0, 0, 2.6);
     plumeGroup.add(outerCone);
@@ -683,16 +711,17 @@ export function buildCockpitRig(): CockpitRig {
 
   const strutProfile = new THREE.BoxGeometry(0.048, 1.76, 0.1);
   for (const side of [-1, 1] as const) {
-    addStyledPart(root, strutProfile, frameMat, {
+    const strut = addStyledPart(root, strutProfile, frameMat, {
       position: [side * 1.24, 0.1, -1.1],
       rotation: [0, side * -0.18, side * 0.2],
       edgeAngle: 35,
     });
-
-    const highlight = new THREE.Mesh(new THREE.BoxGeometry(0.012, 1.68, 0.018), bevelMat);
-    highlight.position.set(side * 1.21, 0.1, -1.045);
-    highlight.rotation.set(0, side * -0.18, side * 0.2);
-    root.add(highlight);
+    addStyledPart(strut, new THREE.BoxGeometry(0.012, 1.68, 0.018), bevelMat, {
+      position: [-side * 0.018, 0, 0.046],
+    });
+    addStyledPart(strut, new THREE.BoxGeometry(0.069, 0.1, 0.12), barrelMat, {
+      position: [0, -0.18, 0],
+    });
 
     addStyledPart(root, new THREE.BoxGeometry(0.22, 0.13, 1.08), frameMat, {
       position: [side * 1.12, -0.72, -0.92],
@@ -735,13 +764,21 @@ export function buildCockpitRig(): CockpitRig {
     edgeAngle: 35,
   });
 
-  for (let i = -2; i <= 2; i += 1) {
-    const led = new THREE.Mesh(
-      new THREE.BoxGeometry(0.028, 0.012, 0.012),
-      i === 0 ? ledCyan : ledAmber,
-    );
-    led.position.set(i * 0.14, -0.665, -0.76);
-    root.add(led);
+  const annunciator = createTaperedBoxGeometry({
+    frontWidth: 0.32, backWidth: 0.42, frontHeight: 0.034, backHeight: 0.08, length: 0.24,
+  });
+  for (const side of [-1, 1]) {
+    const bank = addStyledPart(root, annunciator, bevelMat, {
+      position: [side * 0.65, -0.7, -1.12], rotation: [-0.16, side * -0.09, 0],
+    });
+    addStyledPart(bank, new THREE.BoxGeometry(0.32, 0.014, 0.18), frameMat, {
+      position: [0, 0.037, 0],
+    });
+    for (const x of [-0.09, 0, 0.09]) {
+      addStyledPart(bank, new THREE.BoxGeometry(0.064, 0.014, 0.052), side < 0 ? ledAmber : ledCyan, {
+        position: [x, 0.048, 0.022],
+      });
+    }
   }
 
   const throttleHandle = new THREE.Group();
@@ -768,8 +805,8 @@ export function buildCockpitRig(): CockpitRig {
 
 export function buildEnemyMesh(kind: EnemyKind, textures: HullTextureSet): THREE.Group {
   const root = new THREE.Group();
-  const enemyRim = { rimColor: 0x92aaf6, rimStrength: 0.42 } as const;
-  const hullMat = toonMat(0x5a6580, enemyRim);
+  const enemyRim = { rimColor: 0xa4c8ff, rimStrength: 0.7 } as const;
+  const hullMat = toonMat(0x67708d, enemyRim);
   const darkSlateMat = toonMat(0x2b3246, enemyRim);
   const gunmetalMat = toonMat(0x3e4760, enemyRim);
   const vaneMat = toonMat(0xffffff, { map: textures.solarVane, ...enemyRim });
@@ -780,19 +817,22 @@ export function buildEnemyMesh(kind: EnemyKind, textures: HullTextureSet): THREE
     rimColor: 0xff8a96,
     rimStrength: 0.35,
   });
-  const visorGlowMat = glowMat(0xff4a60, 1, { hdrBoost: 2.6 });
+  const visorGlowMat = glowMat(0xff7850, 1, { hdrBoost: 2.2 });
   const coreMat = glowMat(SCENE_PALETTE.hostileBolt, 1, { hdrBoost: 2.8 });
 
   if (kind === 'raider') {
     addStyledPart(root, new THREE.IcosahedronGeometry(2.6, 1), hullMat, { hullOutline: 1.05 });
 
-    // Sunk hexagonal viewport bezel + recessed crimson lens (no top-of-ball clipping in ortho-top).
-    const bezelGeo = new THREE.CylinderGeometry(1.22, 1.42, 0.45, 6);
-    bezelGeo.rotateX(Math.PI / 2);
-    addStyledPart(root, bezelGeo, darkSlateMat, { position: [0, -0.05, -2.25] });
-    const lensGeo = new THREE.CylinderGeometry(0.82, 0.94, 0.25, 6);
-    lensGeo.rotateX(Math.PI / 2);
-    addStyledPart(root, lensGeo, crimsonMat, { position: [0, -0.05, -2.38] });
+    const socket = createCowling(1.32, 0.73, 6);
+    addStyledPart(root, socket, darkSlateMat, {
+      position: [0, -0.05, -2.12], rotation: [0, Math.PI, 0],
+    });
+    addStyledPart(root, new THREE.CircleGeometry(0.85, 6), crimsonMat, {
+      position: [0, -0.05, -2.61], rotation: [0, Math.PI, 0],
+    });
+    addStyledPart(root, new THREE.BoxGeometry(0.86, 0.19, 0.06), visorGlowMat, {
+      position: [0, -0.05, -2.65],
+    });
 
     // Twin chin cannon nubs under the forward ball.
     const chinGunGeo = new THREE.CylinderGeometry(0.14, 0.22, 1.5, 6);
@@ -831,7 +871,8 @@ export function buildEnemyMesh(kind: EnemyKind, textures: HullTextureSet): THREE
       vaneGroup.position.set(side * 6.3, 0, 0.15);
       vaneGroup.rotation.z = side * 0.15;
 
-      addStyledPart(vaneGroup, vaneGeo, vaneMat, { hullOutline: 1.045 });
+      addStyledPart(vaneGroup, vaneGeo, gunmetalMat, { hullOutline: 1.045 });
+      addStyledPart(vaneGroup, vaneGeo, vaneMat, { scale: [1.16, 0.9, 0.89] });
       // Raised outer hexagonal hub boss so side-on views have unmistakable 3D depth.
       addStyledPart(vaneGroup, outerHubGeo, gunmetalMat, {
         position: [side * 0.45, 0, 0],
@@ -848,11 +889,10 @@ export function buildEnemyMesh(kind: EnemyKind, textures: HullTextureSet): THREE
       root.add(vaneGroup);
     }
 
-    const aftShroud = new THREE.CylinderGeometry(1.08, 1.32, 1.1, 8);
-    aftShroud.rotateX(Math.PI / 2);
-    addStyledPart(root, aftShroud, darkSlateMat, { position: [0, 0, 2.35] });
+    const aftShroud = createCowling(1.35, 1.3, 8);
+    addStyledPart(root, aftShroud, gunmetalMat, { position: [0, 0, 2.02] });
     const core = new THREE.Mesh(new THREE.CircleGeometry(0.82, 8), coreMat);
-    core.position.set(0, 0, 2.92);
+    core.position.set(0, 0, 2.64);
     root.add(core);
   } else {
     // Enemy Interceptor: drooped diamond chisel dagger, stealth gunmetal thrusters, seated root cannons.
@@ -971,6 +1011,10 @@ export function buildEnemyMesh(kind: EnemyKind, textures: HullTextureSet): THREE
       { position: [0, 0.96, -3.85] },
     );
 
+    addStyledPart(root, createTaperedBoxGeometry({
+      frontWidth: 1.48, backWidth: 1.85, frontHeight: 0.1, backHeight: 0.32, length: 1.75,
+    }), gunmetalMat, { position: [0, 1.28, -3.12], rotation: [-0.13, 0, 0] });
+
     const sponsonGeo = createDaggerSponsonGeometry();
     const shroudGeo = new THREE.CylinderGeometry(0.76, 0.98, 2.7, 8);
     shroudGeo.rotateX(Math.PI / 2);
@@ -1019,7 +1063,10 @@ export function buildEnemyMesh(kind: EnemyKind, textures: HullTextureSet): THREE
         darkSlateMat,
         { position: [0.65, 0, 0.15] },
       );
-      addStyledPart(wingPivot, sponsonGeo, vaneMat, { hullOutline: 1.045 });
+      addStyledPart(wingPivot, sponsonGeo, gunmetalMat, { hullOutline: 1.035 });
+      addStyledPart(wingPivot, sponsonGeo, vaneMat, {
+        position: [0.16, 0, -0.12], scale: [0.91, 1.12, 0.86],
+      });
       addStyledPart(
         wingPivot,
         createTaperedBoxGeometry({
@@ -1044,12 +1091,11 @@ export function buildEnemyMesh(kind: EnemyKind, textures: HullTextureSet): THREE
         position: [side * 1.85, 0.06, 4.95],
         hullOutline: 1.04,
       });
-      const nozzleInner = new THREE.CylinderGeometry(0.58, 0.74, 0.7, 8);
-      nozzleInner.rotateX(Math.PI / 2);
-      addStyledPart(root, nozzleInner, darkSlateMat, { position: [side * 1.85, 0.06, 6.2] });
+      const nozzleInner = createCowling(0.74, 0.84, 8);
+      addStyledPart(root, nozzleInner, darkSlateMat, { position: [side * 1.85, 0.06, 6.04] });
 
       const engineGlow = new THREE.Mesh(new THREE.CircleGeometry(0.48, 8), coreMat);
-      engineGlow.position.set(side * 1.85, 0.06, 6.58);
+      engineGlow.position.set(side * 1.85, 0.06, 6.38);
       root.add(engineGlow);
     }
   }
@@ -1148,8 +1194,8 @@ export function buildFriendlyCarrierMesh(textures: HullTextureSet): THREE.Group 
     { position: [0, 21.5, -1], edgeAngle: 35 },
   );
   // Recessed dark slate flight-deck runway strip breaking up the flat white top surface.
-  addStyledPart(root, new THREE.BoxGeometry(24, 1.0, 206), slateKeelMat, {
-    position: [-6, 26.2, -16],
+  addStyledPart(root, new THREE.BoxGeometry(24, 1.0, 182), slateKeelMat, {
+    position: [-6, 26.2, -1],
   });
 
   // Flush tapered slate ventral keel merged cleanly into the mid-hull bottom (zero gap!).
@@ -1168,12 +1214,23 @@ export function buildFriendlyCarrierMesh(textures: HullTextureSet): THREE.Group 
     { position: [0, -19, -4], edgeAngle: 35 },
   );
 
-  for (let i = -3; i <= 2; i += 1) {
-    const marker = new THREE.Mesh(new THREE.BoxGeometry(8.5, 1.3, 12), accentMat);
-    marker.position.set(-6, 26.9, i * 32 - 8);
+  for (let i = -2; i <= 2; i += 1) {
+    const marker = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.5, 10), accentMat);
+    marker.position.set(-6, 26.82, i * 29 - 1);
     root.add(marker);
   }
   for (const side of [-1, 1] as const) {
+    for (const z of [-80, 78]) {
+      for (const offset of [4, 8]) {
+        addStyledPart(root, new THREE.BoxGeometry(1.5, 0.48, 11), ivoryArmorMat, {
+          position: [-6 + side * offset, 26.86, z],
+        });
+      }
+    }
+    const guide = new THREE.BoxGeometry(1.2, 0.6, 3.8);
+    for (let z = -77; z <= 77; z += 22) {
+      addStyledPart(root, guide, bayLight, { position: [-6 + side * 11.3, 26.85, z] });
+    }
     addStyledPart(root, new THREE.BoxGeometry(3.2, 1.4, 178), accentMat, {
       position: [side * 30.5, 26.5, -1],
     });
@@ -1261,8 +1318,15 @@ export function buildFriendlyCarrierMesh(textures: HullTextureSet): THREE.Group 
   addStyledPart(root, new THREE.SphereGeometry(4.2, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.55), ivoryArmorMat, {
     position: [21, 71, 31],
   });
-  addStyledPart(root, new THREE.BoxGeometry(2.2, 10, 2.2), accentMat, {
-    position: [24, 75, 42],
+  addStyledPart(root, new THREE.CylinderGeometry(0.95, 2.6, 17, 6), slateKeelMat, {
+    position: [24, 78.5, 42],
+  });
+
+  addStyledPart(root, new THREE.BoxGeometry(13, 1.8, 2.1), ivoryArmorMat, {
+    position: [24, 82.5, 42],
+  });
+  addStyledPart(root, new THREE.BoxGeometry(1.6, 10, 1.6), accentMat, {
+    position: [19, 85.5, 42],
   });
 
   for (const zPos of [-42, 36] as const) {
@@ -1287,6 +1351,25 @@ export function buildFriendlyCarrierMesh(textures: HullTextureSet): THREE.Group 
   const conduitGeo = new THREE.CylinderGeometry(2.2, 2.2, 176, 8);
   conduitGeo.rotateX(Math.PI / 2);
 
+  const gantry = new THREE.Shape();
+  gantry.moveTo(-25, -10);
+  gantry.lineTo(25, -10);
+  gantry.lineTo(25, 7);
+  gantry.lineTo(21, 10);
+  gantry.lineTo(-21, 10);
+  gantry.lineTo(-25, 7);
+  gantry.closePath();
+  const mouth = new THREE.Path();
+  mouth.moveTo(-20, -6);
+  mouth.lineTo(-20, 3);
+  mouth.lineTo(-16, 6);
+  mouth.lineTo(16, 6);
+  mouth.lineTo(20, 3);
+  mouth.lineTo(20, -6);
+  mouth.closePath();
+  gantry.holes.push(mouth);
+  const gantryGeo = new THREE.ExtrudeGeometry(gantry, { depth: 6, bevelEnabled: false });
+
   for (const side of [-1, 1] as const) {
     addStyledPart(root, new THREE.BoxGeometry(3.5, 5.4, 216), accentMat, {
       position: [side * 39.2, 11, -10],
@@ -1306,17 +1389,17 @@ export function buildFriendlyCarrierMesh(textures: HullTextureSet): THREE.Group 
     });
 
     for (const bayZ of [-48, 22] as const) {
-      addStyledPart(root, new THREE.BoxGeometry(5.6, 18.5, 48), ivoryArmorMat, {
-        position: [side * 38.2, -1, bayZ],
+      addStyledPart(root, gantryGeo, ivoryArmorMat, {
+        position: [side * 37.5, -1, bayZ], rotation: [0, side * Math.PI / 2, 0],
       });
-      addStyledPart(root, new THREE.BoxGeometry(4.4, 12.6, 40), darkRecessMat, {
-        position: [side * 39.6, -1, bayZ],
+      addStyledPart(root, new THREE.BoxGeometry(1.5, 15, 44), darkRecessMat, {
+        position: [side * 38.1, -1, bayZ],
       });
-      const bayStrip = new THREE.Mesh(new THREE.BoxGeometry(1.4, 4.2, 36), bayLight);
-      bayStrip.position.set(side * 41.4, -3.4, bayZ);
-      root.add(bayStrip);
-      addStyledPart(root, new THREE.BoxGeometry(2.2, 2.4, 42), accentMat, {
-        position: [side * 41.2, 6.4, bayZ],
+      addStyledPart(root, new THREE.BoxGeometry(1, 1.2, 28), bayLight, {
+        position: [side * 38.9, 1.4, bayZ],
+      });
+      addStyledPart(root, new THREE.BoxGeometry(7, 2.2, 45), slateKeelMat, {
+        position: [side * 42, -8.1, bayZ],
       });
     }
   }
@@ -1520,6 +1603,26 @@ export function buildHostileFrigateMesh(textures: HullTextureSet): HostileFrigat
   bridgeSlit.position.set(0, 54, 69.2);
   root.add(bridgeSlit);
 
+  addStyledPart(root, createTaperedBoxGeometry({
+    frontWidth: 39, backWidth: 30, frontHeight: 2.8, backHeight: 5, length: 23,
+  }), hullPlateMat, { position: [0, 57, 78], edgeAngle: 35 });
+
+  const turret = createTaperedBoxGeometry({
+    frontWidth: 8, backWidth: 12, frontHeight: 4, backHeight: 6, length: 13,
+  });
+  const barrels = new THREE.CylinderGeometry(1.05, 1.45, 15, 6);
+  barrels.rotateX(-Math.PI / 2);
+  for (const side of [-1, 1]) {
+    for (const [x, y, z] of [[13, 15, -51], [26, 17, 48], [13, -20, 21]] as const) {
+      const battery = addStyledPart(root, turret, armorMat, {
+        position: [side * x, y, z], rotation: [0, -side * 0.5, y < 0 ? Math.PI : 0],
+      });
+      for (const dx of [-2.3, 2.3]) {
+        addStyledPart(battery, barrels, hullPlateMat, { position: [dx, 0.7, -10] });
+      }
+    }
+  }
+
   // Scale-cue conning tower & spine deck window rows.
   for (let i = 0; i < 4; i += 1) {
     const towerWin = new THREE.Mesh(new THREE.BoxGeometry(33.4, 1.3, 3.6), windowLight);
@@ -1578,6 +1681,15 @@ export function buildHostileFrigateMesh(textures: HullTextureSet): HostileFrigat
     edgeAngle: 35,
   });
 
+  for (const side of [-1, 1]) {
+    addStyledPart(root, createTaperedBoxGeometry({
+      frontWidth: 3.5, backWidth: 5.5, frontHeight: 6, backHeight: 13, length: 18,
+    }), armorMat, {
+      position: [domePos.x + side * 15, domePos.y - 1, domePos.z + 1],
+      rotation: [0, side * 0.12, side * -0.24],
+    });
+  }
+
   const shieldDome = addStyledPart(
     root,
     new THREE.IcosahedronGeometry(12.5, 2),
@@ -1615,9 +1727,12 @@ export function buildHostileFrigateMesh(textures: HullTextureSet): HostileFrigat
   );
 
   for (const side of [-1, 1] as const) {
-    addStyledPart(root, new THREE.BoxGeometry(7, 22, 24), darkArmorMat, {
-      position: [clampPos.x + side * 18, clampPos.y + 4, clampPos.z],
-      rotation: [0, 0, side * 0.18],
+    addStyledPart(root, createTaperedBoxGeometry({
+      frontWidth: 6, backWidth: 9, frontHeight: 12, backHeight: 25, length: 28,
+      frontYOffset: 4, backYOffset: -2,
+    }), darkArmorMat, {
+      position: [clampPos.x + side * 18, clampPos.y + 2, clampPos.z],
+      rotation: [0, 0, side * -0.26],
     });
   }
 
@@ -1641,22 +1756,20 @@ export function buildAsteroidMesh(
         ? textures.asteroidOchre
         : textures.asteroidSlate;
 
-  const geo = new THREE.IcosahedronGeometry(asteroid.radius, 2);
+  const geo = new THREE.IcosahedronGeometry(asteroid.radius, 1);
   const posAttr = geo.getAttribute('position') as THREE.BufferAttribute;
+  const frequency = 2.7 / asteroid.radius;
   for (let i = 0; i < posAttr.count; i += 1) {
     const vx = posAttr.getX(i);
     const vy = posAttr.getY(i);
     const vz = posAttr.getZ(i);
-    const warp =
-      1 +
-      0.16 * Math.sin(vx * 0.14 + asteroid.rotation.x * 4) *
-        Math.cos(vy * 0.16 + asteroid.rotation.y * 4) +
-      0.09 * Math.sin(vz * 0.2);
+    const warp = 1 + 0.2 * Math.sin(vx * frequency + asteroid.rotation.x * 4)
+      * Math.cos(vy * frequency + asteroid.rotation.y * 4) + 0.09 * Math.sin(vz * frequency);
     posAttr.setXYZ(i, vx * warp, vy * warp * 0.78, vz * warp);
   }
   geo.computeVertexNormals();
 
-  addStyledPart(group, geo, toonMat(0xffffff, { map }), { hullOutline: 1.03 });
+  addStyledPart(group, geo, toonMat(0xffffff, { map, rimStrength: 0.12 }), { hullOutline: 1.022 });
   group.position.set(asteroid.position.x, asteroid.position.y, asteroid.position.z);
   group.rotation.set(asteroid.rotation.x, asteroid.rotation.y, asteroid.rotation.z);
   return group;
@@ -1697,9 +1810,10 @@ export function buildOrbitalBackdrop(dotTexture: THREE.CanvasTexture): THREE.Gro
         vec3 duskGlow = vec3(0.30, 0.10, 0.035) * pow(sunAlign, 13.5);
         vec3 sunHalo = vec3(0.88, 0.46, 0.18) * pow(sunAlign, 54.0) * 0.65;
         vec3 sunCore = vec3(2.2, 1.7, 1.15) * smoothstep(0.9988, 0.9996, sunAlign);
-        float belt = exp(-abs(vDir.y + vDir.x * 0.14) * 9.0);
-        float beltStep = floor(belt * 4.0) / 4.0;
-        vec3 nebulaBand = vec3(0.048, 0.024, 0.062) * beltStep;
+        float latitude = vDir.y + vDir.x * 0.14 + 0.045 * sin(vDir.z * 5.0);
+        float belt = 1.0 - smoothstep(0.035, 0.19, abs(latitude));
+        float farBank = 1.0 - smoothstep(0.02, 0.1, abs(latitude + 0.14));
+        vec3 nebulaBand = vec3(0.033, 0.019, 0.05) * belt + vec3(0.011, 0.014, 0.03) * farBank;
 
         vec3 color = base + duskGlow + sunHalo + nebulaBand + sunCore;
         gl_FragColor = vec4(color, 1.0);
@@ -1776,8 +1890,8 @@ export function buildOrbitalBackdrop(dotTexture: THREE.CanvasTexture): THREE.Gro
         float r = length(vLocalPos.xy);
         float t = clamp((r - 1040.0) / (1580.0 - 1040.0), 0.0, 1.0);
         float cassiniGap = smoothstep(0.015, 0.04, abs(t - 0.62));
-        float bands = 0.65 + 0.35 * sin(t * 58.0);
-        float edgeFade = smoothstep(0.0, 0.12, t) * smoothstep(1.0, 0.86, t);
+        float bands = 0.5 + 0.5 * smoothstep(-0.18, 0.18, sin(t * 24.0));
+        float edgeFade = smoothstep(0.0, 0.12, t) * (1.0 - smoothstep(0.89, 1.0, t));
 
         float proj = dot(vOffsetFromPlanet, uSunDir);
         vec3 perp = vOffsetFromPlanet - uSunDir * proj;

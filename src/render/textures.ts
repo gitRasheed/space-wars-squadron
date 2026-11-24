@@ -1,25 +1,16 @@
 import * as THREE from 'three';
 import { TEXTURE_PALETTE } from './palette';
 
-function createPixelCanvas(
-  size: number,
-  paint: (ctx: CanvasRenderingContext2D, size: number) => void,
-): THREE.CanvasTexture {
+function paintTile(paint: (ctx: CanvasRenderingContext2D) => void): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
+  canvas.width = canvas.height = 256;
   const ctx = canvas.getContext('2d');
-  if (ctx !== null) {
-    ctx.imageSmoothingEnabled = false;
-    paint(ctx, size);
-  }
+  if (ctx !== null) paint(ctx);
   const texture = new THREE.CanvasTexture(canvas);
-  texture.minFilter = THREE.NearestFilter;
-  texture.magFilter = THREE.NearestFilter;
+  texture.anisotropy = 4;
   texture.wrapS = THREE.RepeatWrapping;
   texture.wrapT = THREE.RepeatWrapping;
   texture.colorSpace = THREE.SRGBColorSpace;
-  texture.needsUpdate = true;
   return texture;
 }
 
@@ -34,143 +25,120 @@ export interface HullTextureSet {
   readonly dispose: () => void;
 }
 
-function paintPanelGrid(
-  ctx: CanvasRenderingContext2D,
-  size: number,
-  base: string,
-  panelAlt: string,
-  seam: string,
-  rivet: string,
-  accentLights: string | null,
-): void {
-  ctx.fillStyle = base;
-  ctx.fillRect(0, 0, size, size);
+type HullPaint = typeof TEXTURE_PALETTE['fighter' | 'carrier' | 'frigate'];
+type MineralPaint = typeof TEXTURE_PALETTE['asteroidIce' | 'asteroidSlate' | 'asteroidOchre'];
 
-  const step = size / 4;
-  for (let row = 0; row < 4; row += 1) {
-    for (let col = 0; col < 4; col += 1) {
-      if ((row + col) % 2 === 0) {
-        ctx.fillStyle = panelAlt;
-        ctx.fillRect(col * step + 1, row * step + 1, step - 2, step - 2);
-      }
-      ctx.strokeStyle = seam;
-      ctx.lineWidth = 1;
-      ctx.strokeRect(col * step + 0.5, row * step + 0.5, step - 1, step - 1);
+function hullTile(colors: HullPaint): THREE.CanvasTexture {
+  return paintTile((ctx) => {
+    ctx.fillStyle = colors.base;
+    ctx.fillRect(0, 0, 256, 256);
 
-      ctx.fillStyle = rivet;
-      ctx.fillRect(col * step + 3, row * step + 3, 1, 1);
-      ctx.fillRect((col + 1) * step - 4, (row + 1) * step - 4, 1, 1);
+    const plate = new Path2D();
+    plate.moveTo(0, 19);
+    plate.lineTo(147, 19);
+    plate.lineTo(166, 38);
+    plate.lineTo(225, 38);
+    plate.lineTo(244, 19);
+    plate.lineTo(256, 19);
+    plate.lineTo(256, 202);
+    plate.lineTo(230, 202);
+    plate.lineTo(212, 184);
+    plate.lineTo(105, 184);
+    plate.lineTo(87, 202);
+    plate.lineTo(0, 202);
+    plate.closePath();
+    ctx.fillStyle = colors.alt;
+    ctx.fill(plate);
+
+    const seams = new Path2D(plate);
+    seams.moveTo(166, 38);
+    seams.lineTo(166, 105);
+    seams.lineTo(181, 120);
+    seams.lineTo(181, 184);
+    seams.moveTo(71, 202);
+    seams.lineTo(71, 256);
+    seams.moveTo(71, 0);
+    seams.lineTo(71, 19);
+    ctx.save();
+    ctx.translate(1.5, 2);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = colors.rivet;
+    ctx.stroke(seams);
+    ctx.restore();
+    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = colors.seam;
+    ctx.stroke(seams);
+
+    ctx.fillStyle = colors.band;
+    ctx.fillRect(12, 31, 57, 4);
+    ctx.fillRect(12, 38, 30, 2);
+    ctx.fillStyle = 'light' in colors ? colors.light : colors.trim;
+    for (const x of [195, 205, 215]) {
+      ctx.beginPath();
+      ctx.moveTo(x, 158);
+      ctx.lineTo(x + 4, 158);
+      ctx.lineTo(x, 169);
+      ctx.lineTo(x - 4, 169);
+      ctx.fill();
     }
-  }
-
-  if (accentLights !== null) {
-    ctx.fillStyle = accentLights;
-    for (let i = 0; i < 6; i += 1) {
-      const lx = ((i * 19 + 5) % (size - 8)) + 3;
-      const ly = ((i * 29 + 11) % (size - 8)) + 3;
-      ctx.fillRect(lx, ly, 3, 1);
-    }
-  }
+  });
 }
 
-function paintAsteroidSurface(
-  ctx: CanvasRenderingContext2D,
-  size: number,
-  base: string,
-  mid: string,
-  dark: string,
-  highlight: string,
-): void {
-  ctx.fillStyle = base;
-  ctx.fillRect(0, 0, size, size);
-
-  let seed = 0x51a7c0de;
-  for (let i = 0; i < 95; i += 1) {
-    seed = (Math.imul(seed, 1664525) + 1013904223) | 0;
-    const x = ((seed >>> 0) % size);
-    seed = (Math.imul(seed, 1664525) + 1013904223) | 0;
-    const y = ((seed >>> 0) % size);
-    seed = (Math.imul(seed, 1664525) + 1013904223) | 0;
-    const w = 2 + ((seed >>> 0) % 7);
-    const h = 2 + (((seed >>> 4) >>> 0) % 6);
-    ctx.fillStyle = i % 5 === 0 ? highlight : i % 3 === 0 ? dark : mid;
-    ctx.fillRect(x, y, w, h);
-  }
-
-  for (let c = 0; c < 6; c += 1) {
-    const cx = (c * 17 + 9) % size;
-    const cy = (c * 23 + 13) % size;
-    ctx.fillStyle = dark;
-    ctx.fillRect(cx - 2, cy - 2, 5, 5);
-    ctx.fillStyle = highlight;
-    ctx.fillRect(cx + 2, cy - 2, 1, 4);
-  }
+function mineralTile(colors: MineralPaint): THREE.CanvasTexture {
+  return paintTile((ctx) => {
+    ctx.fillStyle = colors.base;
+    ctx.fillRect(0, 0, 256, 256);
+    ctx.fillStyle = colors.mid;
+    ctx.beginPath();
+    ctx.moveTo(0, 88);
+    ctx.lineTo(66, 102);
+    ctx.lineTo(155, 61);
+    ctx.lineTo(204, 76);
+    ctx.lineTo(256, 88);
+    ctx.lineTo(256, 116);
+    ctx.lineTo(206, 104);
+    ctx.lineTo(159, 87);
+    ctx.lineTo(69, 125);
+    ctx.lineTo(0, 116);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(58, 186);
+    ctx.lineTo(121, 163);
+    ctx.lineTo(98, 184);
+    ctx.lineTo(68, 195);
+    ctx.fillStyle = colors.dark;
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(58, 186);
+    ctx.lineTo(121, 163);
+    ctx.lineTo(102, 173);
+    ctx.fillStyle = colors.highlight;
+    ctx.fill();
+  });
 }
 
 export function createHullTextureSet(): HullTextureSet {
-  const f = TEXTURE_PALETTE.fighter;
-  const fighterHull = createPixelCanvas(64, (ctx, size) => {
-    paintPanelGrid(ctx, size, f.base, f.alt, f.seam, f.rivet, null);
-    ctx.fillStyle = f.band;
-    ctx.fillRect(0, 28, size, 6);
-    ctx.fillStyle = f.trim;
-    ctx.fillRect(0, 34, size, 2);
-  });
-
-  const c = TEXTURE_PALETTE.carrier;
-  const carrierHull = createPixelCanvas(64, (ctx, size) => {
-    paintPanelGrid(ctx, size, c.base, c.alt, c.seam, c.rivet, c.light);
-    ctx.fillStyle = c.band;
-    ctx.fillRect(0, 20, size, 4);
-    ctx.fillRect(0, 48, size, 3);
-  });
-
-  const fr = TEXTURE_PALETTE.frigate;
-  const frigateHull = createPixelCanvas(64, (ctx, size) => {
-    paintPanelGrid(ctx, size, fr.base, fr.alt, fr.seam, fr.rivet, fr.light);
-    ctx.fillStyle = fr.band;
-    ctx.fillRect(0, 30, size, 4);
-  });
-
-  const sv = TEXTURE_PALETTE.solarVane;
-  const solarVane = createPixelCanvas(64, (ctx, size) => {
+  const fighterHull = hullTile(TEXTURE_PALETTE.fighter);
+  const carrierHull = hullTile(TEXTURE_PALETTE.carrier);
+  const frigateHull = hullTile(TEXTURE_PALETTE.frigate);
+  const solarVane = paintTile((ctx) => {
+    const sv = TEXTURE_PALETTE.solarVane;
     ctx.fillStyle = sv.bg;
-    ctx.fillRect(0, 0, size, size);
-    ctx.strokeStyle = sv.grid;
-    ctx.lineWidth = 1;
-    for (let i = 0; i < size; i += 8) {
-      ctx.beginPath();
-      ctx.moveTo(i + 0.5, 0);
-      ctx.lineTo(i + 0.5, size);
-      ctx.moveTo(0, i + 0.5);
-      ctx.lineTo(size, i + 0.5);
-      ctx.stroke();
-    }
-    ctx.fillStyle = sv.cell;
-    for (let y = 2; y < size; y += 8) {
-      for (let x = 2; x < size; x += 8) {
-        ctx.fillRect(x, y, 4, 4);
+    ctx.fillRect(0, 0, 256, 256);
+    for (let y = 4; y < 256; y += 64) {
+      for (let x = 3; x < 256; x += 32) {
+        ctx.fillStyle = sv.cell;
+        ctx.fillRect(x, y, 28, 57);
+        ctx.fillStyle = sv.grid;
+        ctx.fillRect(x, y, 2, 57);
       }
     }
-    ctx.strokeStyle = sv.border;
-    ctx.lineWidth = 2;
-    ctx.strokeRect(1, 1, size - 2, size - 2);
+    ctx.fillStyle = sv.border;
+    ctx.fillRect(0, 126, 256, 3);
   });
-
-  const ice = TEXTURE_PALETTE.asteroidIce;
-  const asteroidIce = createPixelCanvas(64, (ctx, size) => {
-    paintAsteroidSurface(ctx, size, ice.base, ice.mid, ice.dark, ice.highlight);
-  });
-
-  const ochre = TEXTURE_PALETTE.asteroidOchre;
-  const asteroidOchre = createPixelCanvas(64, (ctx, size) => {
-    paintAsteroidSurface(ctx, size, ochre.base, ochre.mid, ochre.dark, ochre.highlight);
-  });
-
-  const slate = TEXTURE_PALETTE.asteroidSlate;
-  const asteroidSlate = createPixelCanvas(64, (ctx, size) => {
-    paintAsteroidSurface(ctx, size, slate.base, slate.mid, slate.dark, slate.highlight);
-  });
+  const asteroidIce = mineralTile(TEXTURE_PALETTE.asteroidIce);
+  const asteroidOchre = mineralTile(TEXTURE_PALETTE.asteroidOchre);
+  const asteroidSlate = mineralTile(TEXTURE_PALETTE.asteroidSlate);
 
   function dispose(): void {
     fighterHull.dispose();
