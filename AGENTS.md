@@ -19,3 +19,6 @@ Run the gates matching what you changed before claiming done or committing:
 - **Gameplay / rendering / HUD (`src/render/`, `src/input/`):** `npm run verify:browser` (set `VERIFY_OUT_DIR=artifacts/verify-<worker>` for concurrent runs; inspect screenshots)
 - **3D ship models (`src/render/`):** Build once on a clean checkout (`npm --prefix tools/agent-3d ci && npm --prefix tools/agent-3d run build`), then run `node tools/agent-3d/dist/cli.js turntable scripts/ship-adapters/<ship>.ts --card scripts/ship-adapters/space-wars-card.json --out artifacts/turntable/<ship>` (0 degenerate triangles; inspect `contact-sheet.png`)
 - **Standalone tools (`tools/`):** `npm --prefix tools/<tool> test`
+
+## Tooling Feedback
+- If any local tool or verification gate (`tools/agent-audio`, `tools/agent-3d`, `verify:browser`, `verify:formal`, or `npm run check`) gets in your way, produces confusing output, or has false positives/negatives, include a brief **Tooling Feedback** section in your report describing what happened.
