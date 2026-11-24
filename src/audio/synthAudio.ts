@@ -11,18 +11,20 @@ export interface SynthAudio {
 
 export function createSynthAudio(): SynthAudio {
   let ctx: AudioContext | null = null;
+  let masterGain: GainNode | null = null;
   let engineOsc: OscillatorNode | null = null;
   let engineGain: GainNode | null = null;
   let muted = true;
 
   function onVisibilityChange(): void {
-    if (ctx === null || engineGain === null) {
+    if (ctx === null || masterGain === null) {
       return;
     }
     if (document.hidden) {
-      engineGain.gain.setTargetAtTime(0, ctx.currentTime, 0.03);
+      masterGain.gain.setTargetAtTime(0, ctx.currentTime, 0.015);
       void ctx.suspend();
     } else if (!muted) {
+      masterGain.gain.setTargetAtTime(1, ctx.currentTime, 0.015);
       void ctx.resume();
     }
   }
@@ -37,6 +39,10 @@ export function createSynthAudio(): SynthAudio {
       return null;
     }
     ctx = new AudioCtor();
+    masterGain = ctx.createGain();
+    masterGain.gain.value = muted ? 0 : 1;
+    masterGain.connect(ctx.destination);
+
     engineOsc = ctx.createOscillator();
     engineGain = ctx.createGain();
     const filter = ctx.createBiquadFilter();
@@ -47,7 +53,7 @@ export function createSynthAudio(): SynthAudio {
     engineGain.gain.value = 0;
     engineOsc.connect(filter);
     filter.connect(engineGain);
-    engineGain.connect(ctx.destination);
+    engineGain.connect(masterGain);
     engineOsc.start();
     return ctx;
   }
@@ -57,8 +63,13 @@ export function createSynthAudio(): SynthAudio {
       return;
     }
     const audio = ensureContext();
-    if (audio !== null && audio.state === 'suspended') {
-      void audio.resume();
+    if (audio !== null) {
+      if (masterGain !== null) {
+        masterGain.gain.setTargetAtTime(1, audio.currentTime, 0.015);
+      }
+      if (audio.state === 'suspended') {
+        void audio.resume();
+      }
     }
   }
 
@@ -66,8 +77,8 @@ export function createSynthAudio(): SynthAudio {
     muted = !muted;
     if (!muted) {
       unlock();
-    } else if (engineGain !== null && ctx !== null) {
-      engineGain.gain.setTargetAtTime(0, ctx.currentTime, 0.05);
+    } else if (masterGain !== null && ctx !== null) {
+      masterGain.gain.setTargetAtTime(0, ctx.currentTime, 0.015);
     }
     return muted;
   }
@@ -79,7 +90,7 @@ export function createSynthAudio(): SynthAudio {
     gainPeak: number,
     type: OscillatorType,
   ): void {
-    if (muted || ctx === null || ctx.state !== 'running') {
+    if (muted || ctx === null || masterGain === null || ctx.state !== 'running') {
       return;
     }
     const now = ctx.currentTime;
@@ -91,7 +102,7 @@ export function createSynthAudio(): SynthAudio {
     gain.gain.setValueAtTime(gainPeak, now);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(masterGain);
     osc.start(now);
     osc.stop(now + duration + 0.02);
   }

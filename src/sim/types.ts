@@ -200,6 +200,7 @@ export type SimEvent =
 export interface WorldState {
   readonly tick: number;
   readonly rngState: number;
+  readonly sortie: SortieConfig;
   readonly phase: SortiePhase;
   readonly cameraMode: CameraMode;
   readonly player: PlayerShipState;
@@ -219,12 +220,12 @@ export interface WorldState {
 export interface SortieConfig {
   readonly id: string;
   readonly openingRadio: RadioMessage;
-  readonly createPlayer: () => PlayerShipState;
-  readonly createWingmate: () => WingmateState;
-  readonly createEnemies: () => readonly EnemyShipState[];
-  readonly createFriendlyCarrier: () => CapitalShipState;
-  readonly createHostileFrigate: () => CapitalShipState;
-  readonly createAsteroids: () => readonly AsteroidState[];
+  readonly player: PlayerShipState;
+  readonly wingmate: WingmateState;
+  readonly enemies: readonly EnemyShipState[];
+  readonly friendlyCarrier: CapitalShipState;
+  readonly hostileFrigate: CapitalShipState;
+  readonly asteroids: readonly AsteroidState[];
 }
 
 export const FIXED_DT = 1 / 60;

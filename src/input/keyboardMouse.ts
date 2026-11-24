@@ -36,6 +36,12 @@ export function createInputChannel(
     heldKeys.clear();
     mouseLeftHeld = false;
     mouseRightHeld = false;
+    queuedCycleTarget = false;
+    queuedToggleCamera = false;
+    queuedLaunchBriefing = false;
+    queuedRestartSortie = false;
+    queuedFireMissile = false;
+    queuedToggleMute = false;
     steering =
       steering.kind === 'pointer_locked'
         ? { kind: 'pointer_locked', dx: 0, dy: 0 }

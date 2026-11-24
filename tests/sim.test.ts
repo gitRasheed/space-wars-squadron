@@ -1,10 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { isInsideCapitalBox } from '../src/sim/combat';
 import { createInitialEnergy, ENERGY_RULES, stepEnergy } from '../src/sim/energy';
-import { resolveObstacleClearance } from '../src/sim/flight';
-import { distance, nextRandom, quatFromAxisAngle, vec3 } from '../src/sim/math';
-import { DEFAULT_SORTIE_SEED, FIXED_DT, NEUTRAL_INPUT, type CapitalShipState } from '../src/sim/types';
-import { createInitialWorld, stepWorld } from '../src/sim/world';
+import { FLIGHT_TUNING, resolveObstacleClearance } from '../src/sim/flight';
+import { distance, dot, len, nextRandom, normalize, quatFromAxisAngle, vec3 } from '../src/sim/math';
+import {
+  DEFAULT_SORTIE_SEED,
+  FIXED_DT,
+  NEUTRAL_INPUT,
+  type CapitalShipState,
+  type SortieConfig,
+  type WorldState,
+} from '../src/sim/types';
+import { createInitialWorld, DEFAULT_SORTIE_CONFIG, stepWorld } from '../src/sim/world';
 
 describe('energy and snap-turn drift kernel', () => {
   it('enforces recovery cooldown after boost release and blocks immediate boost-gasping', () => {
@@ -209,6 +216,52 @@ describe('sortie simulation contracts', () => {
     );
     expect(clearAlongOldAxis.warning).toBe(false);
     expect(clearAlongOldAxis.position).toEqual(vec3(0, 0, 80));
+  });
+
+  it('preserves custom sortie configuration across restarts without re-passing config', () => {
+    const reconConfig: SortieConfig = {
+      ...DEFAULT_SORTIE_CONFIG,
+      id: 'sortie-recon',
+      openingRadio: {
+        speaker: 'CONTROL',
+        text: 'Recon sweep clear.',
+        remainingSeconds: 4,
+      },
+      enemies: [],
+    };
+    let world = createInitialWorld(DEFAULT_SORTIE_SEED, true, reconConfig);
+    world = stepWorld(world, NEUTRAL_INPUT, FIXED_DT);
+    const restarted = stepWorld(world, { ...NEUTRAL_INPUT, restartSortie: true }, FIXED_DT);
+
+    expect(restarted.sortie.id).toBe('sortie-recon');
+    expect(restarted.enemies.length).toBe(0);
+    expect(restarted.radio?.text).toBe('Recon sweep clear.');
+  });
+
+  it('strips outward radial velocity when clamped against the arena boundary', () => {
+    const base = createInitialWorld(DEFAULT_SORTIE_SEED, true);
+    let world: WorldState = {
+      ...base,
+      enemies: [],
+      asteroids: [],
+      player: {
+        ...base.player,
+        position: vec3(0, 0, -(FLIGHT_TUNING.arenaRadius - 2)),
+        velocity: vec3(0, 0, -100),
+        throttle: 1,
+      },
+    };
+
+    for (let i = 0; i < 15; i += 1) {
+      world = stepWorld(world, NEUTRAL_INPUT, FIXED_DT);
+    }
+
+    const pos = world.player.position;
+    const vel = world.player.velocity;
+    const outward = normalize(pos);
+    expect(len(pos)).toBeLessThanOrEqual(FLIGHT_TUNING.arenaRadius + 1e-4);
+    expect(dot(vel, outward)).toBeLessThanOrEqual(1e-3);
+    expect(len(vel)).toBeLessThan(1);
   });
 
   it('survives 60 seconds of randomized combat flight with finite state and valid invariants', () => {

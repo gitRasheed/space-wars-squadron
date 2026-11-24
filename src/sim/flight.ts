@@ -41,6 +41,7 @@ export const FLIGHT_TUNING = {
   carrierClearanceMargin: 18,
   carrierRepelSpeed: 58,
   asteroidClearanceMargin: 10,
+  arenaRadius: 2600,
 } as const;
 
 export interface FlightStepResult {
@@ -176,8 +177,16 @@ export function stepPlayerFlight(
   const rawPosition = add(player.position, scale(nextVelocity, dt));
   const clearance = resolveObstacleClearance(rawPosition, nextVelocity, capitalShips, asteroids);
   const clampedDistance = len(clearance.position);
-  const arenaPosition =
-    clampedDistance > 2600 ? scale(normalize(clearance.position), 2600) : clearance.position;
+  let arenaPosition = clearance.position;
+  let arenaVelocity = clearance.velocity;
+  if (clampedDistance > FLIGHT_TUNING.arenaRadius) {
+    const outwardNormal = scale(clearance.position, 1 / clampedDistance);
+    arenaPosition = scale(outwardNormal, FLIGHT_TUNING.arenaRadius);
+    const outwardSpeed = dot(arenaVelocity, outwardNormal);
+    if (outwardSpeed > 0) {
+      arenaVelocity = sub(arenaVelocity, scale(outwardNormal, outwardSpeed));
+    }
+  }
 
   const updatedEnergy =
     energy.boostMode.kind === 'drifting'
@@ -185,7 +194,7 @@ export function stepPlayerFlight(
           ...energy,
           boostMode: {
             ...energy.boostMode,
-            driftVelocity: clearance.velocity,
+            driftVelocity: arenaVelocity,
           },
         }
       : energy;
@@ -194,7 +203,7 @@ export function stepPlayerFlight(
     player: {
       ...player,
       position: arenaPosition,
-      velocity: clearance.velocity,
+      velocity: arenaVelocity,
       orientation,
       angularVelocity,
       throttle,

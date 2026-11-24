@@ -180,12 +180,12 @@ export const DEFAULT_SORTIE_CONFIG: SortieConfig = {
     text: 'Raiders inbound on Hearthstone—I have your flank, cleared hot!',
     remainingSeconds: 4.5,
   },
-  createPlayer: createInitialPlayer,
-  createWingmate: createInitialWingmate,
-  createEnemies: createInitialEnemies,
-  createFriendlyCarrier,
-  createHostileFrigate,
-  createAsteroids: createRingAsteroids,
+  player: createInitialPlayer(),
+  wingmate: createInitialWingmate(),
+  enemies: createInitialEnemies(),
+  friendlyCarrier: createFriendlyCarrier(),
+  hostileFrigate: createHostileFrigate(),
+  asteroids: createRingAsteroids(),
 };
 
 export function createInitialWorld(
@@ -196,14 +196,15 @@ export function createInitialWorld(
   return {
     tick: 0,
     rngState: seed,
+    sortie: config,
     phase: startActive ? { kind: 'active', elapsedSeconds: 0 } : { kind: 'briefing' },
     cameraMode: 'cockpit',
-    player: config.createPlayer(),
-    wingmate: config.createWingmate(),
-    enemies: config.createEnemies(),
-    friendlyCarrier: config.createFriendlyCarrier(),
-    hostileFrigate: config.createHostileFrigate(),
-    asteroids: config.createAsteroids(),
+    player: config.player,
+    wingmate: config.wingmate,
+    enemies: config.enemies,
+    friendlyCarrier: config.friendlyCarrier,
+    hostileFrigate: config.hostileFrigate,
+    asteroids: config.asteroids,
     projectiles: [],
     explosions: [],
     radio: config.openingRadio,
@@ -248,7 +249,6 @@ export function stepWorld(
   world: WorldState,
   input: FlightInput,
   dt: number,
-  config: SortieConfig = DEFAULT_SORTIE_CONFIG,
 ): WorldState {
   const cameraMode = input.toggleCamera
     ? world.cameraMode === 'cockpit'
@@ -271,7 +271,7 @@ export function stepWorld(
   if (world.phase.kind === 'victory' || world.phase.kind === 'failed') {
     if (input.launchBriefing || input.restartSortie) {
       return {
-        ...createInitialWorld(world.rngState, true, config),
+        ...createInitialWorld(world.rngState, true, world.sortie),
         cameraMode,
       };
     }
@@ -280,7 +280,7 @@ export function stepWorld(
 
   if (input.restartSortie) {
     return {
-      ...createInitialWorld(world.rngState, true, config),
+      ...createInitialWorld(world.rngState, true, world.sortie),
       cameraMode,
     };
   }
@@ -326,6 +326,7 @@ export function stepWorld(
   return {
     tick: world.tick + 1,
     rngState: combatStep.rngState,
+    sortie: world.sortie,
     phase,
     cameraMode,
     player: combatStep.player,

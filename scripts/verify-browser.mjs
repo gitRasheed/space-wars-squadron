@@ -1,32 +1,130 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { stripVTControlCharacters } from 'node:util';
 import { chromium } from 'playwright';
 
-const PORT = Number(process.env.VERIFY_PORT ?? '4179');
-const BASE_URL = `http://127.0.0.1:${PORT}`;
+const REQUESTED_PORT = process.env.VERIFY_PORT;
 const OUT_DIR = path.resolve(process.cwd(), 'artifacts', 'verify');
 
-async function waitForServer(url, timeoutMs) {
+function assertCondition(condition, message) {
+  if (!condition) {
+    throw new Error(`Verification assertion failed: ${message}`);
+  }
+}
+
+function waitForViteUrl(server, getLogs, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        reject(new Error(`Timed out waiting for Vite to report its listening URL.\n${getLogs()}`));
+      }
+    }, timeoutMs);
+
+    const finish = (fn, value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      fn(value);
+    };
+
+    const inspectStdout = () => {
+      const clean = stripVTControlCharacters(getLogs());
+      const match = clean.match(/Local:\s+(http:\/\/127\.0\.0\.1:\d+)/);
+      if (match !== null && match[1] !== undefined) {
+        finish(resolve, match[1]);
+      }
+    };
+
+    server.stdout.on('data', inspectStdout);
+    server.once('error', (err) => finish(reject, err));
+    server.once('exit', (code, signal) => {
+      finish(
+        reject,
+        new Error(`Vite exited before listening (code=${String(code)}, signal=${String(signal)}).\n${getLogs()}`),
+      );
+    });
+    inspectStdout();
+  });
+}
+
+async function waitForServer(server, url, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    if (server.exitCode !== null) {
+      throw new Error(`Vite exited unexpectedly with code ${server.exitCode}`);
+    }
     try {
       const response = await fetch(url);
       if (response.ok) {
         return;
       }
     } catch {
-      // Server still booting.
+      // Server still binding HTTP listener.
     }
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error(`Timed out waiting for Vite server at ${url}`);
 }
 
-function assertCondition(condition, message) {
-  if (!condition) {
-    throw new Error(`Verification assertion failed: ${message}`);
+async function measureWebglSignal(page) {
+  await page.evaluate(() => {
+    const hud = globalThis.document.getElementById('hud-canvas');
+    if (hud) {
+      hud.style.visibility = 'hidden';
+    }
+  });
+  let pngBuffer;
+  try {
+    pngBuffer = await page.locator('#gl-canvas').screenshot();
+  } finally {
+    await page.evaluate(() => {
+      const hud = globalThis.document.getElementById('hud-canvas');
+      if (hud) {
+        hud.style.visibility = '';
+      }
+    });
   }
+
+  const base64 = pngBuffer.toString('base64');
+  return page.evaluate(async (encoded) => {
+    const binary = globalThis.atob(encoded);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const bitmap = await globalThis.createImageBitmap(new Blob([bytes], { type: 'image/png' }));
+    const sampleW = 160;
+    const sampleH = 90;
+    const canvas = globalThis.document.createElement('canvas');
+    canvas.width = sampleW;
+    canvas.height = sampleH;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(bitmap, 0, 0, sampleW, sampleH);
+    bitmap.close();
+
+    const { data } = ctx.getImageData(0, 0, sampleW, sampleH);
+    const totalPixels = sampleW * sampleH;
+    let nonBlack = 0;
+    const buckets = new Set();
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      if (Math.max(r, g, b) > 12) {
+        nonBlack += 1;
+      }
+      buckets.add(((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4));
+    }
+    return {
+      nonBlackRatio: nonBlack / totalPixels,
+      uniqueColors: buckets.size,
+    };
+  }, base64);
 }
 
 async function run() {
@@ -38,7 +136,11 @@ async function run() {
     }
   }
 
-  const server = spawn('npx', ['vite', '--host', '127.0.0.1', '--port', String(PORT), '--strictPort'], {
+  const viteArgs = ['vite', '--host', '127.0.0.1', '--port', REQUESTED_PORT ?? '0'];
+  if (REQUESTED_PORT !== undefined) {
+    viteArgs.push('--strictPort');
+  }
+  const server = spawn('npx', viteArgs, {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env },
   });
@@ -56,7 +158,8 @@ async function run() {
   const pageErrors = [];
 
   try {
-    await waitForServer(BASE_URL, 15000);
+    const baseUrl = await waitForViteUrl(server, () => serverLogs, 15000);
+    await waitForServer(server, baseUrl, 10000);
 
     browser = await chromium.launch({
       headless: true,
@@ -78,7 +181,7 @@ async function run() {
       pageErrors.push(err.message);
     });
 
-    await page.goto(BASE_URL, { waitUntil: 'networkidle' });
+    await page.goto(baseUrl, { waitUntil: 'networkidle' });
     await page.waitForTimeout(450);
 
     const readTelemetry = () =>
@@ -113,6 +216,11 @@ async function run() {
       combatSnap.projectilesCount > 0 || combatSnap.weaponCharge < 100,
       'Firing cannons should consume weapon charge or spawn bolts',
     );
+    const cockpitGlSignal = await measureWebglSignal(page);
+    assertCondition(
+      cockpitGlSignal.nonBlackRatio >= 0.15 && cockpitGlSignal.uniqueColors >= 24,
+      `Cockpit 3D canvas lacks visual signal (${JSON.stringify(cockpitGlSignal)})`,
+    );
     await page.screenshot({ path: path.join(OUT_DIR, '02-cockpit-combat.png') });
     await page.keyboard.up('KeyJ');
 
@@ -138,6 +246,11 @@ async function run() {
     const chaseSnap = await readTelemetry();
     assertCondition(chaseSnap.cameraMode === 'chase', `Expected chase camera, got ${chaseSnap.cameraMode}`);
     assertCondition(chaseSnap.boostMode === 'boosting', `Expected boosting state, got ${chaseSnap.boostMode}`);
+    const chaseGlSignal = await measureWebglSignal(page);
+    assertCondition(
+      chaseGlSignal.nonBlackRatio >= 0.15 && chaseGlSignal.uniqueColors >= 24,
+      `Chase 3D canvas lacks visual signal (${JSON.stringify(chaseGlSignal)})`,
+    );
     await page.screenshot({ path: path.join(OUT_DIR, '04-chase-boost.png') });
     await page.keyboard.up('ShiftLeft');
     await page.keyboard.up('KeyD');
@@ -163,7 +276,11 @@ async function run() {
 
     const report = {
       ok: true,
-      url: BASE_URL,
+      url: baseUrl,
+      glSignal: {
+        cockpit: cockpitGlSignal,
+        chase: chaseGlSignal,
+      },
       screenshots: [
         '01-briefing.png',
         '02-cockpit-combat.png',
