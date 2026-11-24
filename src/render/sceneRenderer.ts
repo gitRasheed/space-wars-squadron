@@ -260,7 +260,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   scene.add(ambientLight);
 
   const dotTexture = createSoftDotTexture();
-  const backdrop = buildOrbitalBackdrop(dotTexture);
+  const backdrop = buildOrbitalBackdrop(dotTexture, renderer);
   scene.add(backdrop);
 
   const cockpitRig: CockpitRig = buildCockpitRig();

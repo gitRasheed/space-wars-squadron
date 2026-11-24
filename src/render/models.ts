@@ -61,15 +61,15 @@ vec3 swsPlating( vec3 albedo ) {
   vec2 cell = floor( p );
   vec2 f = fract( p );
   float tone = swsPlateTone( cell );
-  // A butt joint only shows where neighbouring plates differ in tone, so equal neighbours merge into long strakes.
-  float jointL = step( 0.5, abs( tone - swsPlateTone( cell - vec2( 1.0, 0.0 ) ) ) );
-  float jointR = step( 0.5, abs( tone - swsPlateTone( cell + vec2( 1.0, 0.0 ) ) ) );
   vec2 width = vec2( 0.008, 0.02 );
   vec2 aa = fw * 1.5;
-  float seam = max(
-    max( jointL * ( 1.0 - smoothstep( width.x, width.x + aa.x, f.x ) ), jointR * ( 1.0 - smoothstep( width.x, width.x + aa.x, 1.0 - f.x ) ) ),
-    1.0 - smoothstep( width.y, width.y + aa.y, min( f.y, 1.0 - f.y ) )
-  );
+  float seam = 1.0 - smoothstep( width.y, width.y + aa.y, min( f.y, 1.0 - f.y ) );
+  // A butt joint only shows where neighbouring plates differ in tone, so equal neighbours merge into long strakes.
+  float jointEdge = min( f.x, 1.0 - f.x );
+  if ( jointEdge < width.x + aa.x ) {
+    float neighbour = swsPlateTone( cell + vec2( f.x < 0.5 ? -1.0 : 1.0, 0.0 ) );
+    seam = max( seam, step( 0.5, abs( tone - neighbour ) ) * ( 1.0 - smoothstep( width.x, width.x + aa.x, jointEdge ) ) );
+  }
   float lip = ( 1.0 - smoothstep( width.y * 2.8, width.y * 2.8 + aa.y, 1.0 - f.y ) ) * ( 1.0 - seam );
   vec3 plate = albedo * ( 0.96 + 0.035 * tone );
   plate = mix( plate, albedo * 1.14, lip * 0.5 );
@@ -798,10 +798,11 @@ function buildDashGauge(needleColor: number, bezelMat: THREE.Material): {
     position: [0, 0, 0.018],
   });
   const tickMat = glowMat(0xcfd8ee, 1, { hdrBoost: 0.55 });
+  const redlineMat = glowMat(0xff5a48, 1, { hdrBoost: 1.1 });
   const tickGeo = new THREE.BoxGeometry(0.006, 0.016, 0.002);
   for (let i = 0; i < 7; i += 1) {
     const angle = GAUGE_SWEEP * (1 - i / 3);
-    addStyledPart(gauge, tickGeo, i >= 5 ? glowMat(0xff5a48, 1, { hdrBoost: 1.1 }) : tickMat, {
+    addStyledPart(gauge, tickGeo, i >= 5 ? redlineMat : tickMat, {
       position: [-Math.sin(angle) * 0.052, Math.cos(angle) * 0.052, 0.02],
       rotation: [0, 0, angle],
     });
@@ -834,11 +835,6 @@ export function buildCockpitRig(): CockpitRig {
   const cockpitFill = new THREE.PointLight(0x88a8ff, 0.45, 4.0);
   cockpitFill.position.set(0, -0.25, -0.45);
   root.add(cockpitFill);
-
-  // Instrument glow warms the dash and gun breeches from below against the cool canopy fill.
-  const dashGlow = new THREE.PointLight(0xffa55c, 0.32, 2.2);
-  dashGlow.position.set(0, -0.52, -1.2);
-  root.add(dashGlow);
 
   const flashLight = new THREE.PointLight(0xffbb55, 0, 5.5);
   flashLight.position.set(0, -0.2, -1.9);
@@ -1015,34 +1011,38 @@ export function buildCockpitRig(): CockpitRig {
   root.add(charm);
 
   // Faint canopy reflections past the gun tips, so frame and guns occlude them like real glazing.
-  const glass = new THREE.Mesh(
-    new THREE.PlaneGeometry(12, 5.4),
-    new THREE.ShaderMaterial({
-      transparent: true,
-      depthWrite: false,
-      vertexShader: `
-        varying vec2 vUv;
-        void main() {
-          vUv = uv;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-      `,
-      fragmentShader: `
-        varying vec2 vUv;
-        void main() {
-          float diagonal = vUv.x * 1.5 + vUv.y;
-          float streaks = smoothstep(0.07, 0.0, abs(diagonal - 1.02)) * 0.6
-            + smoothstep(0.02, 0.0, abs(diagonal - 1.16))
-            + smoothstep(0.045, 0.0, abs(diagonal - 1.62)) * 0.45;
-          vec2 centered = vUv * 2.0 - 1.0;
-          float edge = smoothstep(0.5, 1.15, length(centered * vec2(1.0, 0.7)));
-          gl_FragColor = vec4(vec3(0.5, 0.78, 1.0), streaks * 0.04 * (0.35 + edge) + edge * 0.045);
-        }
-      `,
-    }),
-  );
-  glass.position.z = -2.6;
-  root.add(glass);
+  // Thin strips instead of one screen-sized quad: blending every pixel is expensive on integrated GPUs.
+  const streakGeo = new THREE.PlaneGeometry(14, 1);
+  for (const [offset, halfWidth, strength] of [[-1.03, 0.31, 0.026], [-0.4, 0.09, 0.042], [1.66, 0.2, 0.02]] as const) {
+    const streak = new THREE.Mesh(
+      streakGeo,
+      new THREE.ShaderMaterial({
+        transparent: true,
+        depthWrite: false,
+        uniforms: { uStrength: { value: strength } },
+        vertexShader: `
+          varying vec2 vUv;
+          void main() {
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform float uStrength;
+          varying vec2 vUv;
+          void main() {
+            float across = 1.0 - abs(vUv.y * 2.0 - 1.0);
+            float along = 0.45 + 0.55 * abs(vUv.x * 2.0 - 1.0);
+            gl_FragColor = vec4(vec3(0.5, 0.78, 1.0), across * along * uStrength);
+          }
+        `,
+      }),
+    );
+    streak.position.set(0.56 * offset, 0.83 * offset, -2.6);
+    streak.rotation.z = -0.593;
+    streak.scale.y = halfWidth * 2;
+    root.add(streak);
+  }
 
   return {
     root,
@@ -1410,9 +1410,9 @@ export function buildEnemyMesh(kind: EnemyKind, textures: HullTextureSet): THREE
 export function buildFriendlyCarrierMesh(textures: HullTextureSet): THREE.Group {
   const root = new THREE.Group();
   const hullMat = toonMat(0xffffff, { map: textures.carrierHull });
-  const ivoryArmorMat = toonMat(0xf3ede0, { panel: 11 });
-  const warmMidMat = toonMat(0xd9cfbc, { panel: 11 });
-  const slateKeelMat = toonMat(0x465068, { panel: 11, gloss: 0.16 });
+  const ivoryArmorMat = toonMat(0xf3ede0, { panel: 15 });
+  const warmMidMat = toonMat(0xd9cfbc, { panel: 15 });
+  const slateKeelMat = toonMat(0x465068, { panel: 15, gloss: 0.16 });
   const darkRecessMat = toonMat(0x212736);
   const accentMat = toonMat(0xe59238);
   const bayLight = glowMat(0xffd27a, 1, { hdrBoost: 2.0 });
@@ -1790,7 +1790,7 @@ export interface HostileFrigateRig {
 
 export function buildHostileFrigateMesh(textures: HullTextureSet): HostileFrigateRig {
   const root = new THREE.Group();
-  const frigateRim = { rimColor: 0xa68ce8, rimStrength: 0.34, panel: 9, gloss: 0.18 } as const;
+  const frigateRim = { rimColor: 0xa68ce8, rimStrength: 0.34, panel: 13, gloss: 0.18 } as const;
   const hullMat = toonMat(0xffffff, {
     map: textures.frigateHull,
     emissive: 0x161026,
@@ -2157,97 +2157,157 @@ function createSparkleTexture(): THREE.CanvasTexture {
   return new THREE.CanvasTexture(canvas);
 }
 
-export function buildOrbitalBackdrop(dotTexture: THREE.CanvasTexture): THREE.Group {
+// Everything in the sky except the sun disc: gradient, dusk glow and the tiered nebula.
+const SKY_BODY_GLSL = `
+uniform vec3 uSunDir;
+
+float hash3(vec3 p) {
+  p = fract(p * 0.3183099 + 0.1);
+  p *= 17.0;
+  return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
+float noise3(vec3 x) {
+  vec3 i = floor(x);
+  vec3 f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(mix(hash3(i), hash3(i + vec3(1, 0, 0)), f.x), mix(hash3(i + vec3(0, 1, 0)), hash3(i + vec3(1, 1, 0)), f.x), f.y),
+    mix(mix(hash3(i + vec3(0, 0, 1)), hash3(i + vec3(1, 0, 1)), f.x), mix(hash3(i + vec3(0, 1, 1)), hash3(i + vec3(1, 1, 1)), f.x), f.y),
+    f.z);
+}
+
+float fbm(vec3 p) {
+  float sum = 0.0;
+  float amp = 0.5;
+  for (int i = 0; i < 4; i++) {
+    sum += amp * noise3(p);
+    p = p * 2.03 + 11.7;
+    amp *= 0.5;
+  }
+  return sum;
+}
+
+// Three soft-edged tiers read as painted cloud cels; the wide edges cannot alias.
+float tiers(float n, float base) {
+  return (smoothstep(base, base + 0.035, n) + smoothstep(base + 0.1, base + 0.135, n)
+    + smoothstep(base + 0.2, base + 0.235, n)) / 3.0;
+}
+
+vec3 skyBody(vec3 dir) {
+  float y = clamp(dir.y, -1.0, 1.0);
+  vec3 zenith = vec3(0.005, 0.008, 0.026);
+  vec3 horizon = vec3(0.028, 0.016, 0.044);
+  vec3 nadir = vec3(0.006, 0.005, 0.018);
+  vec3 base = y >= 0.0
+    ? mix(horizon, zenith, pow(y, 0.55))
+    : mix(horizon, nadir, pow(-y, 0.65));
+
+  float sunAlign = max(dot(dir, uSunDir), 0.0);
+  vec3 duskGlow = vec3(0.30, 0.10, 0.035) * pow(sunAlign, 13.5);
+  vec3 sunHalo = vec3(0.88, 0.46, 0.18) * pow(sunAlign, 54.0) * 0.65;
+
+  float latitude = dir.y + dir.x * 0.14 + 0.045 * sin(dir.z * 5.0);
+  float belt = 1.0 - smoothstep(0.035, 0.3, abs(latitude));
+  float farBank = 1.0 - smoothstep(0.02, 0.1, abs(latitude + 0.14));
+  float drift = fbm(dir * 2.4 + 3.0);
+  float wisps = fbm(dir * 5.2 - 7.0);
+  vec3 nebula = vec3(0.045, 0.02, 0.07) * tiers(drift + belt * 0.22, 0.52)
+    + vec3(0.075, 0.022, 0.06) * tiers(wisps * 0.6 + drift * 0.4 + belt * 0.2, 0.62) * belt
+    + vec3(0.01, 0.045, 0.06) * tiers(drift * 0.5 + wisps * 0.5, 0.56) * (1.0 - belt) * 0.7
+    + vec3(0.011, 0.014, 0.03) * farBank;
+  return base + duskGlow + sunHalo + nebula;
+}
+`;
+
+// Depth is pinned to the far plane: the sky draws last for early-z, and must still sit behind distant ships.
+const SKY_VERTEX_GLSL = `
+varying vec3 vDir;
+void main() {
+  vDir = normalize(position);
+  gl_Position = (projectionMatrix * modelViewMatrix * vec4(position, 1.0)).xyww;
+}
+`;
+
+// Eight noise octaves per sky pixel cost more than the rest of the frame on integrated GPUs, so the sky body
+// is rendered once into a cube map. Square-root encoding keeps the dark gradients smooth in 8 bits.
+function bakeSkyBody(
+  renderer: THREE.WebGLRenderer,
+  skyGeo: THREE.BufferGeometry,
+  sunDir: THREE.Vector3,
+): THREE.WebGLCubeRenderTarget {
+  const target = new THREE.WebGLCubeRenderTarget(768, { generateMipmaps: false });
+  const bakeMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    uniforms: { uSunDir: { value: sunDir } },
+    vertexShader: SKY_VERTEX_GLSL,
+    fragmentShader: `
+      varying vec3 vDir;
+      ${SKY_BODY_GLSL}
+      void main() {
+        gl_FragColor = vec4(sqrt(skyBody(normalize(vDir))), 1.0);
+      }
+    `,
+  });
+  const bakeScene = new THREE.Scene();
+  bakeScene.add(new THREE.Mesh(skyGeo, bakeMat));
+  new THREE.CubeCamera(1, 6000, target).update(renderer, bakeScene);
+  bakeMat.dispose();
+  return target;
+}
+
+/** Pass the renderer to bake the sky body once; without it the sky computes its noise per pixel. */
+export function buildOrbitalBackdrop(
+  dotTexture: THREE.CanvasTexture,
+  renderer?: THREE.WebGLRenderer,
+): THREE.Group {
   const group = new THREE.Group();
   // Keep the star off to the far right flank so it rim-lights ships cleanly without glaring in the player's eyes.
   const sunDir = new THREE.Vector3(SUN_DIRECTION.x, SUN_DIRECTION.y, SUN_DIRECTION.z).normalize();
 
   const skyGeo = new THREE.SphereGeometry(5400, 36, 24);
+  const skyBake = renderer === undefined ? null : bakeSkyBody(renderer, skyGeo, sunDir);
   const skyMat = new THREE.ShaderMaterial({
     side: THREE.BackSide,
     depthWrite: false,
     uniforms: {
       uSunDir: { value: sunDir },
+      uSkyBody: { value: skyBake?.texture ?? null },
     },
-    vertexShader: `
-      varying vec3 vDir;
-      void main() {
-        vDir = normalize(position);
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      }
-    `,
+    vertexShader: SKY_VERTEX_GLSL,
     fragmentShader: `
-      uniform vec3 uSunDir;
       varying vec3 vDir;
-
-      float hash3(vec3 p) {
-        p = fract(p * 0.3183099 + 0.1);
-        p *= 17.0;
-        return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
-      }
-
-      float noise3(vec3 x) {
-        vec3 i = floor(x);
-        vec3 f = fract(x);
-        f = f * f * (3.0 - 2.0 * f);
-        return mix(
-          mix(mix(hash3(i), hash3(i + vec3(1, 0, 0)), f.x), mix(hash3(i + vec3(0, 1, 0)), hash3(i + vec3(1, 1, 0)), f.x), f.y),
-          mix(mix(hash3(i + vec3(0, 0, 1)), hash3(i + vec3(1, 0, 1)), f.x), mix(hash3(i + vec3(0, 1, 1)), hash3(i + vec3(1, 1, 1)), f.x), f.y),
-          f.z);
-      }
-
-      float fbm(vec3 p) {
-        float sum = 0.0;
-        float amp = 0.5;
-        for (int i = 0; i < 4; i++) {
-          sum += amp * noise3(p);
-          p = p * 2.03 + 11.7;
-          amp *= 0.5;
-        }
-        return sum;
-      }
-
-      // Three soft-edged tiers read as painted cloud cels; the wide edges cannot alias.
-      float tiers(float n, float base) {
-        return (smoothstep(base, base + 0.035, n) + smoothstep(base + 0.1, base + 0.135, n)
-          + smoothstep(base + 0.2, base + 0.235, n)) / 3.0;
-      }
+      ${skyBake === null
+        ? SKY_BODY_GLSL
+        : `uniform vec3 uSunDir;
+           uniform samplerCube uSkyBody;
+           vec3 skyBody(vec3 dir) {
+             vec3 encoded = textureCube(uSkyBody, dir).rgb;
+             return encoded * encoded;
+           }`}
 
       void main() {
         vec3 dir = normalize(vDir);
-        float y = clamp(dir.y, -1.0, 1.0);
-        vec3 zenith = vec3(0.005, 0.008, 0.026);
-        vec3 horizon = vec3(0.028, 0.016, 0.044);
-        vec3 nadir = vec3(0.006, 0.005, 0.018);
-        vec3 base = y >= 0.0
-          ? mix(horizon, zenith, pow(y, 0.55))
-          : mix(horizon, nadir, pow(-y, 0.65));
-
-        float sunAlign = max(dot(dir, uSunDir), 0.0);
-        vec3 duskGlow = vec3(0.30, 0.10, 0.035) * pow(sunAlign, 13.5);
-        vec3 sunHalo = vec3(0.88, 0.46, 0.18) * pow(sunAlign, 54.0) * 0.65;
-        vec3 sunCore = vec3(2.2, 1.7, 1.15) * smoothstep(0.9988, 0.9996, sunAlign);
-        vec3 sunRight = normalize(cross(uSunDir, vec3(0.0, 1.0, 0.0)));
-        vec3 sunUp = cross(sunRight, uSunDir);
-        float spoke = pow(abs(cos(atan(dot(dir, sunUp), dot(dir, sunRight)) * 3.0)), 18.0);
-        vec3 sunRays = vec3(1.0, 0.62, 0.3) * spoke * pow(sunAlign, 220.0) * 0.55
-          + vec3(0.5, 0.2, 0.08) * (smoothstep(0.9952, 0.9956, sunAlign) + smoothstep(0.9974, 0.9978, sunAlign)) * 0.22;
-
-        float latitude = dir.y + dir.x * 0.14 + 0.045 * sin(dir.z * 5.0);
-        float belt = 1.0 - smoothstep(0.035, 0.3, abs(latitude));
-        float farBank = 1.0 - smoothstep(0.02, 0.1, abs(latitude + 0.14));
-        float drift = fbm(dir * 2.4 + 3.0);
-        float wisps = fbm(dir * 5.2 - 7.0);
-        vec3 nebula = vec3(0.045, 0.02, 0.07) * tiers(drift + belt * 0.22, 0.52)
-          + vec3(0.075, 0.022, 0.06) * tiers(wisps * 0.6 + drift * 0.4 + belt * 0.2, 0.62) * belt
-          + vec3(0.01, 0.045, 0.06) * tiers(drift * 0.5 + wisps * 0.5, 0.56) * (1.0 - belt) * 0.7
-          + vec3(0.011, 0.014, 0.03) * farBank;
-
-        gl_FragColor = vec4(base + duskGlow + sunHalo + nebula + sunRays + sunCore, 1.0);
+        vec3 color = skyBody(dir);
+        float sunAlign = dot(dir, uSunDir);
+        if (sunAlign > 0.97) {
+          vec3 sunRight = normalize(cross(uSunDir, vec3(0.0, 1.0, 0.0)));
+          vec3 sunUp = cross(sunRight, uSunDir);
+          float spoke = pow(abs(cos(atan(dot(dir, sunUp), dot(dir, sunRight)) * 3.0)), 18.0);
+          color += vec3(1.0, 0.62, 0.3) * spoke * pow(sunAlign, 220.0) * 0.55
+            + vec3(0.5, 0.2, 0.08) * (smoothstep(0.9952, 0.9956, sunAlign) + smoothstep(0.9974, 0.9978, sunAlign)) * 0.22
+            + vec3(2.2, 1.7, 1.15) * smoothstep(0.9988, 0.9996, sunAlign);
+        }
+        gl_FragColor = vec4(color, 1.0);
       }
     `,
   });
-  group.add(new THREE.Mesh(skyGeo, skyMat));
+  skyMat.addEventListener('dispose', () => {
+    skyBake?.dispose();
+  });
+  const sky = new THREE.Mesh(skyGeo, skyMat);
+  sky.renderOrder = 1;
+  group.add(sky);
 
   const planetPos = new THREE.Vector3(-1950, -480, -3400);
   const planetRadius = 820;
@@ -2299,10 +2359,10 @@ export function buildOrbitalBackdrop(dotTexture: THREE.CanvasTexture): THREE.Gro
         vec3 normal = normalize(vLocal);
         float lat = normal.y + sin(normal.x * 6.0 + normal.y * 9.0) * 0.012 + sin(normal.z * 11.0) * 0.007;
         float band = sin(lat * 21.0) * 0.5 + 0.5 + 0.22 * sin(lat * 47.0 + 1.3);
-        vec3 albedo = vec3(0.11, 0.075, 0.22);
-        albedo = mix(albedo, vec3(0.3, 0.13, 0.2), aaStep(0.26, band));
-        albedo = mix(albedo, vec3(0.46, 0.26, 0.15), aaStep(0.52, band));
-        albedo = mix(albedo, vec3(0.68, 0.5, 0.32), aaStep(0.82, band));
+        vec3 albedo = vec3(0.1, 0.07, 0.15);
+        albedo = mix(albedo, vec3(0.24, 0.13, 0.17), aaStep(0.26, band));
+        albedo = mix(albedo, vec3(0.42, 0.25, 0.16), aaStep(0.52, band));
+        albedo = mix(albedo, vec3(0.62, 0.46, 0.31), aaStep(0.82, band));
         vec2 storm = vec2(atan(normal.z, normal.x) - 0.75, (normal.y + 0.3) * 3.4);
         albedo = mix(albedo, vec3(0.74, 0.3, 0.16), 1.0 - aaStep(0.11, length(storm)));
 
@@ -2315,7 +2375,7 @@ export function buildOrbitalBackdrop(dotTexture: THREE.CanvasTexture): THREE.Gro
         lit *= 1.0 - 0.5 * ringShadow;
 
         float fresnel = pow(1.0 - max(dot(normal, normalize(cameraPosition - vWorldPos)), 0.0), 3.0);
-        vec3 haze = vec3(0.55, 0.3, 0.42) * fresnel * (0.12 + 0.6 * aaStep(-0.05, ndl));
+        vec3 haze = vec3(0.5, 0.3, 0.34) * fresnel * (0.12 + 0.6 * aaStep(-0.05, ndl));
         gl_FragColor = vec4(albedo * lit * 0.88 + vec3(0.006, 0.005, 0.016) + haze, 1.0);
       }
     `,
