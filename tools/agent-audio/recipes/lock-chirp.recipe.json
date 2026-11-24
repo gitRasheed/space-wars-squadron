@@ -4,44 +4,41 @@
   "id": "lock-chirp",
   "sampleRate": 48000,
   "channels": 2,
-  "encoding": "pcm16",
-  "seed": 133702,
-  "durationS": 0.11,
-  "masterGainDb": -6.0,
+  "durationS": 0.148,
+  "masterGainDb": -5,
   "voices": [
     {
-      "id": "lock-ping-1",
+      "id": "acquire",
       "waveform": "sine",
-      "gainDb": -2.0,
-      "pan": 0,
-      "freqStartHz": 1320,
-      "freqEndHz": 1320,
-      "startS": 0.0,
+      "gainDb": -2,
+      "pan": -0.08,
+      "envelope": { "attackS": 0.002, "decayS": 0.022, "sustainLevel": 0.5, "releaseS": 0.013 },
+      "startS": 0,
       "durationS": 0.036,
-      "envelope": {
-        "attackS": 0.003,
-        "decayS": 0.02,
-        "sustainLevel": 0.45,
-        "releaseS": 0.015
-      }
+      "freqStartHz": 995,
+      "freqEndHz": 1320
     },
     {
-      "id": "lock-ping-2",
-      "waveform": "fm",
-      "gainDb": -1.5,
-      "pan": 0,
+      "id": "lock",
+      "waveform": "sine",
+      "gainDb": -2,
+      "pan": 0.09,
+      "envelope": { "attackS": 0.002, "decayS": 0.025, "sustainLevel": 0.46, "releaseS": 0.031 },
+      "startS": 0.052,
+      "durationS": 0.051,
       "freqStartHz": 1760,
-      "freqEndHz": 1760,
-      "fmRatio": 2.0,
-      "fmIndex": 0.55,
-      "startS": 0.045,
-      "durationS": 0.042,
-      "envelope": {
-        "attackS": 0.003,
-        "decayS": 0.024,
-        "sustainLevel": 0.35,
-        "releaseS": 0.02
-      }
+      "freqEndHz": 1760
+    },
+    {
+      "id": "fifth",
+      "waveform": "sine",
+      "gainDb": -9,
+      "pan": -0.11,
+      "envelope": { "attackS": 0.003, "decayS": 0.031, "sustainLevel": 0.4, "releaseS": 0.029 },
+      "startS": 0.052,
+      "durationS": 0.05,
+      "freqStartHz": 1320,
+      "freqEndHz": 1320
     }
   ]
 }

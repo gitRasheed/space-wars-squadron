@@ -1,0 +1,53 @@
+{
+  "schemaVersion": "agent-audio/recipe/v1",
+  "kind": "one-shot",
+  "id": "explosion",
+  "sampleRate": 48000,
+  "channels": 2,
+  "durationS": 0.51,
+  "masterGainDb": -4,
+  "voices": [
+    {
+      "id": "pressure",
+      "waveform": "sine",
+      "gainDb": -1,
+      "pan": 0,
+      "envelope": { "attackS": 0.003, "decayS": 0.066, "sustainLevel": 0.36, "releaseS": 0.105 },
+      "startS": 0,
+      "durationS": 0.12,
+      "freqStartHz": 138,
+      "freqEndHz": 42
+    },
+    {
+      "id": "blast",
+      "waveform": "noise",
+      "gainDb": 1,
+      "pan": -0.13,
+      "envelope": { "attackS": 0.004, "decayS": 0.081, "sustainLevel": 0.3, "releaseS": 0.14 },
+      "filter": { "type": "lowpass", "freqHz": 1800, "q": 0.85 },
+      "startS": 0,
+      "durationS": 0.137
+    },
+    {
+      "id": "fragments",
+      "waveform": "noise",
+      "gainDb": -1,
+      "pan": 0.27,
+      "envelope": { "attackS": 0.018, "decayS": 0.12, "sustainLevel": 0.29, "releaseS": 0.154 },
+      "filter": { "type": "bandpass", "freqHz": 925, "q": 2.5 },
+      "startS": 0.078,
+      "durationS": 0.16
+    },
+    {
+      "id": "ring",
+      "waveform": "triangle",
+      "gainDb": -9,
+      "pan": 0.17,
+      "envelope": { "attackS": 0.013, "decayS": 0.088, "sustainLevel": 0.28, "releaseS": 0.18 },
+      "startS": 0.104,
+      "durationS": 0.15,
+      "freqStartHz": 310,
+      "freqEndHz": 203
+    }
+  ]
+}

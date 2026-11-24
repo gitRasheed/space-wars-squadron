@@ -6,76 +6,189 @@
   "channels": 2,
   "encoding": "pcm16",
   "seed": 133703,
-  "bpm": 120,
-  "beats": 8,
-  "masterGainDb": -6.5,
+  "bpm": 150,
+  "beats": 16,
+  "masterGainDb": -7,
   "loopWrap": true,
   "tracks": [
     {
       "id": "pulse-bass",
       "voice": {
         "waveform": "saw",
-        "gainDb": -4.0,
-        "pan": -0.1,
-        "envelope": {
-          "attackS": 0.006,
-          "decayS": 0.11,
-          "sustainLevel": 0.35,
-          "releaseS": 0.06
-        },
-        "filter": {
-          "type": "lowpass",
-          "freqHz": 680,
-          "q": 1.2
-        },
-        "drive": 0.7
+        "gainDb": -5,
+        "pan": -0.09,
+        "envelope": { "attackS": 0.004, "decayS": 0.075, "sustainLevel": 0.36, "releaseS": 0.041 },
+        "filter": { "type": "lowpass", "freqHz": 555, "q": 0.92 }
       },
       "notes": [
-        { "startBeat": 0.0, "durationBeats": 0.45, "midi": 38, "velocity": 0.95 },
-        { "startBeat": 0.5, "durationBeats": 0.45, "midi": 38, "velocity": 0.72 },
-        { "startBeat": 1.0, "durationBeats": 0.45, "midi": 38, "velocity": 0.85 },
-        { "startBeat": 1.5, "durationBeats": 0.45, "midi": 41, "velocity": 0.75 },
-        { "startBeat": 2.0, "durationBeats": 0.45, "midi": 43, "velocity": 0.92 },
-        { "startBeat": 2.5, "durationBeats": 0.45, "midi": 43, "velocity": 0.72 },
-        { "startBeat": 3.0, "durationBeats": 0.45, "midi": 45, "velocity": 0.86 },
-        { "startBeat": 3.5, "durationBeats": 0.45, "midi": 43, "velocity": 0.76 },
-        { "startBeat": 4.0, "durationBeats": 0.45, "midi": 38, "velocity": 0.95 },
-        { "startBeat": 4.5, "durationBeats": 0.45, "midi": 38, "velocity": 0.74 },
-        { "startBeat": 5.0, "durationBeats": 0.45, "midi": 46, "velocity": 0.88 },
-        { "startBeat": 5.5, "durationBeats": 0.45, "midi": 45, "velocity": 0.78 },
-        { "startBeat": 6.0, "durationBeats": 0.45, "midi": 43, "velocity": 0.9 },
-        { "startBeat": 6.5, "durationBeats": 0.45, "midi": 41, "velocity": 0.78 },
-        { "startBeat": 7.0, "durationBeats": 0.45, "midi": 40, "velocity": 0.88 },
-        { "startBeat": 7.5, "durationBeats": 0.45, "midi": 45, "velocity": 0.84 }
+        { "startBeat": 0, "durationBeats": 0.34, "midi": 38, "velocity": 1 },
+        { "startBeat": 0.5, "durationBeats": 0.18, "midi": 38, "velocity": 0.65 },
+        { "startBeat": 0.75, "durationBeats": 0.18, "midi": 50, "velocity": 0.72 },
+        { "startBeat": 1.5, "durationBeats": 0.33, "midi": 45, "velocity": 0.84 },
+        { "startBeat": 2, "durationBeats": 0.37, "midi": 38, "velocity": 0.94 },
+        { "startBeat": 2.5, "durationBeats": 0.2, "midi": 38, "velocity": 0.68 },
+        { "startBeat": 3, "durationBeats": 0.26, "midi": 45, "velocity": 0.83 },
+        { "startBeat": 3.5, "durationBeats": 0.34, "midi": 41, "velocity": 0.85 },
+        { "startBeat": 4, "durationBeats": 0.34, "midi": 34, "velocity": 1 },
+        { "startBeat": 4.5, "durationBeats": 0.18, "midi": 34, "velocity": 0.65 },
+        { "startBeat": 4.75, "durationBeats": 0.18, "midi": 46, "velocity": 0.72 },
+        { "startBeat": 5.5, "durationBeats": 0.33, "midi": 41, "velocity": 0.84 },
+        { "startBeat": 6, "durationBeats": 0.37, "midi": 34, "velocity": 0.94 },
+        { "startBeat": 6.5, "durationBeats": 0.2, "midi": 34, "velocity": 0.68 },
+        { "startBeat": 7, "durationBeats": 0.26, "midi": 41, "velocity": 0.83 },
+        { "startBeat": 7.5, "durationBeats": 0.34, "midi": 36, "velocity": 0.85 },
+        { "startBeat": 8, "durationBeats": 0.34, "midi": 41, "velocity": 1 },
+        { "startBeat": 8.5, "durationBeats": 0.18, "midi": 41, "velocity": 0.65 },
+        { "startBeat": 8.75, "durationBeats": 0.18, "midi": 53, "velocity": 0.72 },
+        { "startBeat": 9.5, "durationBeats": 0.33, "midi": 48, "velocity": 0.84 },
+        { "startBeat": 10, "durationBeats": 0.37, "midi": 41, "velocity": 0.94 },
+        { "startBeat": 10.5, "durationBeats": 0.2, "midi": 41, "velocity": 0.68 },
+        { "startBeat": 11, "durationBeats": 0.26, "midi": 48, "velocity": 0.83 },
+        { "startBeat": 11.5, "durationBeats": 0.34, "midi": 43, "velocity": 0.85 },
+        { "startBeat": 12, "durationBeats": 0.34, "midi": 33, "velocity": 1 },
+        { "startBeat": 12.5, "durationBeats": 0.18, "midi": 33, "velocity": 0.65 },
+        { "startBeat": 12.75, "durationBeats": 0.18, "midi": 45, "velocity": 0.72 },
+        { "startBeat": 13.5, "durationBeats": 0.33, "midi": 40, "velocity": 0.84 },
+        { "startBeat": 14, "durationBeats": 0.37, "midi": 33, "velocity": 0.94 },
+        { "startBeat": 14.5, "durationBeats": 0.2, "midi": 33, "velocity": 0.68 },
+        { "startBeat": 15, "durationBeats": 0.26, "midi": 40, "velocity": 0.83 },
+        { "startBeat": 15.5, "durationBeats": 0.34, "midi": 37, "velocity": 0.85 }
       ]
     },
     {
-      "id": "lead-arp",
+      "id": "flight-lead",
       "voice": {
         "waveform": "triangle",
-        "gainDb": -7.5,
-        "pan": 0.15,
-        "envelope": {
-          "attackS": 0.008,
-          "decayS": 0.14,
-          "sustainLevel": 0.28,
-          "releaseS": 0.09
-        },
-        "filter": {
-          "type": "lowpass",
-          "freqHz": 2600,
-          "q": 0.9
-        }
+        "gainDb": -2,
+        "pan": 0.12,
+        "envelope": { "attackS": 0.009, "decayS": 0.093, "sustainLevel": 0.69, "releaseS": 0.078 },
+        "filter": { "type": "lowpass", "freqHz": 2350, "q": 0.84 }
       },
       "notes": [
-        { "startBeat": 0.0, "durationBeats": 0.75, "midi": 62, "velocity": 0.85 },
-        { "startBeat": 1.0, "durationBeats": 0.75, "midi": 65, "velocity": 0.8 },
-        { "startBeat": 2.0, "durationBeats": 0.75, "midi": 67, "velocity": 0.88 },
-        { "startBeat": 3.0, "durationBeats": 0.75, "midi": 69, "velocity": 0.82 },
-        { "startBeat": 4.0, "durationBeats": 0.75, "midi": 62, "velocity": 0.86 },
-        { "startBeat": 5.0, "durationBeats": 0.75, "midi": 70, "velocity": 0.9 },
-        { "startBeat": 6.0, "durationBeats": 0.75, "midi": 69, "velocity": 0.84 },
-        { "startBeat": 7.0, "durationBeats": 0.75, "midi": 67, "velocity": 0.8 }
+        { "startBeat": 0, "durationBeats": 0.68, "midi": 69, "velocity": 0.94 },
+        { "startBeat": 0.75, "durationBeats": 0.18, "midi": 69, "velocity": 0.7 },
+        { "startBeat": 1, "durationBeats": 0.89, "midi": 74, "velocity": 1 },
+        { "startBeat": 2, "durationBeats": 0.27, "midi": 77, "velocity": 0.94 },
+        { "startBeat": 2.5, "durationBeats": 0.64, "midi": 76, "velocity": 0.82 },
+        { "startBeat": 3.25, "durationBeats": 0.5, "midi": 74, "velocity": 0.82 },
+        { "startBeat": 4, "durationBeats": 1.35, "midi": 77, "velocity": 0.98 },
+        { "startBeat": 5.5, "durationBeats": 0.36, "midi": 74, "velocity": 0.81 },
+        { "startBeat": 6, "durationBeats": 0.7, "midi": 70, "velocity": 0.9 },
+        { "startBeat": 7, "durationBeats": 0.42, "midi": 69, "velocity": 0.75 },
+        { "startBeat": 8, "durationBeats": 0.68, "midi": 72, "velocity": 0.97 },
+        { "startBeat": 8.75, "durationBeats": 0.18, "midi": 72, "velocity": 0.72 },
+        { "startBeat": 9, "durationBeats": 0.89, "midi": 77, "velocity": 1 },
+        { "startBeat": 10, "durationBeats": 0.3, "midi": 81, "velocity": 0.97 },
+        { "startBeat": 10.5, "durationBeats": 1.13, "midi": 79, "velocity": 0.88 },
+        { "startBeat": 12, "durationBeats": 0.69, "midi": 76, "velocity": 0.95 },
+        { "startBeat": 13, "durationBeats": 0.45, "midi": 73, "velocity": 0.82 },
+        { "startBeat": 13.75, "durationBeats": 0.18, "midi": 74, "velocity": 0.72 },
+        { "startBeat": 14, "durationBeats": 0.8, "midi": 76, "velocity": 0.93 },
+        { "startBeat": 15, "durationBeats": 0.4, "midi": 73, "velocity": 0.85 },
+        { "startBeat": 15.5, "durationBeats": 0.43, "midi": 69, "velocity": 0.76 }
+      ]
+    },
+    {
+      "id": "glass-answer",
+      "voice": {
+        "waveform": "sine",
+        "gainDb": -9,
+        "pan": -0.58,
+        "envelope": { "attackS": 0.004, "decayS": 0.05, "sustainLevel": 0.28, "releaseS": 0.09 },
+        "filter": { "type": "lowpass", "freqHz": 3300, "q": 0.75 }
+      },
+      "notes": [
+        { "startBeat": 0.5, "durationBeats": 0.18, "midi": 81, "velocity": 0.7 },
+        { "startBeat": 1.75, "durationBeats": 0.18, "midi": 77, "velocity": 0.68 },
+        { "startBeat": 3, "durationBeats": 0.18, "midi": 81, "velocity": 0.8 },
+        { "startBeat": 3.75, "durationBeats": 0.14, "midi": 84, "velocity": 0.65 },
+        { "startBeat": 4.75, "durationBeats": 0.18, "midi": 82, "velocity": 0.75 },
+        { "startBeat": 5.25, "durationBeats": 0.18, "midi": 77, "velocity": 0.68 },
+        { "startBeat": 6.75, "durationBeats": 0.18, "midi": 74, "velocity": 0.77 },
+        { "startBeat": 7.5, "durationBeats": 0.18, "midi": 77, "velocity": 0.7 },
+        { "startBeat": 7.75, "durationBeats": 0.15, "midi": 81, "velocity": 0.77 },
+        { "startBeat": 8.5, "durationBeats": 0.18, "midi": 84, "velocity": 0.75 },
+        { "startBeat": 9.75, "durationBeats": 0.18, "midi": 81, "velocity": 0.72 },
+        { "startBeat": 11.25, "durationBeats": 0.18, "midi": 84, "velocity": 0.72 },
+        { "startBeat": 11.75, "durationBeats": 0.15, "midi": 81, "velocity": 0.65 },
+        { "startBeat": 12.75, "durationBeats": 0.18, "midi": 76, "velocity": 0.72 },
+        { "startBeat": 13.5, "durationBeats": 0.18, "midi": 81, "velocity": 0.74 },
+        { "startBeat": 14.75, "durationBeats": 0.18, "midi": 85, "velocity": 0.78 },
+        { "startBeat": 15.75, "durationBeats": 0.16, "midi": 81, "velocity": 0.69 }
+      ]
+    },
+    {
+      "id": "kick",
+      "voice": {
+        "waveform": "sine",
+        "gainDb": -2,
+        "pan": 0,
+        "envelope": { "attackS": 0.003, "decayS": 0.052, "sustainLevel": 0.14, "releaseS": 0.047 },
+        "filter": { "type": "lowpass", "freqHz": 180, "q": 0.75 }
+      },
+      "notes": [
+        { "startBeat": 0, "durationBeats": 0.16, "midi": 31, "velocity": 1 },
+        { "startBeat": 2, "durationBeats": 0.16, "midi": 31, "velocity": 0.82 },
+        { "startBeat": 3.5, "durationBeats": 0.16, "midi": 31, "velocity": 0.82 },
+        { "startBeat": 4, "durationBeats": 0.16, "midi": 31, "velocity": 1 },
+        { "startBeat": 6, "durationBeats": 0.16, "midi": 31, "velocity": 0.82 },
+        { "startBeat": 7.75, "durationBeats": 0.16, "midi": 31, "velocity": 0.82 },
+        { "startBeat": 8, "durationBeats": 0.16, "midi": 31, "velocity": 1 },
+        { "startBeat": 10, "durationBeats": 0.16, "midi": 31, "velocity": 0.82 },
+        { "startBeat": 11.5, "durationBeats": 0.16, "midi": 31, "velocity": 0.82 },
+        { "startBeat": 12, "durationBeats": 0.16, "midi": 31, "velocity": 1 },
+        { "startBeat": 14, "durationBeats": 0.16, "midi": 31, "velocity": 0.82 },
+        { "startBeat": 15.5, "durationBeats": 0.16, "midi": 31, "velocity": 0.82 }
+      ]
+    },
+    {
+      "id": "snare",
+      "voice": {
+        "waveform": "noise",
+        "gainDb": -2,
+        "pan": 0.17,
+        "envelope": { "attackS": 0.002, "decayS": 0.046, "sustainLevel": 0.15, "releaseS": 0.043 },
+        "filter": { "type": "bandpass", "freqHz": 1690, "q": 0.83 }
+      },
+      "notes": [
+        { "startBeat": 1, "durationBeats": 0.14, "midi": 60, "velocity": 0.85 },
+        { "startBeat": 3, "durationBeats": 0.14, "midi": 60, "velocity": 0.85 },
+        { "startBeat": 5, "durationBeats": 0.14, "midi": 60, "velocity": 0.85 },
+        { "startBeat": 7, "durationBeats": 0.14, "midi": 60, "velocity": 0.85 },
+        { "startBeat": 7.5, "durationBeats": 0.14, "midi": 60, "velocity": 0.44 },
+        { "startBeat": 9, "durationBeats": 0.14, "midi": 60, "velocity": 0.85 },
+        { "startBeat": 11, "durationBeats": 0.14, "midi": 60, "velocity": 0.85 },
+        { "startBeat": 13, "durationBeats": 0.14, "midi": 60, "velocity": 0.85 },
+        { "startBeat": 15, "durationBeats": 0.14, "midi": 60, "velocity": 0.85 },
+        { "startBeat": 15.75, "durationBeats": 0.14, "midi": 60, "velocity": 0.44 }
+      ]
+    },
+    {
+      "id": "offbeat-hat",
+      "voice": {
+        "waveform": "noise",
+        "gainDb": -9,
+        "pan": 0.58,
+        "envelope": { "attackS": 0.002, "decayS": 0.023, "sustainLevel": 0.1, "releaseS": 0.021 },
+        "filter": { "type": "bandpass", "freqHz": 6400, "q": 1.15 }
+      },
+      "notes": [
+        { "startBeat": 0.5, "durationBeats": 0.073, "midi": 60, "velocity": 0.88 },
+        { "startBeat": 1.5, "durationBeats": 0.073, "midi": 60, "velocity": 0.62 },
+        { "startBeat": 2.5, "durationBeats": 0.073, "midi": 60, "velocity": 0.88 },
+        { "startBeat": 3.5, "durationBeats": 0.073, "midi": 60, "velocity": 0.62 },
+        { "startBeat": 4.5, "durationBeats": 0.073, "midi": 60, "velocity": 0.88 },
+        { "startBeat": 5.5, "durationBeats": 0.073, "midi": 60, "velocity": 0.62 },
+        { "startBeat": 6.5, "durationBeats": 0.073, "midi": 60, "velocity": 0.88 },
+        { "startBeat": 7.5, "durationBeats": 0.073, "midi": 60, "velocity": 0.62 },
+        { "startBeat": 8.5, "durationBeats": 0.073, "midi": 60, "velocity": 0.88 },
+        { "startBeat": 9.5, "durationBeats": 0.073, "midi": 60, "velocity": 0.62 },
+        { "startBeat": 10.5, "durationBeats": 0.073, "midi": 60, "velocity": 0.88 },
+        { "startBeat": 11.5, "durationBeats": 0.073, "midi": 60, "velocity": 0.62 },
+        { "startBeat": 12.5, "durationBeats": 0.073, "midi": 60, "velocity": 0.88 },
+        { "startBeat": 13.5, "durationBeats": 0.073, "midi": 60, "velocity": 0.62 },
+        { "startBeat": 14.5, "durationBeats": 0.073, "midi": 60, "velocity": 0.88 },
+        { "startBeat": 15.5, "durationBeats": 0.073, "midi": 60, "velocity": 0.62 }
       ]
     }
   ]

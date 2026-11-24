@@ -1,0 +1,569 @@
+{
+  "cannon-shot": {
+    "schemaVersion": "agent-audio/recipe/v1",
+    "kind": "one-shot",
+    "id": "cannon-shot",
+    "sampleRate": 48000,
+    "channels": 2,
+    "durationS": 0.115,
+    "masterGainDb": -4,
+    "voices": [
+      {
+        "id": "breech",
+        "waveform": "noise",
+        "gainDb": -4,
+        "pan": 0.16,
+        "envelope": { "attackS": 0.001, "decayS": 0.009, "sustainLevel": 0.13, "releaseS": 0.008 },
+        "filter": { "type": "bandpass", "freqHz": 2900, "q": 0.85 },
+        "startS": 0,
+        "durationS": 0.016
+      },
+      {
+        "id": "plasma",
+        "waveform": "saw",
+        "gainDb": -3,
+        "pan": -0.06,
+        "envelope": { "attackS": 0.002, "decayS": 0.037, "sustainLevel": 0.28, "releaseS": 0.026 },
+        "filter": { "type": "lowpass", "freqHz": 1720, "q": 0.85 },
+        "startS": 0.002,
+        "durationS": 0.068,
+        "freqStartHz": 820,
+        "freqEndHz": 140
+      },
+      {
+        "id": "capacitor",
+        "waveform": "sine",
+        "gainDb": -5,
+        "pan": 0,
+        "envelope": { "attackS": 0.002, "decayS": 0.028, "sustainLevel": 0.22, "releaseS": 0.025 },
+        "startS": 0,
+        "durationS": 0.04,
+        "freqStartHz": 210,
+        "freqEndHz": 78
+      }
+    ]
+  },
+  "enemy-cannon": {
+    "schemaVersion": "agent-audio/recipe/v1",
+    "kind": "one-shot",
+    "id": "enemy-cannon",
+    "sampleRate": 48000,
+    "channels": 2,
+    "durationS": 0.15,
+    "masterGainDb": -8,
+    "voices": [
+      {
+        "id": "arc",
+        "waveform": "noise",
+        "gainDb": -5,
+        "pan": -0.12,
+        "envelope": { "attackS": 0.002, "decayS": 0.012, "sustainLevel": 0.15, "releaseS": 0.008 },
+        "filter": { "type": "bandpass", "freqHz": 1840, "q": 1.2 },
+        "startS": 0,
+        "durationS": 0.019
+      },
+      {
+        "id": "plasma",
+        "waveform": "triangle",
+        "gainDb": -2,
+        "pan": 0.14,
+        "envelope": { "attackS": 0.004, "decayS": 0.055, "sustainLevel": 0.34, "releaseS": 0.036 },
+        "filter": { "type": "lowpass", "freqHz": 1200, "q": 0.9 },
+        "startS": 0.002,
+        "durationS": 0.096,
+        "freqStartHz": 490,
+        "freqEndHz": 104
+      },
+      {
+        "id": "undertone",
+        "waveform": "sine",
+        "gainDb": -9,
+        "pan": 0,
+        "envelope": { "attackS": 0.003, "decayS": 0.032, "sustainLevel": 0.3, "releaseS": 0.031 },
+        "startS": 0.004,
+        "durationS": 0.052,
+        "freqStartHz": 145,
+        "freqEndHz": 62
+      }
+    ]
+  },
+  "hit-confirm": {
+    "schemaVersion": "agent-audio/recipe/v1",
+    "kind": "one-shot",
+    "id": "hit-confirm",
+    "sampleRate": 48000,
+    "channels": 2,
+    "durationS": 0.103,
+    "masterGainDb": -5,
+    "voices": [
+      {
+        "id": "metal",
+        "waveform": "sine",
+        "gainDb": -2,
+        "pan": -0.09,
+        "envelope": { "attackS": 0.0015, "decayS": 0.013, "sustainLevel": 0.36, "releaseS": 0.034 },
+        "startS": 0,
+        "durationS": 0.022,
+        "freqStartHz": 1480,
+        "freqEndHz": 1480
+      },
+      {
+        "id": "overtone",
+        "waveform": "sine",
+        "gainDb": -9,
+        "pan": 0.2,
+        "envelope": { "attackS": 0.002, "decayS": 0.015, "sustainLevel": 0.27, "releaseS": 0.017 },
+        "startS": 0.004,
+        "durationS": 0.024,
+        "freqStartHz": 2380,
+        "freqEndHz": 2370
+      },
+      {
+        "id": "ring",
+        "waveform": "triangle",
+        "gainDb": -8,
+        "pan": 0.08,
+        "envelope": { "attackS": 0.002, "decayS": 0.018, "sustainLevel": 0.32, "releaseS": 0.027 },
+        "startS": 0.023,
+        "durationS": 0.032,
+        "freqStartHz": 1850,
+        "freqEndHz": 1850
+      }
+    ]
+  },
+  "kill-confirm": {
+    "schemaVersion": "agent-audio/recipe/v1",
+    "kind": "one-shot",
+    "id": "kill-confirm",
+    "sampleRate": 48000,
+    "channels": 2,
+    "durationS": 0.44,
+    "masterGainDb": -5,
+    "voices": [
+      {
+        "id": "bronze",
+        "waveform": "triangle",
+        "gainDb": -3,
+        "pan": -0.12,
+        "envelope": { "attackS": 0.003, "decayS": 0.06, "sustainLevel": 0.36, "releaseS": 0.1 },
+        "startS": 0,
+        "durationS": 0.1,
+        "freqStartHz": 293.66,
+        "freqEndHz": 293.66
+      },
+      {
+        "id": "answer",
+        "waveform": "sine",
+        "gainDb": -3,
+        "pan": 0.14,
+        "envelope": { "attackS": 0.003, "decayS": 0.065, "sustainLevel": 0.43, "releaseS": 0.19 },
+        "startS": 0.082,
+        "durationS": 0.12,
+        "freqStartHz": 440,
+        "freqEndHz": 440
+      },
+      {
+        "id": "bell-foot",
+        "waveform": "sine",
+        "gainDb": -3,
+        "pan": 0,
+        "envelope": { "attackS": 0.006, "decayS": 0.075, "sustainLevel": 0.5, "releaseS": 0.16 },
+        "startS": 0.083,
+        "durationS": 0.11,
+        "freqStartHz": 146.83,
+        "freqEndHz": 146.83
+      }
+    ]
+  },
+  "lock-chirp": {
+    "schemaVersion": "agent-audio/recipe/v1",
+    "kind": "one-shot",
+    "id": "lock-chirp",
+    "sampleRate": 48000,
+    "channels": 2,
+    "durationS": 0.148,
+    "masterGainDb": -5,
+    "voices": [
+      {
+        "id": "acquire",
+        "waveform": "sine",
+        "gainDb": -2,
+        "pan": -0.08,
+        "envelope": { "attackS": 0.002, "decayS": 0.022, "sustainLevel": 0.5, "releaseS": 0.013 },
+        "startS": 0,
+        "durationS": 0.036,
+        "freqStartHz": 995,
+        "freqEndHz": 1320
+      },
+      {
+        "id": "lock",
+        "waveform": "sine",
+        "gainDb": -2,
+        "pan": 0.09,
+        "envelope": { "attackS": 0.002, "decayS": 0.025, "sustainLevel": 0.46, "releaseS": 0.031 },
+        "startS": 0.052,
+        "durationS": 0.051,
+        "freqStartHz": 1760,
+        "freqEndHz": 1760
+      },
+      {
+        "id": "fifth",
+        "waveform": "sine",
+        "gainDb": -9,
+        "pan": -0.11,
+        "envelope": { "attackS": 0.003, "decayS": 0.031, "sustainLevel": 0.4, "releaseS": 0.029 },
+        "startS": 0.052,
+        "durationS": 0.05,
+        "freqStartHz": 1320,
+        "freqEndHz": 1320
+      }
+    ]
+  },
+  "missile-launch": {
+    "schemaVersion": "agent-audio/recipe/v1",
+    "kind": "one-shot",
+    "id": "missile-launch",
+    "sampleRate": 48000,
+    "channels": 2,
+    "durationS": 0.38,
+    "masterGainDb": -3,
+    "voices": [
+      {
+        "id": "rail",
+        "waveform": "noise",
+        "gainDb": -2,
+        "pan": 0.1,
+        "envelope": { "attackS": 0.003, "decayS": 0.023, "sustainLevel": 0.25, "releaseS": 0.018 },
+        "filter": { "type": "bandpass", "freqHz": 2330, "q": 0.8 },
+        "startS": 0,
+        "durationS": 0.037
+      },
+      {
+        "id": "ignition",
+        "waveform": "sine",
+        "gainDb": -4,
+        "pan": 0,
+        "envelope": { "attackS": 0.005, "decayS": 0.047, "sustainLevel": 0.35, "releaseS": 0.058 },
+        "startS": 0.004,
+        "durationS": 0.077,
+        "freqStartHz": 146,
+        "freqEndHz": 66
+      },
+      {
+        "id": "exhaust",
+        "waveform": "noise",
+        "gainDb": 0,
+        "pan": -0.18,
+        "envelope": { "attackS": 0.041, "decayS": 0.12, "sustainLevel": 0.38, "releaseS": 0.125 },
+        "filter": { "type": "bandpass", "freqHz": 1090, "q": 0.67 },
+        "startS": 0.022,
+        "durationS": 0.21
+      },
+      {
+        "id": "turbine",
+        "waveform": "triangle",
+        "gainDb": -8,
+        "pan": 0.19,
+        "envelope": { "attackS": 0.023, "decayS": 0.085, "sustainLevel": 0.45, "releaseS": 0.089 },
+        "startS": 0.051,
+        "durationS": 0.18,
+        "freqStartHz": 160,
+        "freqEndHz": 480
+      }
+    ]
+  },
+  "explosion": {
+    "schemaVersion": "agent-audio/recipe/v1",
+    "kind": "one-shot",
+    "id": "explosion",
+    "sampleRate": 48000,
+    "channels": 2,
+    "durationS": 0.51,
+    "masterGainDb": -4,
+    "voices": [
+      {
+        "id": "pressure",
+        "waveform": "sine",
+        "gainDb": -1,
+        "pan": 0,
+        "envelope": { "attackS": 0.003, "decayS": 0.066, "sustainLevel": 0.36, "releaseS": 0.105 },
+        "startS": 0,
+        "durationS": 0.12,
+        "freqStartHz": 138,
+        "freqEndHz": 42
+      },
+      {
+        "id": "blast",
+        "waveform": "noise",
+        "gainDb": 1,
+        "pan": -0.13,
+        "envelope": { "attackS": 0.004, "decayS": 0.081, "sustainLevel": 0.3, "releaseS": 0.14 },
+        "filter": { "type": "lowpass", "freqHz": 1800, "q": 0.85 },
+        "startS": 0,
+        "durationS": 0.137
+      },
+      {
+        "id": "fragments",
+        "waveform": "noise",
+        "gainDb": -1,
+        "pan": 0.27,
+        "envelope": { "attackS": 0.018, "decayS": 0.12, "sustainLevel": 0.29, "releaseS": 0.154 },
+        "filter": { "type": "bandpass", "freqHz": 925, "q": 2.5 },
+        "startS": 0.078,
+        "durationS": 0.16
+      },
+      {
+        "id": "ring",
+        "waveform": "triangle",
+        "gainDb": -9,
+        "pan": 0.17,
+        "envelope": { "attackS": 0.013, "decayS": 0.088, "sustainLevel": 0.28, "releaseS": 0.18 },
+        "startS": 0.104,
+        "durationS": 0.15,
+        "freqStartHz": 310,
+        "freqEndHz": 203
+      }
+    ]
+  },
+  "subsystem-destruction": {
+    "schemaVersion": "agent-audio/recipe/v1",
+    "kind": "one-shot",
+    "id": "subsystem-destruction",
+    "sampleRate": 48000,
+    "channels": 2,
+    "durationS": 0.87,
+    "masterGainDb": -4,
+    "voices": [
+      {
+        "id": "bulkhead",
+        "waveform": "sine",
+        "gainDb": -1,
+        "pan": 0,
+        "envelope": { "attackS": 0.005, "decayS": 0.12, "sustainLevel": 0.43, "releaseS": 0.2 },
+        "startS": 0,
+        "durationS": 0.23,
+        "freqStartHz": 110,
+        "freqEndHz": 33
+      },
+      {
+        "id": "rupture",
+        "waveform": "noise",
+        "gainDb": 1,
+        "pan": -0.22,
+        "envelope": { "attackS": 0.006, "decayS": 0.14, "sustainLevel": 0.44, "releaseS": 0.14 },
+        "filter": { "type": "lowpass", "freqHz": 1460, "q": 0.95 },
+        "startS": 0,
+        "durationS": 0.24
+      },
+      {
+        "id": "secondary",
+        "waveform": "noise",
+        "gainDb": 0,
+        "pan": 0.26,
+        "envelope": { "attackS": 0.006, "decayS": 0.105, "sustainLevel": 0.35, "releaseS": 0.22 },
+        "filter": { "type": "bandpass", "freqHz": 2050, "q": 0.8 },
+        "startS": 0.147,
+        "durationS": 0.19
+      },
+      {
+        "id": "debris",
+        "waveform": "triangle",
+        "gainDb": -6,
+        "pan": -0.24,
+        "envelope": { "attackS": 0.012, "decayS": 0.17, "sustainLevel": 0.34, "releaseS": 0.285 },
+        "startS": 0.221,
+        "durationS": 0.31,
+        "freqStartHz": 216,
+        "freqEndHz": 102
+      },
+      {
+        "id": "resonance",
+        "waveform": "noise",
+        "gainDb": 0,
+        "pan": 0.16,
+        "envelope": { "attackS": 0.035, "decayS": 0.22, "sustainLevel": 0.32, "releaseS": 0.278 },
+        "filter": { "type": "bandpass", "freqHz": 565, "q": 2.2 },
+        "startS": 0.286,
+        "durationS": 0.28
+      }
+    ]
+  },
+  "boost": {
+    "schemaVersion": "agent-audio/recipe/v1",
+    "kind": "one-shot",
+    "id": "boost",
+    "sampleRate": 48000,
+    "channels": 2,
+    "durationS": 0.38,
+    "masterGainDb": -4,
+    "voices": [
+      {
+        "id": "compressor",
+        "waveform": "triangle",
+        "gainDb": -3,
+        "pan": -0.12,
+        "envelope": { "attackS": 0.012, "decayS": 0.16, "sustainLevel": 0.64, "releaseS": 0.09 },
+        "filter": { "type": "lowpass", "freqHz": 1200, "q": 0.75 },
+        "startS": 0,
+        "durationS": 0.227,
+        "freqStartHz": 130,
+        "freqEndHz": 395
+      },
+      {
+        "id": "intake",
+        "waveform": "noise",
+        "gainDb": 1,
+        "pan": 0.16,
+        "envelope": { "attackS": 0.038, "decayS": 0.13, "sustainLevel": 0.48, "releaseS": 0.14 },
+        "filter": { "type": "bandpass", "freqHz": 1380, "q": 0.67 },
+        "startS": 0.005,
+        "durationS": 0.22
+      },
+      {
+        "id": "burner",
+        "waveform": "sine",
+        "gainDb": -4,
+        "pan": 0,
+        "envelope": { "attackS": 0.016, "decayS": 0.1, "sustainLevel": 0.46, "releaseS": 0.135 },
+        "startS": 0,
+        "durationS": 0.19,
+        "freqStartHz": 62,
+        "freqEndHz": 119
+      }
+    ]
+  },
+  "snap-turn": {
+    "schemaVersion": "agent-audio/recipe/v1",
+    "kind": "one-shot",
+    "id": "snap-turn",
+    "sampleRate": 48000,
+    "channels": 2,
+    "durationS": 0.27,
+    "masterGainDb": -5,
+    "voices": [
+      {
+        "id": "vanes",
+        "waveform": "triangle",
+        "gainDb": -2,
+        "pan": -0.13,
+        "envelope": { "attackS": 0.002, "decayS": 0.062, "sustainLevel": 0.41, "releaseS": 0.089 },
+        "filter": { "type": "lowpass", "freqHz": 1700, "q": 0.75 },
+        "startS": 0,
+        "durationS": 0.135,
+        "freqStartHz": 720,
+        "freqEndHz": 159
+      },
+      {
+        "id": "blade-pass",
+        "waveform": "sine",
+        "gainDb": -6,
+        "pan": 0.16,
+        "envelope": { "attackS": 0.004, "decayS": 0.078, "sustainLevel": 0.39, "releaseS": 0.094 },
+        "startS": 0.012,
+        "durationS": 0.131,
+        "freqStartHz": 520,
+        "freqEndHz": 117
+      },
+      {
+        "id": "airbrake",
+        "waveform": "noise",
+        "gainDb": -2,
+        "pan": 0.18,
+        "envelope": { "attackS": 0.002, "decayS": 0.032, "sustainLevel": 0.24, "releaseS": 0.035 },
+        "filter": { "type": "bandpass", "freqHz": 2340, "q": 0.8 },
+        "startS": 0,
+        "durationS": 0.043
+      }
+    ]
+  },
+  "player-damage": {
+    "schemaVersion": "agent-audio/recipe/v1",
+    "kind": "one-shot",
+    "id": "player-damage",
+    "sampleRate": 48000,
+    "channels": 2,
+    "durationS": 0.34,
+    "masterGainDb": -4,
+    "voices": [
+      {
+        "id": "shield",
+        "waveform": "saw",
+        "gainDb": -4,
+        "pan": -0.14,
+        "envelope": { "attackS": 0.002, "decayS": 0.047, "sustainLevel": 0.31, "releaseS": 0.052 },
+        "filter": { "type": "lowpass", "freqHz": 1530, "q": 1.2 },
+        "startS": 0,
+        "durationS": 0.08,
+        "freqStartHz": 590,
+        "freqEndHz": 185
+      },
+      {
+        "id": "crackle",
+        "waveform": "noise",
+        "gainDb": 0,
+        "pan": 0.16,
+        "envelope": { "attackS": 0.002, "decayS": 0.05, "sustainLevel": 0.33, "releaseS": 0.064 },
+        "filter": { "type": "bandpass", "freqHz": 1330, "q": 0.8 },
+        "startS": 0,
+        "durationS": 0.097
+      },
+      {
+        "id": "hull",
+        "waveform": "sine",
+        "gainDb": -1,
+        "pan": 0,
+        "envelope": { "attackS": 0.004, "decayS": 0.08, "sustainLevel": 0.4, "releaseS": 0.136 },
+        "startS": 0.038,
+        "durationS": 0.14,
+        "freqStartHz": 136,
+        "freqEndHz": 47
+      },
+      {
+        "id": "shield-echo",
+        "waveform": "triangle",
+        "gainDb": -6,
+        "pan": 0.18,
+        "envelope": { "attackS": 0.003, "decayS": 0.047, "sustainLevel": 0.25, "releaseS": 0.068 },
+        "startS": 0.102,
+        "durationS": 0.093,
+        "freqStartHz": 320,
+        "freqEndHz": 221
+      }
+    ]
+  },
+  "engine-runup": {
+    "schemaVersion": "agent-audio/recipe/v1",
+    "kind": "one-shot",
+    "id": "engine-runup",
+    "sampleRate": 48000,
+    "channels": 2,
+    "durationS": 2.24,
+    "masterGainDb": -18,
+    "voices": [
+      {
+        "id": "port",
+        "waveform": "triangle",
+        "gainDb": -3,
+        "pan": -0.24,
+        "envelope": { "attackS": 0.05, "decayS": 0.1, "sustainLevel": 0.85, "releaseS": 0.24 },
+        "filter": { "type": "lowpass", "freqHz": 290, "q": 0.75 },
+        "startS": 0,
+        "durationS": 2,
+        "freqStartHz": 49,
+        "freqEndHz": 128
+      },
+      {
+        "id": "starboard",
+        "waveform": "sine",
+        "gainDb": -6,
+        "pan": 0.24,
+        "envelope": { "attackS": 0.05, "decayS": 0.1, "sustainLevel": 0.85, "releaseS": 0.24 },
+        "filter": { "type": "lowpass", "freqHz": 290, "q": 0.75 },
+        "startS": 0,
+        "durationS": 2,
+        "freqStartHz": 50.5,
+        "freqEndHz": 132
+      }
+    ]
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "schemaVersion": "agent-audio/recipe/v1",
+  "kind": "one-shot",
+  "id": "missile-launch",
+  "sampleRate": 48000,
+  "channels": 2,
+  "durationS": 0.38,
+  "masterGainDb": -3,
+  "voices": [
+    {
+      "id": "rail",
+      "waveform": "noise",
+      "gainDb": -2,
+      "pan": 0.1,
+      "envelope": { "attackS": 0.003, "decayS": 0.023, "sustainLevel": 0.25, "releaseS": 0.018 },
+      "filter": { "type": "bandpass", "freqHz": 2330, "q": 0.8 },
+      "startS": 0,
+      "durationS": 0.037
+    },
+    {
+      "id": "ignition",
+      "waveform": "sine",
+      "gainDb": -4,
+      "pan": 0,
+      "envelope": { "attackS": 0.005, "decayS": 0.047, "sustainLevel": 0.35, "releaseS": 0.058 },
+      "startS": 0.004,
+      "durationS": 0.077,
+      "freqStartHz": 146,
+      "freqEndHz": 66
+    },
+    {
+      "id": "exhaust",
+      "waveform": "noise",
+      "gainDb": 0,
+      "pan": -0.18,
+      "envelope": { "attackS": 0.041, "decayS": 0.12, "sustainLevel": 0.38, "releaseS": 0.125 },
+      "filter": { "type": "bandpass", "freqHz": 1090, "q": 0.67 },
+      "startS": 0.022,
+      "durationS": 0.21
+    },
+    {
+      "id": "turbine",
+      "waveform": "triangle",
+      "gainDb": -8,
+      "pan": 0.19,
+      "envelope": { "attackS": 0.023, "decayS": 0.085, "sustainLevel": 0.45, "releaseS": 0.089 },
+      "startS": 0.051,
+      "durationS": 0.18,
+      "freqStartHz": 160,
+      "freqEndHz": 480
+    }
+  ]
+}

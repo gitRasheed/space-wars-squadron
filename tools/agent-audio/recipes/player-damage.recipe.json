@@ -1,0 +1,55 @@
+{
+  "schemaVersion": "agent-audio/recipe/v1",
+  "kind": "one-shot",
+  "id": "player-damage",
+  "sampleRate": 48000,
+  "channels": 2,
+  "durationS": 0.34,
+  "masterGainDb": -4,
+  "voices": [
+    {
+      "id": "shield",
+      "waveform": "saw",
+      "gainDb": -4,
+      "pan": -0.14,
+      "envelope": { "attackS": 0.002, "decayS": 0.047, "sustainLevel": 0.31, "releaseS": 0.052 },
+      "filter": { "type": "lowpass", "freqHz": 1530, "q": 1.2 },
+      "startS": 0,
+      "durationS": 0.08,
+      "freqStartHz": 590,
+      "freqEndHz": 185
+    },
+    {
+      "id": "crackle",
+      "waveform": "noise",
+      "gainDb": 0,
+      "pan": 0.16,
+      "envelope": { "attackS": 0.002, "decayS": 0.05, "sustainLevel": 0.33, "releaseS": 0.064 },
+      "filter": { "type": "bandpass", "freqHz": 1330, "q": 0.8 },
+      "startS": 0,
+      "durationS": 0.097
+    },
+    {
+      "id": "hull",
+      "waveform": "sine",
+      "gainDb": -1,
+      "pan": 0,
+      "envelope": { "attackS": 0.004, "decayS": 0.08, "sustainLevel": 0.4, "releaseS": 0.136 },
+      "startS": 0.038,
+      "durationS": 0.14,
+      "freqStartHz": 136,
+      "freqEndHz": 47
+    },
+    {
+      "id": "shield-echo",
+      "waveform": "triangle",
+      "gainDb": -6,
+      "pan": 0.18,
+      "envelope": { "attackS": 0.003, "decayS": 0.047, "sustainLevel": 0.25, "releaseS": 0.068 },
+      "startS": 0.102,
+      "durationS": 0.093,
+      "freqStartHz": 320,
+      "freqEndHz": 221
+    }
+  ]
+}

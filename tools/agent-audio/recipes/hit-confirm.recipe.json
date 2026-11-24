@@ -1,0 +1,44 @@
+{
+  "schemaVersion": "agent-audio/recipe/v1",
+  "kind": "one-shot",
+  "id": "hit-confirm",
+  "sampleRate": 48000,
+  "channels": 2,
+  "durationS": 0.103,
+  "masterGainDb": -5,
+  "voices": [
+    {
+      "id": "metal",
+      "waveform": "sine",
+      "gainDb": -2,
+      "pan": -0.09,
+      "envelope": { "attackS": 0.0015, "decayS": 0.013, "sustainLevel": 0.36, "releaseS": 0.034 },
+      "startS": 0,
+      "durationS": 0.022,
+      "freqStartHz": 1480,
+      "freqEndHz": 1480
+    },
+    {
+      "id": "overtone",
+      "waveform": "sine",
+      "gainDb": -9,
+      "pan": 0.2,
+      "envelope": { "attackS": 0.002, "decayS": 0.015, "sustainLevel": 0.27, "releaseS": 0.017 },
+      "startS": 0.004,
+      "durationS": 0.024,
+      "freqStartHz": 2380,
+      "freqEndHz": 2370
+    },
+    {
+      "id": "ring",
+      "waveform": "triangle",
+      "gainDb": -8,
+      "pan": 0.08,
+      "envelope": { "attackS": 0.002, "decayS": 0.018, "sustainLevel": 0.32, "releaseS": 0.027 },
+      "startS": 0.023,
+      "durationS": 0.032,
+      "freqStartHz": 1850,
+      "freqEndHz": 1850
+    }
+  ]
+}

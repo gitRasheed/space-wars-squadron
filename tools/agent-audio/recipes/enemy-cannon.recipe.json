@@ -1,0 +1,44 @@
+{
+  "schemaVersion": "agent-audio/recipe/v1",
+  "kind": "one-shot",
+  "id": "enemy-cannon",
+  "sampleRate": 48000,
+  "channels": 2,
+  "durationS": 0.15,
+  "masterGainDb": -8,
+  "voices": [
+    {
+      "id": "arc",
+      "waveform": "noise",
+      "gainDb": -5,
+      "pan": -0.12,
+      "envelope": { "attackS": 0.002, "decayS": 0.012, "sustainLevel": 0.15, "releaseS": 0.008 },
+      "filter": { "type": "bandpass", "freqHz": 1840, "q": 1.2 },
+      "startS": 0,
+      "durationS": 0.019
+    },
+    {
+      "id": "plasma",
+      "waveform": "triangle",
+      "gainDb": -2,
+      "pan": 0.14,
+      "envelope": { "attackS": 0.004, "decayS": 0.055, "sustainLevel": 0.34, "releaseS": 0.036 },
+      "filter": { "type": "lowpass", "freqHz": 1200, "q": 0.9 },
+      "startS": 0.002,
+      "durationS": 0.096,
+      "freqStartHz": 490,
+      "freqEndHz": 104
+    },
+    {
+      "id": "undertone",
+      "waveform": "sine",
+      "gainDb": -9,
+      "pan": 0,
+      "envelope": { "attackS": 0.003, "decayS": 0.032, "sustainLevel": 0.3, "releaseS": 0.031 },
+      "startS": 0.004,
+      "durationS": 0.052,
+      "freqStartHz": 145,
+      "freqEndHz": 62
+    }
+  ]
+}

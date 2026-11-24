@@ -1,0 +1,63 @@
+{
+  "schemaVersion": "agent-audio/recipe/v1",
+  "kind": "one-shot",
+  "id": "subsystem-destruction",
+  "sampleRate": 48000,
+  "channels": 2,
+  "durationS": 0.87,
+  "masterGainDb": -4,
+  "voices": [
+    {
+      "id": "bulkhead",
+      "waveform": "sine",
+      "gainDb": -1,
+      "pan": 0,
+      "envelope": { "attackS": 0.005, "decayS": 0.12, "sustainLevel": 0.43, "releaseS": 0.2 },
+      "startS": 0,
+      "durationS": 0.23,
+      "freqStartHz": 110,
+      "freqEndHz": 33
+    },
+    {
+      "id": "rupture",
+      "waveform": "noise",
+      "gainDb": 1,
+      "pan": -0.22,
+      "envelope": { "attackS": 0.006, "decayS": 0.14, "sustainLevel": 0.44, "releaseS": 0.14 },
+      "filter": { "type": "lowpass", "freqHz": 1460, "q": 0.95 },
+      "startS": 0,
+      "durationS": 0.24
+    },
+    {
+      "id": "secondary",
+      "waveform": "noise",
+      "gainDb": 0,
+      "pan": 0.26,
+      "envelope": { "attackS": 0.006, "decayS": 0.105, "sustainLevel": 0.35, "releaseS": 0.22 },
+      "filter": { "type": "bandpass", "freqHz": 2050, "q": 0.8 },
+      "startS": 0.147,
+      "durationS": 0.19
+    },
+    {
+      "id": "debris",
+      "waveform": "triangle",
+      "gainDb": -6,
+      "pan": -0.24,
+      "envelope": { "attackS": 0.012, "decayS": 0.17, "sustainLevel": 0.34, "releaseS": 0.285 },
+      "startS": 0.221,
+      "durationS": 0.31,
+      "freqStartHz": 216,
+      "freqEndHz": 102
+    },
+    {
+      "id": "resonance",
+      "waveform": "noise",
+      "gainDb": 0,
+      "pan": 0.16,
+      "envelope": { "attackS": 0.035, "decayS": 0.22, "sustainLevel": 0.32, "releaseS": 0.278 },
+      "filter": { "type": "bandpass", "freqHz": 565, "q": 2.2 },
+      "startS": 0.286,
+      "durationS": 0.28
+    }
+  ]
+}

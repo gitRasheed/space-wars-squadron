@@ -4,64 +4,41 @@
   "id": "cannon-shot",
   "sampleRate": 48000,
   "channels": 2,
-  "encoding": "pcm16",
-  "seed": 133701,
-  "durationS": 0.08,
-  "masterGainDb": -4.5,
+  "durationS": 0.115,
+  "masterGainDb": -4,
   "voices": [
     {
-      "id": "plasma-sweep",
-      "waveform": "saw",
-      "gainDb": -3.0,
-      "pan": 0,
-      "freqStartHz": 860,
-      "freqEndHz": 165,
-      "freqCurve": "exp",
-      "envelope": {
-        "attackS": 0.002,
-        "decayS": 0.045,
-        "sustainLevel": 0.12,
-        "releaseS": 0.025
-      },
-      "filter": {
-        "type": "lowpass",
-        "freqHz": 3400,
-        "q": 1.1
-      },
-      "drive": 1.4
-    },
-    {
-      "id": "breech-transient",
+      "id": "breech",
       "waveform": "noise",
-      "gainDb": -9.0,
-      "pan": 0,
-      "envelope": {
-        "attackS": 0.001,
-        "decayS": 0.018,
-        "sustainLevel": 0.0,
-        "releaseS": 0.012
-      },
-      "filter": {
-        "type": "bandpass",
-        "freqHz": 2400,
-        "q": 1.3
-      },
-      "durationS": 0.024
+      "gainDb": -4,
+      "pan": 0.16,
+      "envelope": { "attackS": 0.001, "decayS": 0.009, "sustainLevel": 0.13, "releaseS": 0.008 },
+      "filter": { "type": "bandpass", "freqHz": 2900, "q": 0.85 },
+      "startS": 0,
+      "durationS": 0.016
     },
     {
-      "id": "sub-punch",
+      "id": "plasma",
+      "waveform": "saw",
+      "gainDb": -3,
+      "pan": -0.06,
+      "envelope": { "attackS": 0.002, "decayS": 0.037, "sustainLevel": 0.28, "releaseS": 0.026 },
+      "filter": { "type": "lowpass", "freqHz": 1720, "q": 0.85 },
+      "startS": 0.002,
+      "durationS": 0.068,
+      "freqStartHz": 820,
+      "freqEndHz": 140
+    },
+    {
+      "id": "capacitor",
       "waveform": "sine",
-      "gainDb": -5.0,
+      "gainDb": -5,
       "pan": 0,
-      "freqStartHz": 190,
-      "freqEndHz": 68,
-      "freqCurve": "exp",
-      "envelope": {
-        "attackS": 0.002,
-        "decayS": 0.036,
-        "sustainLevel": 0.0,
-        "releaseS": 0.024
-      }
+      "envelope": { "attackS": 0.002, "decayS": 0.028, "sustainLevel": 0.22, "releaseS": 0.025 },
+      "startS": 0,
+      "durationS": 0.04,
+      "freqStartHz": 210,
+      "freqEndHz": 78
     }
   ]
 }

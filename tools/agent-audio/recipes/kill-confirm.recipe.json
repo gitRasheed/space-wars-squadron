@@ -1,0 +1,44 @@
+{
+  "schemaVersion": "agent-audio/recipe/v1",
+  "kind": "one-shot",
+  "id": "kill-confirm",
+  "sampleRate": 48000,
+  "channels": 2,
+  "durationS": 0.44,
+  "masterGainDb": -5,
+  "voices": [
+    {
+      "id": "bronze",
+      "waveform": "triangle",
+      "gainDb": -3,
+      "pan": -0.12,
+      "envelope": { "attackS": 0.003, "decayS": 0.06, "sustainLevel": 0.36, "releaseS": 0.1 },
+      "startS": 0,
+      "durationS": 0.1,
+      "freqStartHz": 293.66,
+      "freqEndHz": 293.66
+    },
+    {
+      "id": "answer",
+      "waveform": "sine",
+      "gainDb": -3,
+      "pan": 0.14,
+      "envelope": { "attackS": 0.003, "decayS": 0.065, "sustainLevel": 0.43, "releaseS": 0.19 },
+      "startS": 0.082,
+      "durationS": 0.12,
+      "freqStartHz": 440,
+      "freqEndHz": 440
+    },
+    {
+      "id": "bell-foot",
+      "waveform": "sine",
+      "gainDb": -3,
+      "pan": 0,
+      "envelope": { "attackS": 0.006, "decayS": 0.075, "sustainLevel": 0.5, "releaseS": 0.16 },
+      "startS": 0.083,
+      "durationS": 0.11,
+      "freqStartHz": 146.83,
+      "freqEndHz": 146.83
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "schemaVersion": "agent-audio/recipe/v1",
+  "kind": "one-shot",
+  "id": "engine-runup",
+  "sampleRate": 48000,
+  "channels": 2,
+  "durationS": 2.24,
+  "masterGainDb": -18,
+  "voices": [
+    {
+      "id": "port",
+      "waveform": "triangle",
+      "gainDb": -3,
+      "pan": -0.24,
+      "envelope": { "attackS": 0.05, "decayS": 0.1, "sustainLevel": 0.85, "releaseS": 0.24 },
+      "filter": { "type": "lowpass", "freqHz": 290, "q": 0.75 },
+      "startS": 0,
+      "durationS": 2,
+      "freqStartHz": 49,
+      "freqEndHz": 128
+    },
+    {
+      "id": "starboard",
+      "waveform": "sine",
+      "gainDb": -6,
+      "pan": 0.24,
+      "envelope": { "attackS": 0.05, "decayS": 0.1, "sustainLevel": 0.85, "releaseS": 0.24 },
+      "filter": { "type": "lowpass", "freqHz": 290, "q": 0.75 },
+      "startS": 0,
+      "durationS": 2,
+      "freqStartHz": 50.5,
+      "freqEndHz": 132
+    }
+  ]
+}
