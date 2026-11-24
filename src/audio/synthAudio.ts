@@ -1,7 +1,7 @@
 import { FLIGHT_TUNING } from '../sim/flight';
 import { len } from '../sim/math';
 import type { SimEvent, WorldState } from '../sim/types';
-import { engineRunup, renderCue, type CueId } from './combatCues';
+import { CUE_IDS, engineRunup, renderCue, type CueId } from './combatCues';
 import { combatLoopRenderer } from './combatScore';
 
 export interface SynthAudio {
@@ -134,15 +134,19 @@ export function createSynthAudio(): SynthAudio {
     musicSource.start();
   }
 
-  function playCue(bus: Buses, id: CueId, side = 0) {
-    const { ctx, effects } = bus;
+  function cueBuffer(ctx: AudioContext, id: CueId) {
     let buffer = cueBuffers.get(id);
     if (!buffer) {
       buffer = audioBuffer(ctx, renderCue(id, ctx.sampleRate));
       cueBuffers.set(id, buffer);
     }
+    return buffer;
+  }
+
+  function playCue(bus: Buses, id: CueId, side = 0) {
+    const { ctx, effects } = bus;
     const source = ctx.createBufferSource();
-    source.buffer = buffer;
+    source.buffer = cueBuffer(ctx, id);
     if (side) {
       const pan = ctx.createStereoPanner();
       pan.pan.value = side * 0.16;
@@ -188,6 +192,9 @@ export function createSynthAudio(): SynthAudio {
     const audible = !muted && !document.hidden && ctx.state === 'running';
     const active = audible && world.phase.kind === 'active';
     syncMusic(buses, active);
+    // One cue per sync once the score is in, so a first shot or blast never renders mid-fight.
+    const unrendered = musicBuffer && CUE_IDS.find(id => !cueBuffers.has(id));
+    if (unrendered) cueBuffer(ctx, unrendered);
     if (active) {
       const speed = Math.min(1, len(world.player.velocity) / FLIGHT_TUNING.overdriveSpeed);
       const overdrive = world.player.energy.overdrive;

@@ -3,6 +3,7 @@ import { mixVoice, noiseGenerator, stereoBuffer } from './renderVoice';
 
 export type CueId = Exclude<keyof typeof cues, 'engine-runup'>;
 export const engineRunup = cues['engine-runup'];
+export const CUE_IDS = Object.keys(cues).filter((id): id is CueId => id !== 'engine-runup');
 
 export function renderCue(id: CueId, sampleRate: number) {
   const cue = cues[id];

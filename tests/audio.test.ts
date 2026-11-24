@@ -111,6 +111,17 @@ describe('combat audio', () => {
     expect(ctx.music).toHaveLength(1);
   });
 
+  it('renders every cue in the quiet syncs after the score, ahead of its first trigger', () => {
+    const { ctx, tick } = cockpit(false);
+    const createBuffer = vi.spyOn(ctx, 'createBuffer');
+    const playable = Object.keys(cues).length - 1;
+    for (let i = 0; i < SCORE_TICKS + playable; i++) tick();
+    expect(createBuffer).toHaveBeenCalledTimes(1 + playable);
+    tick({ kind: 'missile_fired' }, { kind: 'subsystem_destroyed', label: 'SHIELD DOME' });
+    expect(ctx.cues).toHaveLength(2);
+    expect(createBuffer).toHaveBeenCalledTimes(1 + playable);
+  });
+
   it('plays the confirmation and the larger blast on the winning tick and stops the loop', () => {
     const { ctx, audio, tick, world } = cockpit();
     tick();
