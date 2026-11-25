@@ -270,6 +270,9 @@ describe('trench soak', () => {
       let world = trenchWorld(seed);
       let rng = seed ^ 0x7e7c;
       let aiInWallTicks = 0;
+      let insideTrenchTicks = 0;
+      let enemyTicks = 0;
+      let enemyGrindingTicks = 0;
       for (let tick = 0; tick < 3600; tick += 1) {
         const r = [0, 0, 0].map(() => {
           const next = nextRandom(rng);
@@ -293,13 +296,17 @@ describe('trench soak', () => {
         expect(Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z)).toBe(true);
         expect(len(p)).toBeLessThanOrEqual(FLIGHT_TUNING.arenaRadius + 1e-6);
         expect(isInsideArena(p, TRENCH_ARENA, PAD - 0.01)).toBe(false);
+        if (Math.abs(p.x) < TRENCH_DIMENSIONS.wallInnerX && Math.abs(p.z) < TRENCH_DIMENSIONS.halfLength) insideTrenchTicks += 1;
         expect(world.player.energy.weaponCharge).toBeGreaterThanOrEqual(0);
         expect(world.player.energy.shieldCharge).toBeGreaterThanOrEqual(0);
         for (const r of world.reactors) {
           expect(r.hull).toBeGreaterThanOrEqual(0);
         }
         for (const enemy of world.enemies) {
-          if (isInsideArena(enemy.position, TRENCH_ARENA, SHIP_STATS.enemies[enemy.kind].hitRadius - 0.01)) aiInWallTicks += 1;
+          const hitRadius = SHIP_STATS.enemies[enemy.kind].hitRadius;
+          if (isInsideArena(enemy.position, TRENCH_ARENA, hitRadius - 0.01)) aiInWallTicks += 1;
+          enemyTicks += 1;
+          if (isInsideArena(enemy.position, TRENCH_ARENA, hitRadius + COMBAT_TUNING.aiHullClearance + 0.1)) enemyGrindingTicks += 1;
         }
         if (isInsideArena(world.wingmate.position, TRENCH_ARENA, 6.99)) aiInWallTicks += 1;
         if (world.phase.kind !== 'active') {
@@ -308,6 +315,9 @@ describe('trench soak', () => {
         }
       }
       expect(aiInWallTicks).toBe(0);
+      // The run must actually happen inside the spine, and AI must steer, not lean on the slide.
+      expect(insideTrenchTicks / 3600).toBeGreaterThan(0.3);
+      expect(enemyGrindingTicks / enemyTicks).toBeLessThan(0.08);
     }
   }, 60_000);
 });

@@ -1,6 +1,13 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { TRENCH_ARENA, TRENCH_CLEARANCE, TRENCH_COLD_GAP, TRENCH_RIB_STATIONS, TRENCH_ROCK_FACET_JITTER } from '../sim/trenchLayout';
+import {
+  TRENCH_ARENA,
+  TRENCH_CLEARANCE,
+  TRENCH_COLD_GAP,
+  TRENCH_DIMENSIONS,
+  TRENCH_RIB_STATIONS,
+  TRENCH_ROCK_FACET_JITTER,
+} from '../sim/trenchLayout';
 import type { ArenaRole, ArenaSolid } from '../sim/types';
 import { celMat } from './celMaterial';
 import { addStyledPart, glowMat } from './models';
@@ -86,7 +93,7 @@ function buildGuideStrips(): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
   const height = TRENCH_CLEARANCE.top - TRENCH_CLEARANCE.bottom;
   for (const station of TRENCH_RIB_STATIONS) {
-    const z = station.z + 3 + proud / 2;
+    const z = station.z + TRENCH_DIMENSIONS.ribHalfDepth + proud / 2;
     for (const side of [-1, 1] as const) {
       const pillar = new THREE.BoxGeometry(strip, height, proud);
       pillar.translate(side * (TRENCH_CLEARANCE.halfWidth + strip / 2), (TRENCH_CLEARANCE.top + TRENCH_CLEARANCE.bottom) / 2, z);
@@ -108,8 +115,12 @@ function buildColdGap(): THREE.Group {
     [240, TRENCH_PALETTE.coldGapCore, 1.35],
   ];
   tiers.forEach(([radius, color, boost], i) => {
-    const disc = new THREE.Mesh(new THREE.CircleGeometry(radius, 48), glowMat(color, 1, { hdrBoost: boost }));
-    disc.position.set(TRENCH_COLD_GAP.center.x, TRENCH_COLD_GAP.center.y, TRENCH_COLD_GAP.center.z - 2100 + i * 2);
+    const material = glowMat(color, 1, { hdrBoost: boost });
+    // Coplanar tiers: draw order, not depth, stacks them, and after the void sky so it can't paint over them.
+    material.depthWrite = false;
+    const disc = new THREE.Mesh(new THREE.CircleGeometry(radius, 48), material);
+    disc.position.set(TRENCH_COLD_GAP.center.x, TRENCH_COLD_GAP.center.y, TRENCH_COLD_GAP.center.z - 2100);
+    disc.renderOrder = 2 + i;
     group.add(disc);
   });
   return group;

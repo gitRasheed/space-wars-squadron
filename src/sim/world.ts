@@ -239,6 +239,7 @@ function createTrenchEnemies(): readonly EnemyShipState[] {
     fireCooldown: 1.2 + i * 0.3,
     phaseOffset: i * 1.7,
   }));
+  // One striker harasses Hearthstone at the mouth: a clock on the run, not a reason to abandon it.
   const strikers: EnemyShipState[] = [
     {
       id: 'striker-1',
@@ -253,20 +254,6 @@ function createTrenchEnemies(): readonly EnemyShipState[] {
       shieldHitFlash: 0,
       fireCooldown: 1.5,
       phaseOffset: 5.3,
-    },
-    {
-      id: 'striker-2',
-      callsign: 'STRIKER-5',
-      kind: 'striker',
-      position: vec3(-60, 160, 1250),
-      velocity: vec3(-10, -12, 40),
-      orientation: quatLookAt(vec3(-0.3, -0.4, 0.86)),
-      maneuver: { kind: 'approach', remainingSeconds: 8.5 },
-      ...enemyDurability('striker'),
-      shieldRegenDelay: 0,
-      shieldHitFlash: 0,
-      fireCooldown: 2.1,
-      phaseOffset: 1.9,
     },
   ];
   return [...guards, ...strikers];
