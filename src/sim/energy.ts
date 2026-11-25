@@ -5,10 +5,14 @@ import type { EnergyState, SimEvent, WeaponState } from './types';
 export const ENERGY_RULES = {
   minOverdriveShield: 15,
   overdriveShieldDrainPerSecond: 24,
-  weaponRechargePerSecond: 24,
-  // Slower than normal recharge, so bursting inside the heat budget out-shoots riding the lockout.
-  overheatCooldownPerSecond: 15,
-  primaryShotCost: 9.5,
+  weaponCoolPerSecond: 24,
+  // Slower than normal cooling, so bursting inside the heat budget out-shoots riding the lockout.
+  overheatCoolPerSecond: 15,
+  primaryShotHeat: 9.5,
+  maxHeat: 100,
+  /** Firing a ready gun at or above this heat is a Hot Zone shot. */
+  hotZoneHeat: 80,
+  manualRechargePerSecond: 28,
 } as const;
 
 export interface EnergyStepResult {
@@ -19,23 +23,34 @@ export interface EnergyStepResult {
 export function createInitialEnergy(): EnergyState {
   return {
     overdrive: false,
+    recharging: false,
     weaponState: 'ready',
-    weaponCharge: 100,
+    weaponHeat: 0,
     shieldCharge: SHIP_STATS.player.shields,
     shieldRegenDelay: 0,
   };
 }
 
+export function inHotZone(energy: EnergyState): boolean {
+  return energy.weaponState === 'ready' && energy.weaponHeat >= ENERGY_RULES.hotZoneHeat;
+}
+
+/**
+ * One tick of overdrive, shields and cannon heat. Holding manual recharge drops Overdrive, refuses to
+ * enter it, fills the shield past the regen delay and holds a ready gun's heat where it is; an
+ * overheat lockout keeps cooling so it always ends.
+ */
 export function stepEnergy(
   current: EnergyState,
   enterOverdrive: boolean,
   cancelOverdrive: boolean,
+  recharging: boolean,
   dt: number,
 ): EnergyStepResult {
   const events: SimEvent[] = [];
 
   let overdrive = current.overdrive;
-  if (cancelOverdrive) {
+  if (cancelOverdrive || recharging) {
     overdrive = false;
   } else if (!overdrive && enterOverdrive && current.shieldCharge >= ENERGY_RULES.minOverdriveShield) {
     overdrive = true;
@@ -50,6 +65,9 @@ export function stepEnergy(
     if (shieldCharge <= 0) {
       overdrive = false;
     }
+  } else if (recharging) {
+    shieldRegenDelay = Math.max(0, current.shieldRegenDelay - dt);
+    shieldCharge = clamp(current.shieldCharge + ENERGY_RULES.manualRechargePerSecond * dt, 0, SHIP_STATS.player.shields);
   } else {
     const regen = regenShield(
       current.shieldCharge,
@@ -63,12 +81,14 @@ export function stepEnergy(
   }
 
   let weaponState: WeaponState = current.weaponState;
-  const rechargeRate =
+  const coolRate =
     weaponState === 'overheated'
-      ? ENERGY_RULES.overheatCooldownPerSecond
-      : ENERGY_RULES.weaponRechargePerSecond;
-  const weaponCharge = clamp(current.weaponCharge + rechargeRate * dt, 0, 100);
-  if (weaponState === 'overheated' && weaponCharge >= 100) {
+      ? ENERGY_RULES.overheatCoolPerSecond
+      : recharging
+        ? 0
+        : ENERGY_RULES.weaponCoolPerSecond;
+  const weaponHeat = clamp(current.weaponHeat - coolRate * dt, 0, ENERGY_RULES.maxHeat);
+  if (weaponState === 'overheated' && weaponHeat <= 0) {
     weaponState = 'ready';
     events.push({ kind: 'weapon_ready' });
   }
@@ -76,8 +96,9 @@ export function stepEnergy(
   return {
     energy: {
       overdrive,
+      recharging,
       weaponState,
-      weaponCharge,
+      weaponHeat,
       shieldCharge,
       shieldRegenDelay,
     },
@@ -85,31 +106,21 @@ export function stepEnergy(
   };
 }
 
-export function spendWeaponCharge(
+export function addWeaponHeat(
   energy: EnergyState,
-  cost: number,
+  heat: number,
 ): { readonly energy: EnergyState; readonly overheatedNow: boolean } | null {
-  if (energy.weaponState === 'overheated' || energy.weaponCharge <= 0) {
+  if (energy.weaponState === 'overheated' || energy.weaponHeat >= ENERGY_RULES.maxHeat) {
     return null;
   }
-  const remaining = energy.weaponCharge - cost;
-  if (remaining <= 0) {
+  const next = energy.weaponHeat + heat;
+  if (next >= ENERGY_RULES.maxHeat) {
     return {
-      energy: {
-        ...energy,
-        weaponCharge: 0,
-        weaponState: 'overheated',
-      },
+      energy: { ...energy, weaponHeat: ENERGY_RULES.maxHeat, weaponState: 'overheated' },
       overheatedNow: true,
     };
   }
-  return {
-    energy: {
-      ...energy,
-      weaponCharge: clamp(remaining, 0, 100),
-    },
-    overheatedNow: false,
-  };
+  return { energy: { ...energy, weaponHeat: clamp(next, 0, ENERGY_RULES.maxHeat) }, overheatedNow: false };
 }
 
 export function absorbShieldDamage(
@@ -129,5 +140,5 @@ export function absorbShieldDamage(
 }
 
 export function flushWeaponHeat(energy: EnergyState): EnergyState {
-  return { ...energy, weaponState: 'ready', weaponCharge: 100 };
+  return { ...energy, weaponState: 'ready', weaponHeat: 0 };
 }

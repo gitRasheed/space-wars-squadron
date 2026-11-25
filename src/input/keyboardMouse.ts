@@ -29,6 +29,8 @@ const CURSOR_STEER_DEADZONE = 0.05;
 export function createInputChannel(
   canvas: HTMLCanvasElement,
   isOverlayOpen: () => boolean,
+  /** The briefing mission button under a viewport point, if any; a click on one picks it instead of launching. */
+  pickLevelAt: (clientX: number, clientY: number) => LevelId | null = () => null,
 ): InputChannel {
   const heldKeys = new Set<string>();
   let mouseLeftHeld = false;
@@ -39,6 +41,7 @@ export function createInputChannel(
   let queuedThrottlePush = false;
   let queuedLaunchBriefing = false;
   let queuedRestartSortie = false;
+  let queuedReturnToBriefing = false;
   let queuedFireMissile = false;
   let queuedToggleMute = false;
   let queuedToggleMusic = false;
@@ -57,6 +60,7 @@ export function createInputChannel(
     queuedThrottlePush = false;
     queuedLaunchBriefing = false;
     queuedRestartSortie = false;
+    queuedReturnToBriefing = false;
     queuedFireMissile = false;
     queuedToggleMute = false;
     queuedToggleMusic = false;
@@ -96,6 +100,10 @@ export function createInputChannel(
         lockedBeforePause = false;
         resumeOnPointerLock = false;
         queuedRestartSortie = true;
+      } else if (code === 'KeyB') {
+        lockedBeforePause = false;
+        resumeOnPointerLock = false;
+        queuedReturnToBriefing = true;
       } else if (code === 'KeyE') {
         queuedFireMissile = true;
       } else if (code === 'KeyM') {
@@ -124,6 +132,11 @@ export function createInputChannel(
     if (event.button === 0) {
       const needsLock = document.pointerLockElement !== canvas;
       if (isOverlayOpen()) {
+        const level = pickLevelAt(event.clientX, event.clientY);
+        if (level !== null) {
+          queuedSelectLevel = level;
+          return;
+        }
         if (lockedBeforePause && needsLock) {
           resumeOnPointerLock = true;
           void Promise.resolve(canvas.requestPointerLock()).catch(() => {
@@ -257,10 +270,13 @@ export function createInputChannel(
       throttleDelta,
       throttlePushEdge: queuedThrottlePush,
       firePrimary: mouseLeftHeld || heldKeys.has('KeyJ'),
-      fireMissile: queuedFireMissile || mouseRightHeld,
+      fireMissile: mouseRightHeld || heldKeys.has('KeyE'),
+      fireMissilePressed: queuedFireMissile,
+      rechargeShields: heldKeys.has('KeyC'),
       cycleTarget: queuedCycleTarget,
       launchBriefing: queuedLaunchBriefing,
       restartSortie: queuedRestartSortie,
+      returnToBriefing: queuedReturnToBriefing,
       toggleMute: queuedToggleMute,
       toggleMusic: queuedToggleMusic,
       togglePause: queuedTogglePause,
@@ -272,6 +288,7 @@ export function createInputChannel(
     queuedThrottlePush = false;
     queuedLaunchBriefing = false;
     queuedRestartSortie = false;
+    queuedReturnToBriefing = false;
     queuedFireMissile = false;
     queuedToggleMute = false;
     queuedToggleMusic = false;

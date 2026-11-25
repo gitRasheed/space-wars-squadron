@@ -189,7 +189,7 @@ function avoidObstacles(world: WorldState, desired: Vec3): Vec3 {
 }
 
 /** A cannon-only pilot that tracks the lead point and fires only inside `fireConeDeg`. */
-export function cannonPilot(fireConeDeg: number, burstFloor = 22, burstResume = 55): Pilot {
+export function cannonPilot(fireConeDeg: number, burstCeiling = 78, burstResume = 45): Pilot {
   const fireConeCos = Math.cos((fireConeDeg * Math.PI) / 180);
   return (world, memory) => {
     let { rng, jitter, holdFire } = memory;
@@ -214,9 +214,9 @@ export function cannonPilot(fireConeDeg: number, burstFloor = 22, burstResume = 
     const yawError = Math.atan2(local.x, -local.z);
     const pitchError = Math.atan2(local.y, -local.z);
 
-    const charge = player.energy.weaponCharge;
-    if (charge < burstFloor) holdFire = true;
-    else if (charge >= burstResume) holdFire = false;
+    const heat = player.energy.weaponHeat;
+    if (heat > burstCeiling) holdFire = true;
+    else if (heat <= burstResume) holdFire = false;
     const aligned = dot(forwardOf(player.orientation), aimDir) >= fireConeCos;
     const inRange = goalDist < COMBAT_TUNING.boltSpeed * COMBAT_TUNING.boltTtl * 0.92;
     const desiredThrottle = goalDist < 160 ? 0.55 : 0.85;

@@ -22,6 +22,69 @@ function createListenerTarget() {
   };
 }
 
+/** Installs fake window, document and canvas for one channel; returns them with the channel. */
+function withFakeDom(
+  overlayOpen: boolean,
+  levelAt: Parameters<typeof createInputChannel>[2],
+  run: (dom: {
+    readonly window: ReturnType<typeof createListenerTarget>;
+    readonly canvas: ReturnType<typeof createListenerTarget>;
+    readonly channel: ReturnType<typeof createInputChannel>;
+  }) => void,
+): void {
+  const fakeWindow = createListenerTarget();
+  const fakeDocument = Object.assign(createListenerTarget(), { hidden: false, pointerLockElement: null });
+  const fakeCanvas = Object.assign(createListenerTarget(), {
+    requestPointerLock: () => undefined,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 1280, height: 720 }),
+  });
+  const originalWindow = globalThis.window;
+  const originalDocument = globalThis.document;
+  Object.defineProperty(globalThis, 'window', { value: fakeWindow, configurable: true });
+  Object.defineProperty(globalThis, 'document', { value: fakeDocument, configurable: true });
+  try {
+    const channel = createInputChannel(fakeCanvas as unknown as HTMLCanvasElement, () => overlayOpen, levelAt);
+    run({ window: fakeWindow, canvas: fakeCanvas, channel });
+    channel.destroy();
+  } finally {
+    Object.defineProperty(globalThis, 'window', { value: originalWindow, configurable: true });
+    Object.defineProperty(globalThis, 'document', { value: originalDocument, configurable: true });
+  }
+}
+
+describe('missile, recharge and briefing input', () => {
+  it('keeps a right click pressed and released between two ticks as a fresh missile press', () => {
+    withFakeDom(false, undefined, ({ window, canvas, channel }) => {
+      canvas.emit('mousedown', { button: 2, clientX: 0, clientY: 0 });
+      window.emit('mouseup', { button: 2 });
+      const tick = channel.sample();
+      expect(tick).toMatchObject({ fireMissilePressed: true, fireMissile: false });
+      expect(channel.sample().fireMissilePressed).toBe(false);
+    });
+  });
+
+  it('holds manual shield recharge while C is down', () => {
+    withFakeDom(false, undefined, ({ window, channel }) => {
+      window.emit('keydown', { code: 'KeyC', repeat: false, preventDefault: () => undefined });
+      expect(channel.sample().rechargeShields).toBe(true);
+      window.emit('keyup', { code: 'KeyC' });
+      expect(channel.sample().rechargeShields).toBe(false);
+    });
+  });
+
+  it('picks the clicked briefing mission instead of launching, and sends B once', () => {
+    withFakeDom(true, (x) => (x < 100 ? 'trench' : null), ({ window, canvas, channel }) => {
+      canvas.emit('mousedown', { button: 0, clientX: 50, clientY: 300 });
+      expect(channel.sample()).toMatchObject({ selectLevel: 'trench', launchBriefing: false });
+      canvas.emit('mousedown', { button: 0, clientX: 600, clientY: 300 });
+      expect(channel.sample()).toMatchObject({ selectLevel: null, launchBriefing: true });
+      window.emit('keydown', { code: 'KeyB', repeat: false, preventDefault: () => undefined });
+      expect(channel.sample().returnToBriefing).toBe(true);
+      expect(channel.sample().returnToBriefing).toBe(false);
+    });
+  });
+});
+
 describe('input deadzone and channel merging', () => {
   it('zeros values inside the deadzone and rescales remaining travel smoothly to 1', () => {
     expect(applyDeadzone(0.04, 0.1)).toBe(0);
@@ -92,6 +155,7 @@ describe('input deadzone and channel merging', () => {
       fakeWindow.emit('blur', {});
       const sampled = channel.sample();
       expect(sampled.fireMissile).toBe(false);
+      expect(sampled.fireMissilePressed).toBe(false);
       expect(sampled.toggleMute).toBe(false);
       // Losing window focus while active sends idempotent pauseRequested so raiders cannot kill the player off-tab.
       expect(sampled.pauseRequested).toBe(true);

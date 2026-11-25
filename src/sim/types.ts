@@ -64,7 +64,12 @@ export interface FlightInput {
   readonly throttleDelta: number;
   readonly throttlePushEdge: boolean;
   readonly firePrimary: boolean;
+  /** Missile trigger held this tick; a held trigger launches only on a completed lock. */
   readonly fireMissile: boolean;
+  /** A fresh missile trigger press since the last tick, kept even if it was released before the tick ran. */
+  readonly fireMissilePressed: boolean;
+  /** `C` held: shields channel power, cannons, missiles and Overdrive stay offline. */
+  readonly rechargeShields: boolean;
   readonly cycleTarget: boolean;
   readonly toggleMute: boolean;
   readonly toggleMusic: boolean;
@@ -72,14 +77,19 @@ export interface FlightInput {
   readonly pauseRequested: boolean;
   readonly launchBriefing: boolean;
   readonly restartSortie: boolean;
+  /** From the debrief, back to the briefing card with the same mission selected. */
+  readonly returnToBriefing: boolean;
   /** Briefing-only mission pick; ignored once a sortie is underway. */
   readonly selectLevel: LevelId | null;
 }
 
 export interface EnergyState {
   readonly overdrive: boolean;
+  /** Manual shield recharge held this tick; weapons and Overdrive are offline while it is. */
+  readonly recharging: boolean;
   readonly weaponState: WeaponState;
-  readonly weaponCharge: number;
+  /** 0 is cold; a shot that reaches 100 overheats the cannons until they cool back to 0. */
+  readonly weaponHeat: number;
   readonly shieldCharge: number;
   readonly shieldRegenDelay: number;
 }
@@ -102,13 +112,13 @@ export interface PlayerShipState {
   /** Set by a manual `T` pick; auto-focus leaves a pinned target alone. */
   readonly targetPinned: boolean;
   readonly lockState: LockState;
-  /** Previous tick's missile trigger level, so the sim can tell a fresh press from a hold. */
-  readonly missileTriggerHeld: boolean;
   /** Cannon hits since the last critical; raises the next crit chance. */
   readonly critPity: number;
   /** Kills since the last supply drop; raises the next drop chance. */
   readonly dropPity: number;
   readonly nearMissCooldown: number;
+  /** Counts down between `hull_critical` alarms while the hull is critical. */
+  readonly hullAlarmCooldown: number;
   readonly proximityWarning: boolean;
   readonly hitFlash: number;
   readonly recoilKick: number;
@@ -219,6 +229,8 @@ export interface ProjectileState {
   readonly targetId: string | null;
   readonly damage: number;
   readonly ttl: number;
+  /** Fired from the cannons' Hot Zone, so a crit on impact hits harder. */
+  readonly hotZone?: boolean;
 }
 
 export interface ExplosionState {
@@ -243,9 +255,15 @@ export type SimEvent =
   | { readonly kind: 'missile_fired' }
   | { readonly kind: 'target_locked' }
   | { readonly kind: 'hit_confirmed'; readonly isKill: boolean; readonly shieldHit?: boolean }
-  | { readonly kind: 'shield_broken'; readonly position: Vec3 }
+  | {
+      readonly kind: 'shield_broken';
+      readonly position: Vec3;
+      readonly targetId: string;
+      readonly attackerId: 'player' | 'wingmate' | 'enemy';
+    }
   | { readonly kind: 'weapon_overheated' }
   | { readonly kind: 'player_damaged' }
+  | { readonly kind: 'hull_critical' }
   | { readonly kind: 'overdrive_engaged' }
   | { readonly kind: 'subsystem_destroyed'; readonly label: string }
   | { readonly kind: 'wall_scrape'; readonly position: Vec3 }
@@ -333,6 +351,9 @@ export interface SortieConfig {
 }
 
 export const FIXED_DT = 1 / 60;
+/** At or below this share of max hull the cockpit warns and the alarm repeats. */
+export const HULL_CRITICAL_FRACTION = 0.35;
+export const HULL_ALARM_INTERVAL_SECONDS = 1.5;
 export const DEFAULT_SORTIE_SEED = 0x51a7f00d;
 
 export const NEUTRAL_INPUT: FlightInput = {
@@ -343,6 +364,8 @@ export const NEUTRAL_INPUT: FlightInput = {
   throttlePushEdge: false,
   firePrimary: false,
   fireMissile: false,
+  fireMissilePressed: false,
+  rechargeShields: false,
   cycleTarget: false,
   toggleMute: false,
   toggleMusic: false,
@@ -350,5 +373,6 @@ export const NEUTRAL_INPUT: FlightInput = {
   pauseRequested: false,
   launchBriefing: false,
   restartSortie: false,
+  returnToBriefing: false,
   selectLevel: null,
 };

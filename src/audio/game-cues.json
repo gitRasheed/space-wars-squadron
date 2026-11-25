@@ -1,0 +1,37 @@
+{
+  "hull-warning": {
+    "schemaVersion": "agent-audio/recipe/v1",
+    "kind": "one-shot",
+    "id": "hull-warning",
+    "sampleRate": 48000,
+    "channels": 2,
+    "durationS": 0.46,
+    "masterGainDb": -15,
+    "voices": [
+      {
+        "id": "beep-high",
+        "waveform": "triangle",
+        "gainDb": -6,
+        "pan": 0,
+        "envelope": { "attackS": 0.004, "decayS": 0.04, "sustainLevel": 0.7, "releaseS": 0.04 },
+        "filter": { "type": "lowpass", "freqHz": 2600, "q": 0.7 },
+        "startS": 0,
+        "durationS": 0.09,
+        "freqStartHz": 987.77,
+        "freqEndHz": 987.77
+      },
+      {
+        "id": "beep-low",
+        "waveform": "triangle",
+        "gainDb": -6,
+        "pan": 0,
+        "envelope": { "attackS": 0.004, "decayS": 0.04, "sustainLevel": 0.7, "releaseS": 0.06 },
+        "filter": { "type": "lowpass", "freqHz": 2200, "q": 0.7 },
+        "startS": 0.18,
+        "durationS": 0.12,
+        "freqStartHz": 739.99,
+        "freqEndHz": 739.99
+      }
+    ]
+  }
+}

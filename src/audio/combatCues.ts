@@ -1,5 +1,9 @@
-import cues from './combat-cues.json';
+import combatCues from './combat-cues.json';
+import gameCues from './game-cues.json';
 import { mixVoice, noiseGenerator, stereoBuffer } from './renderVoice';
+
+// combat-cues.json mirrors the standalone agent-audio recipes one for one; game-cues.json holds cues that live only here.
+const cues = { ...combatCues, ...gameCues };
 
 export type CueId = Exclude<keyof typeof cues, 'engine-runup'>;
 export const engineRunup = cues['engine-runup'];

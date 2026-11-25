@@ -20,7 +20,7 @@ describe('formal TLA+ timing agreement at 60 Hz', () => {
     const damaged = absorbShieldDamage(world.player.energy, COMBAT_TUNING.enemyBoltDamage).energy;
     let delayState = damaged;
     const shieldDelayTicks = ticksUntil(() => {
-      delayState = stepEnergy(delayState, false, false, FIXED_DT).energy;
+      delayState = stepEnergy(delayState, false, false, false, FIXED_DT).energy;
       return delayState.shieldRegenDelay <= 0;
     });
 
@@ -37,7 +37,8 @@ describe('formal TLA+ timing agreement at 60 Hz', () => {
       return lock.kind === 'locked';
     });
 
-    const fireBoth = { ...NEUTRAL_INPUT, fireMissile: true, firePrimary: true };
+    // Every frame is a fresh trigger press.
+    const fireBoth = { ...NEUTRAL_INPUT, fireMissile: true, fireMissilePressed: true, firePrimary: true };
     let player = world.player;
     const missileTicks: number[] = [];
     const shotTicks: number[] = [];
@@ -45,8 +46,7 @@ describe('formal TLA+ timing agreement at 60 Hz', () => {
       const result = stepCombat({
         tick,
         rngState: world.rngState,
-        // Release the trigger between frames so every frame is a fresh press.
-        player: { ...player, missileTriggerHeld: false },
+        player,
         wingmate: world.wingmate,
         enemies: [],
         friendlyCarrier: world.friendlyCarrier,
@@ -70,14 +70,14 @@ describe('formal TLA+ timing agreement at 60 Hz', () => {
       return missileTicks.length === player.maxMissiles + 2;
     });
 
-    let ohState: EnergyState = { ...world.player.energy, weaponState: 'overheated', weaponCharge: 0 };
+    let ohState: EnergyState = { ...world.player.energy, weaponState: 'overheated', weaponHeat: 100 };
     const overheatTicks = ticksUntil(() => {
-      ohState = stepEnergy(ohState, false, false, FIXED_DT).energy;
+      ohState = stepEnergy(ohState, false, false, false, FIXED_DT).energy;
       return ohState.weaponState === 'ready';
     });
 
     const rack = player.maxMissiles;
-    expect(shieldDelayTicks).toBe(211);
+    expect(shieldDelayTicks).toBe(133);
     expect(overheatTicks).toBe(400);
     expect(acquireTicks).toBe(48);
     expect((shotTicks[1] ?? 0) - (shotTicks[0] ?? 0)).toBe(9);

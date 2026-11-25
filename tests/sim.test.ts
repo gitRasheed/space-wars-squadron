@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   COMBAT_TUNING,
   critChance,
+  critMultiplier,
   enemyAimError,
   isInsideCapitalBox,
   resolveTargetSelection,
@@ -10,13 +11,14 @@ import {
   subsystemWorldPosition,
   type TargetContact,
 } from '../src/sim/combat';
-import { createInitialEnergy, ENERGY_RULES, spendWeaponCharge, stepEnergy } from '../src/sim/energy';
+import { addWeaponHeat, createInitialEnergy, ENERGY_RULES, stepEnergy } from '../src/sim/energy';
 import { FLIGHT_TUNING, resolveObstacleClearance } from '../src/sim/flight';
-import { add, dot, len, nextRandom, normalize, quatFromAxisAngle, quatLookAt, rotateVec3, scale, sub, vec3 } from '../src/sim/math';
+import { add, dot, len, nextRandom, normalize, quatFromAxisAngle, quatLookAt, rotateVec3, scale, segmentClosestApproach, sub, vec3 } from '../src/sim/math';
 import { SHIP_STATS } from '../src/sim/ships';
 import {
   DEFAULT_SORTIE_SEED,
   FIXED_DT,
+  HULL_CRITICAL_FRACTION,
   NEUTRAL_INPUT,
   type CapitalShipState,
   type EnemyShipState,
@@ -75,39 +77,46 @@ describe('throttle overdrive and weapon overheat kernel', () => {
     expect(world.player.throttle).toBeCloseTo(1.0, 4);
   });
 
-  it('locks out primary cannons on overheat at 0 charge until weapon charge cools all the way to 100%', () => {
+  it('heats the cannons from cold to 100, locks them out there and unlocks only once they cool back to 0', () => {
     let energy = createInitialEnergy();
+    expect(energy.weaponHeat).toBe(0);
     let shotsFired = 0;
     while (energy.weaponState === 'ready' && shotsFired < 20) {
-      const spent = spendWeaponCharge(energy, ENERGY_RULES.primaryShotCost);
+      const spent = addWeaponHeat(energy, ENERGY_RULES.primaryShotHeat);
       expect(spent).not.toBeNull();
       if (spent === null) break;
       energy = spent.energy;
       shotsFired += 1;
     }
+    expect(shotsFired).toBe(Math.ceil(ENERGY_RULES.maxHeat / ENERGY_RULES.primaryShotHeat));
     expect(energy.weaponState).toBe('overheated');
-    expect(energy.weaponCharge).toBe(0);
+    expect(energy.weaponHeat).toBe(100);
 
-    // Cannot fire while overheated, even after partial cooling (e.g., 50%).
+    // Cannot fire while overheated, even after partial cooling.
     for (let i = 0; i < 100; i += 1) {
-      energy = stepEnergy(energy, false, false, FIXED_DT).energy;
+      energy = stepEnergy(energy, false, false, false, FIXED_DT).energy;
     }
-    expect(energy.weaponCharge).toBeGreaterThan(20);
-    expect(energy.weaponCharge).toBeLessThan(100);
+    expect(energy.weaponHeat).toBeCloseTo(100 - 100 * FIXED_DT * ENERGY_RULES.overheatCoolPerSecond, 6);
     expect(energy.weaponState).toBe('overheated');
-    expect(spendWeaponCharge(energy, ENERGY_RULES.primaryShotCost)).toBeNull();
+    expect(addWeaponHeat(energy, ENERGY_RULES.primaryShotHeat)).toBeNull();
 
-    // Once cooled back to 100%, cannons unlock cleanly and announce it.
+    // Once cooled back to 0, cannons unlock cleanly and announce it.
     let readyEvents = 0;
     for (let i = 0; i < 400 && energy.weaponState !== 'ready'; i += 1) {
-      const step = stepEnergy(energy, false, false, FIXED_DT);
+      const step = stepEnergy(energy, false, false, false, FIXED_DT);
       energy = step.energy;
       readyEvents += step.events.filter((e) => e.kind === 'weapon_ready').length;
     }
     expect(energy.weaponState).toBe('ready');
     expect(readyEvents).toBe(1);
-    expect(energy.weaponCharge).toBe(100);
-    expect(spendWeaponCharge(energy, ENERGY_RULES.primaryShotCost)).not.toBeNull();
+    expect(energy.weaponHeat).toBe(0);
+    expect(addWeaponHeat(energy, ENERGY_RULES.primaryShotHeat)).not.toBeNull();
+  });
+
+  it('cools a ready gun at 24/s and an overheated one at 15/s', () => {
+    const warm = { ...createInitialEnergy(), weaponHeat: 50 };
+    expect(stepEnergy(warm, false, false, false, 1).energy.weaponHeat).toBe(50 - ENERGY_RULES.weaponCoolPerSecond);
+    expect(stepEnergy({ ...warm, weaponState: 'overheated' }, false, false, false, 1).energy.weaponHeat).toBe(50 - ENERGY_RULES.overheatCoolPerSecond);
   });
 });
 
@@ -235,7 +244,7 @@ describe('sortie simulation contracts and enemy shield entities', () => {
 
   it('clears lock and rearms missiles after firing', () => {
     let world = createInitialWorld(DEFAULT_SORTIE_SEED, true);
-    world = stepWorld(world, { ...NEUTRAL_INPUT, fireMissile: true }, FIXED_DT);
+    world = stepWorld(world, { ...NEUTRAL_INPUT, fireMissile: true, fireMissilePressed: true }, FIXED_DT);
     expect(world.player.missilesReady).toBe(3);
     expect(world.player.lockState.kind).toBe('none');
 
@@ -418,6 +427,7 @@ describe('sortie simulation contracts and enemy shield entities', () => {
           throttlePushEdge: tick % 120 === 0,
           firePrimary: r3.value > 0.5,
           fireMissile: tick % 90 === 0,
+          fireMissilePressed: tick % 90 === 0,
           cycleTarget: tick % 180 === 0,
         },
         FIXED_DT,
@@ -426,8 +436,8 @@ describe('sortie simulation contracts and enemy shield entities', () => {
       expect(Number.isFinite(world.player.position.x)).toBe(true);
       expect(Number.isFinite(world.player.position.y)).toBe(true);
       expect(Number.isFinite(world.player.position.z)).toBe(true);
-      expect(world.player.energy.weaponCharge).toBeGreaterThanOrEqual(0);
-      expect(world.player.energy.weaponCharge).toBeLessThanOrEqual(100);
+      expect(world.player.energy.weaponHeat).toBeGreaterThanOrEqual(0);
+      expect(world.player.energy.weaponHeat).toBeLessThanOrEqual(100);
       expect(world.player.energy.shieldCharge).toBeGreaterThanOrEqual(0);
       expect(world.player.energy.shieldCharge).toBeLessThanOrEqual(100);
       if (world.player.energy.overdrive) {
@@ -476,8 +486,14 @@ function parkedRaider(position: Vec3, overrides: Partial<EnemyShipState> = {}): 
 }
 
 /** One combat tick with the flight step skipped, so the player stays exactly where the test put them. */
-function combatTick(world: WorldState, tick = 1, input: FlightInput = NEUTRAL_INPUT): ReturnType<typeof stepCombat> {
+function combatTick(
+  world: WorldState,
+  tick = 1,
+  input: FlightInput = NEUTRAL_INPUT,
+  playerStartPosition: Vec3 = world.player.position,
+): ReturnType<typeof stepCombat> {
   return stepCombat({
+    playerStartPosition,
     tick,
     rngState: world.rngState,
     player: world.player,
@@ -524,12 +540,148 @@ describe('precision hitboxes and frigate hull occlusion', () => {
     const domePos = subsystemWorldPosition(frigate, dome);
     const up = rotateVec3(frigate.orientation, vec3(0, 1, 0));
 
-    const fromBelow = combatTick({ ...base, projectiles: [playerBolt('b', sub(domePos, scale(up, 60)), scale(up, 560))] });
+    // 50 m under the dome sits one tick below the keel, so the bolt meets the hull within this step.
+    const fromBelow = combatTick({ ...base, projectiles: [playerBolt('b', sub(domePos, scale(up, 50)), scale(up, 560))] });
     expect(frigateOf(fromBelow).subsystems[0]?.hull).toBe(dome.maxHull);
     expect(fromBelow.projectiles).toHaveLength(0);
 
     const fromAbove = combatTick({ ...base, projectiles: [playerBolt('b', add(domePos, scale(up, 22)), scale(up, -560))] });
     expect(frigateOf(fromAbove).subsystems[0]?.hull).toBeLessThan(dome.maxHull);
+  });
+});
+
+describe('bolts swept against moving ships', () => {
+  it('lands an enemy bolt that passes 4 m from a player moving at Overdrive speed, with no near miss', () => {
+    const base = emptyArena();
+    const start = base.player.position;
+    const velocity = vec3(FLIGHT_TUNING.overdriveSpeed, 0, 0);
+    const end = add(start, scale(velocity, FIXED_DT));
+    // Crossing 3 m behind where the tick began: 5.8 m from where it ended, but 4 m from the ship as both moved.
+    const bolt = hostileBolt(add(start, vec3(-3, -3.25, 0)), vec3(0, 390, 0));
+    const world: WorldState = { ...base, player: { ...base.player, position: end, velocity }, projectiles: [bolt] };
+    const after = combatTick(world, 1, NEUTRAL_INPUT, start);
+    expect(after.events.some((e) => e.kind === 'player_damaged')).toBe(true);
+    expect(after.events.some((e) => e.kind === 'near_miss')).toBe(false);
+  });
+
+  it('misses a raider that moved out of the bolt path during the tick', () => {
+    const base = emptyArena();
+    const start = vec3(0, 0, -300);
+    const raider = parkedRaider(start, { velocity: vec3(112, 0, 0), maneuver: { kind: 'approach', remainingSeconds: 5 } });
+    const bolt = playerBolt('b', add(start, vec3(7.4, 0, 3.25)), vec3(0, 0, -390));
+    const after = combatTick({ ...base, enemies: [raider], projectiles: [bolt] });
+    const moved = after.enemies[0]?.position ?? start;
+    const boltEnd = add(bolt.position, scale(bolt.velocity, FIXED_DT));
+    const radius = SHIP_STATS.enemies.raider.hitRadius;
+    // Against the raider's end position alone the bolt would have hit.
+    expect(segmentClosestApproach(bolt.position, boltEnd, moved).distance).toBeLessThan(radius);
+    expect(after.events.some((e) => e.kind === 'hit_confirmed')).toBe(false);
+  });
+});
+
+describe('frigate hull proxy', () => {
+  it('lets a bolt through the empty air beside the narrow prow but stops one on the hull', () => {
+    const base = emptyArena();
+    const frigate = frigateOf(base);
+    const local = (x: number, y: number, z: number): Vec3 => add(frigate.position, rotateVec3(frigate.orientation, vec3(x, y, z)));
+    const down = rotateVec3(frigate.orientation, vec3(0, -560, 0));
+    // 25 m off the centreline at the prow: inside the old 34 m box, well clear of the 12-24 m wide hull there.
+    expect(isInsideCapitalBox(local(25, 0, -120), frigate, 0)).toBe(true);
+    const beside = combatTick({ ...base, projectiles: [playerBolt('b', local(25, 20, -120), down)] }, 1);
+    expect(beside.projectiles).toHaveLength(1);
+    const onHull = combatTick({ ...base, projectiles: [playerBolt('b', local(0, 20, -120), down)] }, 1);
+    expect(onHull.projectiles).toHaveLength(0);
+  });
+});
+
+describe('cannon Hot Zone', () => {
+  it('doubles the crit bonus: 1.75x normally, 2.5x from the Hot Zone', () => {
+    expect(critMultiplier(false)).toBe(1.75);
+    expect(critMultiplier(true)).toBe(2.5);
+  });
+
+  it('stamps a bolt fired at 80+ heat from a ready gun, using the heat before the shot', () => {
+    const base = emptyArena();
+    const fire = { ...NEUTRAL_INPUT, firePrimary: true };
+    const shot = (weaponHeat: number) => combatTick({ ...base, player: { ...base.player, energy: { ...base.player.energy, weaponHeat } } }, 1, fire);
+    expect(shot(ENERGY_RULES.hotZoneHeat).projectiles[0]?.hotZone).toBe(true);
+    expect(shot(ENERGY_RULES.hotZoneHeat - 0.5).projectiles[0]?.hotZone).toBe(false);
+  });
+
+  it('deals 2.5x crit damage from a Hot Zone bolt even after the gun has cooled', () => {
+    const target = vec3(0, 0, -300);
+    let hotCrits = 0;
+    for (let seed = 1; seed <= 200; seed += 1) {
+      const base = emptyArena(seed);
+      const bolt = { ...playerBolt('b', add(target, vec3(0, 0, 4)), vec3(0, 0, -390)), hotZone: true };
+      const after = combatTick({ ...base, enemies: [parkedRaider(target)], projectiles: [bolt] });
+      if (!after.events.some((e) => e.kind === 'crit_hit')) continue;
+      hotCrits += 1;
+      const shieldLoss = SHIP_STATS.enemies.raider.shields - (after.enemies[0]?.shields ?? 0);
+      expect(shieldLoss).toBeCloseTo(COMBAT_TUNING.boltDamage * 2.5, 6);
+    }
+    expect(hotCrits).toBeGreaterThan(0);
+  });
+});
+
+describe('manual shield recharge', () => {
+  const recharge = { ...NEUTRAL_INPUT, rechargeShields: true };
+
+  it('fills shields at 28/s straight through the regen delay', () => {
+    const energy = { ...createInitialEnergy(), shieldCharge: 20, shieldRegenDelay: SHIP_STATS.player.shieldRegenDelay };
+    expect(stepEnergy(energy, false, false, true, 1).energy.shieldCharge).toBe(48);
+    expect(stepEnergy({ ...energy, shieldCharge: 90 }, false, false, true, 1).energy.shieldCharge).toBe(100);
+    expect(stepEnergy(energy, false, false, false, 1).energy.shieldCharge).toBe(20);
+  });
+
+  it('holds a ready gun at its heat but keeps an overheat lockout cooling', () => {
+    const warm = { ...createInitialEnergy(), weaponHeat: 60 };
+    expect(stepEnergy(warm, false, false, true, 1).energy.weaponHeat).toBe(60);
+    expect(stepEnergy({ ...warm, weaponState: 'overheated' }, false, false, true, 1).energy.weaponHeat).toBe(60 - ENERGY_RULES.overheatCoolPerSecond);
+  });
+
+  it('keeps cannons and missiles silent while held', () => {
+    const base = emptyArena();
+    const after = combatTick(base, 1, { ...recharge, firePrimary: true, fireMissile: true, fireMissilePressed: true });
+    expect(after.events.filter((e) => e.kind === 'cannon_fired' || e.kind === 'missile_fired')).toEqual([]);
+    expect(after.player.missilesReady).toBe(base.player.missilesReady);
+  });
+
+  it('drops Overdrive to the 100% detent and refuses to re-enter it while held', () => {
+    let world = emptyArena();
+    world = { ...world, player: { ...world.player, throttle: FLIGHT_TUNING.overdriveThrottle, energy: { ...world.player.energy, overdrive: true } } };
+    world = stepWorld(world, recharge, FIXED_DT);
+    expect(world.player.energy.overdrive).toBe(false);
+    expect(world.player.throttle).toBe(FLIGHT_TUNING.maxCruiseThrottle);
+    world = stepWorld(world, { ...recharge, throttleDelta: 1, throttlePushEdge: true }, FIXED_DT);
+    expect(world.player.energy.overdrive).toBe(false);
+  });
+});
+
+describe('low-hull alarm', () => {
+  it('sounds at 35% hull and repeats every 1.5 s, never above it', () => {
+    const base = emptyArena();
+    const critical = { ...base, player: { ...base.player, hull: base.player.maxHull * HULL_CRITICAL_FRACTION } };
+    let world = critical;
+    const alarms: number[] = [];
+    for (let i = 0; i < 200; i += 1) {
+      world = stepWorld({ ...world, player: { ...world.player, hull: critical.player.hull } }, NEUTRAL_INPUT, FIXED_DT);
+      if (world.events.some((e) => e.kind === 'hull_critical')) alarms.push(world.tick);
+    }
+    expect(alarms).toEqual([1, 91, 181]);
+
+    const healthy = stepWorld({ ...base, player: { ...base.player, hull: base.player.maxHull * 0.36 } }, NEUTRAL_INPUT, FIXED_DT);
+    expect(healthy.events.some((e) => e.kind === 'hull_critical')).toBe(false);
+  });
+});
+
+describe('shield break attribution', () => {
+  it('names the wingmate when its bolt breaks a raider shield', () => {
+    const base = emptyArena();
+    const target = vec3(0, 0, -300);
+    const bolt = { ...playerBolt('wb', add(target, vec3(0, 0, 4)), vec3(0, 0, -390)), owner: 'wingmate' as const };
+    const after = combatTick({ ...base, enemies: [parkedRaider(target, { id: 'raider-x', shields: 1 })], projectiles: [bolt] });
+    expect(after.events).toContainEqual(expect.objectContaining({ kind: 'shield_broken', targetId: 'raider-x', attackerId: 'wingmate' }));
   });
 });
 
@@ -575,7 +727,7 @@ describe('variable-ratio reinforcement', () => {
       player: {
         ...base.player,
         dropPity: 4,
-        energy: { ...base.player.energy, weaponState: 'overheated', weaponCharge: 30 },
+        energy: { ...base.player.energy, weaponState: 'overheated', weaponHeat: 70 },
       },
       enemies: [parkedRaider(target, { hull: 1, shields: 0 })],
       projectiles: [playerBolt('b', add(target, vec3(0, 0, 4)), vec3(0, 0, -560))],
@@ -583,7 +735,7 @@ describe('variable-ratio reinforcement', () => {
     const after = combatTick(world);
     expect(after.events).toContainEqual({ kind: 'supply_drop', drop: 'heat_flush' });
     expect(after.events).toContainEqual({ kind: 'weapon_ready' });
-    expect(after.player.energy).toMatchObject({ weaponState: 'ready', weaponCharge: 100 });
+    expect(after.player.energy).toMatchObject({ weaponState: 'ready', weaponHeat: 0 });
     expect(after.player.dropPity).toBe(0);
     expect(after.radio?.text).toContain('Supply drop');
   });
@@ -593,12 +745,12 @@ describe('variable-ratio reinforcement', () => {
     const pass = hostileBolt(add(base.player.position, vec3(10, 0, -3)), vec3(0, 0, 390));
     const fast: WorldState = {
       ...base,
-      player: { ...base.player, velocity: vec3(0, 0, -100), energy: { ...base.player.energy, weaponCharge: 50 } },
+      player: { ...base.player, velocity: vec3(0, 0, -100), energy: { ...base.player.energy, weaponHeat: 50 } },
       projectiles: [pass],
     };
     const rewarded = combatTick(fast);
     expect(rewarded.events).toContainEqual({ kind: 'near_miss', source: 'bolt', reward: 'heat_vent' });
-    expect(rewarded.player.energy.weaponCharge).toBeCloseTo(50 + COMBAT_TUNING.nearMissHeatVent, 6);
+    expect(rewarded.player.energy.weaponHeat).toBeCloseTo(50 - COMBAT_TUNING.nearMissHeatVent, 6);
 
     const slow = combatTick({ ...fast, player: { ...fast.player, velocity: vec3(0, 0, -40) } });
     expect(slow.events.some((e) => e.kind === 'near_miss')).toBe(false);
@@ -687,10 +839,21 @@ describe('missile trigger and manual target pin', () => {
     };
     let launches = 0;
     for (let i = 0; i < 300; i += 1) {
-      world = stepWorld(world, { ...NEUTRAL_INPUT, fireMissile: true }, FIXED_DT);
+      world = stepWorld(world, { ...NEUTRAL_INPUT, fireMissile: true, fireMissilePressed: i === 0 }, FIXED_DT);
       launches += world.events.filter((e) => e.kind === 'missile_fired').length;
     }
     expect(launches).toBe(1);
+  });
+
+  it('launches on a press released before the tick ran, even straight after a held tick', () => {
+    const base = emptyArena();
+    const held = stepWorld(base, { ...NEUTRAL_INPUT, fireMissile: true, fireMissilePressed: true }, FIXED_DT);
+    let world = held;
+    for (let i = 0; i < Math.ceil(COMBAT_TUNING.missileCooldown / FIXED_DT); i += 1) {
+      world = stepWorld(world, { ...NEUTRAL_INPUT, fireMissile: true }, FIXED_DT);
+    }
+    const tapped = stepWorld(world, { ...NEUTRAL_INPUT, fireMissilePressed: true }, FIXED_DT);
+    expect(tapped.events.filter((e) => e.kind === 'missile_fired')).toHaveLength(1);
   });
 
   it('holds RMB through the lock and launches the next missile only once the lock completes', () => {
@@ -698,7 +861,7 @@ describe('missile trigger and manual target pin', () => {
     let world: WorldState = { ...base, enemies: [parkedRaider(add(base.player.position, vec3(0, 0, -500)))] };
     const launchTicks: number[] = [];
     for (let i = 0; i < 120 && launchTicks.length < 2; i += 1) {
-      world = stepWorld(world, { ...NEUTRAL_INPUT, fireMissile: true }, FIXED_DT);
+      world = stepWorld(world, { ...NEUTRAL_INPUT, fireMissile: true, fireMissilePressed: i === 0 }, FIXED_DT);
       if (world.events.some((e) => e.kind === 'missile_fired')) launchTicks.push(world.tick);
     }
     const guided = world.projectiles.filter((p) => p.kind === 'missile' && p.targetId !== null);
@@ -715,7 +878,7 @@ describe('missile trigger and manual target pin', () => {
     }
     expect(world.player.lockState).toEqual({ kind: 'locked', targetId: id });
 
-    world = stepWorld(world, { ...NEUTRAL_INPUT, fireMissile: true }, FIXED_DT);
+    world = stepWorld(world, { ...NEUTRAL_INPUT, fireMissile: true, fireMissilePressed: true }, FIXED_DT);
     expect(world.projectiles.some((p) => p.kind === 'missile' && p.targetId === id)).toBe(true);
     let shieldBroken = false;
     for (let i = 0; i < COMBAT_TUNING.missileTtl / FIXED_DT && !shieldBroken; i += 1) {
@@ -772,11 +935,12 @@ describe('frame event delivery', () => {
 });
 
 describe('two-sided balance harness', () => {
-  it.each(BALANCE_SEEDS)('kills an AFK pilot within 20-65 s (seed %i)', (seed) => {
+  // The floor dropped from 20 s to 18 s when raiders went from 86/98 m/s to 98/112 m/s: seed 2 now falls at 19.9 s.
+  it.each(BALANCE_SEEDS)('kills an AFK pilot within 18-65 s (seed %i)', (seed) => {
     const outcome = flySortie(seed, afkPilot, 90);
     expect(outcome.result).toBe('failed');
     expect(outcome.reason).toBe('FIGHTER DESTROYED');
-    expect(outcome.seconds).toBeGreaterThanOrEqual(20);
+    expect(outcome.seconds).toBeGreaterThanOrEqual(18);
     expect(outcome.seconds).toBeLessThanOrEqual(65);
   });
 
@@ -804,21 +968,21 @@ describe('two-sided balance harness', () => {
   });
 
   it('rewards disciplined bursts with more sustained cannon fire than riding the overheat lockout', () => {
-    const shotsOver30s = (burstFloor: number, burstResume: number): number => {
+    const shotsOver30s = (burstCeiling: number, burstResume: number): number => {
       let world = emptyArena();
       let holdFire = false;
       let shots = 0;
       for (let i = 0; i < 30 * 60; i += 1) {
-        const charge = world.player.energy.weaponCharge;
-        if (charge < burstFloor) holdFire = true;
-        else if (charge >= burstResume) holdFire = false;
+        const heat = world.player.energy.weaponHeat;
+        if (heat > burstCeiling) holdFire = true;
+        else if (heat <= burstResume) holdFire = false;
         world = stepWorld(world, { ...NEUTRAL_INPUT, firePrimary: !holdFire }, FIXED_DT);
         shots += world.events.filter((e) => e.kind === 'cannon_fired' && e.faction === 'friendly').length;
       }
       return shots;
     };
-    const disciplined = shotsOver30s(25, 60);
-    const overheating = shotsOver30s(-1, -1);
+    const disciplined = shotsOver30s(75, 40);
+    const overheating = shotsOver30s(101, 101);
     expect(disciplined).toBeGreaterThan(overheating * 1.2);
   });
 });

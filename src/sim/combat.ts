@@ -1,6 +1,7 @@
 import { hasLineOfSight, isInsideArena, moveThroughArena, steerClearOfArena, sweepArena } from './arena';
-import { ENERGY_RULES, flushWeaponHeat, spendWeaponCharge } from './energy';
+import { addWeaponHeat, ENERGY_RULES, flushWeaponHeat, inHotZone } from './energy';
 import { damagePlayer, FLIGHT_TUNING } from './flight';
+import { FRIGATE_HULL_PROXY } from './frigateLayout';
 import { GROUND_TARGET_SPECS } from './planetaryLayout';
 import { absorbIntoShield, regenShield, SHIP_STATS } from './ships';
 import {
@@ -69,9 +70,11 @@ export const FIGHTER_WEAPON_LAYOUT = {
 } as const;
 
 export const COMBAT_TUNING = {
-  boltSpeed: 560,
+  // Slow enough that crossing targets need the lead pip; the TTL keeps reach near 520 m.
+  boltSpeed: 390,
   boltDamage: 18,
-  boltTtl: 0.92,
+  boltTtl: 1.33,
+  wingmateBoltSpeed: 560,
   primaryFireInterval: 0.14,
   missileSpeed: 330,
   missileDamage: 85,
@@ -170,6 +173,8 @@ export interface CombatStepInput {
   readonly groundSpeaker?: string;
   /** Extra geometry the wingmate steers around, such as canyon terrain outside the arena. */
   readonly wingmateObstacles?: readonly ArenaSolid[];
+  /** Where the player started this tick, before flight moved it; bolts are swept against that motion. */
+  readonly playerStartPosition?: Vec3;
 }
 
 export interface CombatStepOutput {
@@ -470,8 +475,11 @@ function stepPlayerWeapons(
   let nextBarrel: BarrelSide = player.nextBarrel;
   let lockState = lockStep.lockState;
 
-  if (input.firePrimary && primaryCooldown <= 0) {
-    const spent = spendWeaponCharge(energy, ENERGY_RULES.primaryShotCost);
+  // Manual shield recharge takes the power the weapons would draw.
+  const weaponsOnline = !input.rechargeShields;
+  if (weaponsOnline && input.firePrimary && primaryCooldown <= 0) {
+    const hotZone = inHotZone(energy);
+    const spent = addWeaponHeat(energy, ENERGY_RULES.primaryShotHeat);
     if (spent !== null) {
       energy = spent.energy;
       primaryCooldown = COMBAT_TUNING.primaryFireInterval;
@@ -497,6 +505,7 @@ function stepPlayerWeapons(
           targetId: null,
           damage: COMBAT_TUNING.boltDamage,
           ttl: COMBAT_TUNING.boltTtl,
+          hotZone,
         });
       }
       events.push({ kind: 'cannon_fired', faction: 'friendly', barrel: firedBarrel });
@@ -508,9 +517,8 @@ function stepPlayerWeapons(
 
   // A held trigger only launches on a completed lock; a fresh press launches immediately.
   const lockedId = lockState.kind === 'locked' ? lockState.targetId : null;
-  const freshMissilePress = input.fireMissile && !player.missileTriggerHeld;
-  const missileTriggered = freshMissilePress || (input.fireMissile && lockedId !== null);
-  if (missileTriggered && missileCooldown <= 0 && missilesReady > 0) {
+  const missileTriggered = input.fireMissilePressed || (input.fireMissile && lockedId !== null);
+  if (weaponsOnline && missileTriggered && missileCooldown <= 0 && missilesReady > 0) {
     missilesReady -= 1;
     missileCooldown = COMBAT_TUNING.missileCooldown;
     lockState = { kind: 'none' };
@@ -543,7 +551,6 @@ function stepPlayerWeapons(
       missileCooldown,
       missilesReady,
       missileRearmTimer,
-      missileTriggerHeld: input.fireMissile,
       selectedTargetId: selection.targetId,
       targetPinned: selection.pinned,
       lockState,
@@ -638,6 +645,12 @@ export function critChance(precision: number, pity: number): number {
   );
 }
 
+/** A Hot Zone shot doubles the crit bonus: 1.75x becomes 1 + 2 * 0.75 = 2.5x. */
+export function critMultiplier(hotZone: boolean): number {
+  const bonus = COMBAT_TUNING.critMultiplier - 1;
+  return 1 + (hotZone ? 2 : 1) * bonus;
+}
+
 export function dropChance(pity: number): number {
   return Math.min(1, COMBAT_TUNING.dropBaseChance + pity * COMBAT_TUNING.dropPityStep);
 }
@@ -650,7 +663,7 @@ const DROP_LABELS: Readonly<Record<SupplyDrop, string>> = {
 
 function usefulDrops(player: PlayerShipState): readonly SupplyDrop[] {
   const drops: SupplyDrop[] = [];
-  if (player.energy.weaponState === 'overheated' || player.energy.weaponCharge < 100) drops.push('heat_flush');
+  if (player.energy.weaponState === 'overheated' || player.energy.weaponHeat > 0) drops.push('heat_flush');
   if (player.energy.shieldCharge < SHIP_STATS.player.shields) drops.push('shield_surge');
   if (player.missilesReady < player.maxMissiles) drops.push('missile_resupply');
   return drops.length > 0 ? drops : ['shield_surge'];
@@ -678,12 +691,12 @@ function nearMissReward(
   source: 'bolt' | 'buzz',
 ): { readonly player: PlayerShipState; readonly event: SimEvent } {
   const energy = player.energy;
-  const vent = energy.weaponState === 'ready' && energy.weaponCharge < 100;
+  const vent = energy.weaponState === 'ready' && energy.weaponHeat > 0;
   const rewarded: PlayerShipState = {
     ...player,
     nearMissCooldown: COMBAT_TUNING.nearMissCooldown,
     energy: vent
-      ? { ...energy, weaponCharge: Math.min(100, energy.weaponCharge + COMBAT_TUNING.nearMissHeatVent) }
+      ? { ...energy, weaponHeat: Math.max(0, energy.weaponHeat - COMBAT_TUNING.nearMissHeatVent) }
       : {
           ...energy,
           shieldCharge: Math.min(SHIP_STATS.player.shields, energy.shieldCharge + COMBAT_TUNING.nearMissShieldRestore),
@@ -742,10 +755,18 @@ function precisionOf(a: Vec3, b: Vec3, center: Vec3, radius: number): number {
  * Earliest entry along the swept segment wins, so the frigate hull shields cores behind it and
  * level walls are real cover.
  */
+const ORIGIN: Vec3 = { x: 0, y: 0, z: 0 };
+
+/** A bolt's path in the frame of a ship that moved `shipStart → shipEnd` over the same tick. */
+function relativePath(a: Vec3, b: Vec3, shipStart: Vec3, shipEnd: Vec3): { readonly a: Vec3; readonly b: Vec3 } {
+  return { a: sub(a, shipStart), b: sub(b, shipEnd) };
+}
+
 function findFriendlyHit(
   a: Vec3,
   b: Vec3,
   enemies: ReadonlyMap<string, EnemyShipState>,
+  enemyStarts: ReadonlyMap<string, Vec3>,
   frigate: CapitalShipState | null,
   subsystems: readonly SubsystemState[],
   reactors: readonly ReactorState[],
@@ -770,8 +791,11 @@ function findFriendlyHit(
     );
   }
   if (frigate !== null) {
-    const hullT = segmentBoxEntry(a, b, frigate.position, frigate.orientation, frigate.halfExtents);
-    if (hullT !== null) consider({ kind: 'hull', t: hullT });
+    for (const slab of FRIGATE_HULL_PROXY) {
+      const center = add(frigate.position, rotateVec3(frigate.orientation, slab.center));
+      const hullT = segmentBoxEntry(a, b, center, frigate.orientation, slab.halfExtents);
+      if (hullT !== null) consider({ kind: 'hull', t: hullT });
+    }
   }
   subsystems.forEach((subsys, index) => {
     if (frigate === null || subsys.hull <= 0) return;
@@ -782,8 +806,9 @@ function findFriendlyHit(
   });
   for (const [id, enemy] of enemies) {
     const radius = SHIP_STATS.enemies[enemy.kind].hitRadius;
-    const t = segmentSphereEntry(a, b, enemy.position, radius);
-    if (t !== null) consider({ kind: 'enemy', t, id, precision: precisionOf(a, b, enemy.position, radius) });
+    const rel = relativePath(a, b, enemyStarts.get(id) ?? enemy.position, enemy.position);
+    const t = segmentSphereEntry(rel.a, rel.b, ORIGIN, radius);
+    if (t !== null) consider({ kind: 'enemy', t, id, precision: precisionOf(rel.a, rel.b, ORIGIN, radius) });
   }
   for (const [id, rock] of asteroids) {
     const t = segmentSphereEntry(a, b, rock.position, rock.radius + COMBAT_TUNING.asteroidHitTolerance);
@@ -799,6 +824,10 @@ function findFriendlyHit(
     if (t !== null) consider({ kind: 'terrain', t });
   }
   return best;
+}
+
+function attackerOf(proj: ProjectileState): 'player' | 'wingmate' | 'enemy' {
+  return proj.owner === 'hostile' ? 'enemy' : proj.owner;
 }
 
 /** A bolt or missile that meets level geometry stops there with a short dust flash. */
@@ -818,7 +847,9 @@ function stepProjectilesAndHits(
   tick: number,
   rngState: number,
   playerInput: PlayerShipState,
+  playerStart: Vec3,
   wingmateCallsign: string,
+  enemyStarts: ReadonlyMap<string, Vec3>,
   enemiesInput: readonly EnemyShipState[],
   friendlyCarrierInput: CapitalShipState,
   hostileFrigateInput: CapitalShipState | null,
@@ -875,7 +906,7 @@ function stepProjectilesAndHits(
     if (roll() < critChance(precision, player.critPity)) {
       player = { ...player, critPity: 0 };
       events.push({ kind: 'crit_hit', position });
-      return proj.damage * COMBAT_TUNING.critMultiplier;
+      return proj.damage * critMultiplier(proj.hotZone === true);
     }
     player = { ...player, critPity: player.critPity + 1 };
     return proj.damage;
@@ -905,7 +936,7 @@ function stepProjectilesAndHits(
 
     if (proj.faction === 'friendly') {
       const found = findFriendlyHit(
-        proj.position, nextPos, enemyMap, hostileFrigateInput, subsystems, reactors, arena, asteroidMap, groundTargets, terrainEntry,
+        proj.position, nextPos, enemyMap, enemyStarts, hostileFrigateInput, subsystems, reactors, arena, asteroidMap, groundTargets, terrainEntry,
       );
       hit = found !== null;
       const impact = found === null ? nextPos : lerpVec3(proj.position, nextPos, found.t);
@@ -955,7 +986,7 @@ function stepProjectilesAndHits(
           const nextHull = enemy.hull - absorbed.hullDamage;
 
           if (absorbed.broke) {
-            events.push({ kind: 'shield_broken', position: enemy.position });
+            events.push({ kind: 'shield_broken', position: enemy.position, targetId: enemy.id, attackerId: attackerOf(proj) });
             nextExplosions.push({
               id: `shdbrk-${tick}-${enemy.id}`,
               position: enemy.position,
@@ -1126,7 +1157,8 @@ function stepProjectilesAndHits(
     } else {
       const wall = sweepArena(proj.position, nextPos, arena, 0);
       const wallT = wall?.t ?? Infinity;
-      const playerHitT = segmentSphereEntry(proj.position, nextPos, player.position, SHIP_STATS.player.hitRadius);
+      const relToPlayer = relativePath(proj.position, nextPos, playerStart, player.position);
+      const playerHitT = segmentSphereEntry(relToPlayer.a, relToPlayer.b, ORIGIN, SHIP_STATS.player.hitRadius);
       const carrierPad = { x: 4, y: 4, z: 4 };
       const carrierHitT = segmentBoxEntry(
         proj.position,
@@ -1173,7 +1205,7 @@ function stepProjectilesAndHits(
         });
       } else if (proj.kind === 'bolt' && flyingDaringly(player)) {
         // The closest point falls strictly inside one segment per pass, so each bolt pays out once.
-        const pass = segmentClosestApproach(proj.position, nextPos, player.position);
+        const pass = segmentClosestApproach(relToPlayer.a, relToPlayer.b, ORIGIN);
         if (pass.t > 0 && pass.t < 1 && pass.distance <= COMBAT_TUNING.nearMissRadius) {
           const reward = nearMissReward(player, 'bolt');
           player = reward.player;
@@ -1261,7 +1293,9 @@ export function stepCombat(ctx: CombatStepInput): CombatStepOutput {
     ctx.tick,
     agentStep.rngState,
     weaponStep.player,
+    ctx.playerStartPosition ?? ctx.player.position,
     agentStep.wingmate.callsign,
+    new Map(ctx.enemies.map((e) => [e.id, e.position])),
     agentStep.enemies,
     ctx.friendlyCarrier,
     ctx.hostileFrigate,
@@ -1513,7 +1547,7 @@ function stepWingmate(
       velocity,
       target.position,
       target.velocity,
-      COMBAT_TUNING.boltSpeed,
+      COMBAT_TUNING.wingmateBoltSpeed,
       0.9,
     );
     if (lead !== null) {
@@ -1525,7 +1559,7 @@ function stepWingmate(
         faction: 'friendly',
         owner: 'wingmate',
         position: add(position, scale(shotDir, 6)),
-        velocity: add(velocity, scale(shotDir, COMBAT_TUNING.boltSpeed)),
+        velocity: add(velocity, scale(shotDir, COMBAT_TUNING.wingmateBoltSpeed)),
         targetId: null,
         damage: 5,
         ttl: 0.9,

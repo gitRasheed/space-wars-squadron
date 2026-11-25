@@ -323,6 +323,7 @@ describe('planetary ground battle', () => {
           throttlePushEdge: tick % 150 === 0,
           firePrimary: r3.value > 0.4,
           fireMissile: tick % 90 === 0,
+          fireMissilePressed: tick % 90 === 0,
         },
         FIXED_DT,
       );

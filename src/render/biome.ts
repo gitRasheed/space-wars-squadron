@@ -1,6 +1,5 @@
 import * as THREE from 'three';
-import type { LevelId } from '../sim/types';
-import { BIOME_CARDS, type BiomeCard, type BiomeId } from './palette';
+import { BIOME_CARDS, type BiomeCard } from './palette';
 
 function vec3Uniform(): THREE.IUniform<THREE.Vector3> {
   return { value: new THREE.Vector3() };
@@ -29,12 +28,6 @@ export const BIOME_UNIFORMS = {
     uGradeHighlightGain: vec3Uniform(),
   },
 } as const;
-
-export const LEVEL_BIOME: Readonly<Record<LevelId, BiomeId>> = {
-  saturn: 'saturnOrbit',
-  trench: 'megastructureTrench',
-  planetary: 'sunsetGroundSupport',
-};
 
 export function setActiveBiome(card: BiomeCard): void {
   const { surface, post } = BIOME_UNIFORMS;

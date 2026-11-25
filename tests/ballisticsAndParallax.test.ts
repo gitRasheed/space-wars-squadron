@@ -24,6 +24,7 @@ import {
   sub,
   vec3,
 } from '../src/sim/math';
+import { SHIP_STATS } from '../src/sim/ships';
 import {
   DEFAULT_SORTIE_SEED,
   FIXED_DT,
@@ -38,7 +39,8 @@ describe('ballistic lead solver, manual aim, cockpit gun alignment, pause freeze
     const shooterPos = vec3(0, 0, 0);
     const shooterVel = vec3(0, 0, -60);
     const targetPos = vec3(-95, 20, -280);
-    const targetVel = vec3(95, -15, 35);
+    // Breaking away flies a straight line at full speed, so the intercept is the only thing under test.
+    const targetVel = scale(normalize(vec3(95, -15, 35)), SHIP_STATS.enemies.raider.breakAwaySpeed);
 
     const t = solveInterceptTime(
       sub(targetPos, shooterPos),
@@ -81,6 +83,7 @@ describe('ballistic lead solver, manual aim, cockpit gun alignment, pause freeze
           position: targetPos,
           velocity: targetVel,
           orientation: quatLookAt(normalize(targetVel)),
+          maneuver: { kind: 'break_away', escapeDir: normalize(targetVel), remainingSeconds: 5 },
           fireCooldown: 99,
         },
       ],
@@ -117,7 +120,7 @@ describe('ballistic lead solver, manual aim, cockpit gun alignment, pause freeze
       ),
     ).toBeNull();
 
-    // 700 m crossing shot exceeds the ~515 m bolt reach (560 m/s * 0.92 s).
+    // 700 m crossing shot exceeds the ~519 m bolt reach (390 m/s * 1.33 s).
     expect(
       computeLeadPoint(
         vec3(0, 0, 0),

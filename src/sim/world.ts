@@ -32,7 +32,7 @@ import type {
   WingmateState,
   WorldState,
 } from './types';
-import { FIXED_DT } from './types';
+import { FIXED_DT, HULL_ALARM_INTERVAL_SECONDS, HULL_CRITICAL_FRACTION } from './types';
 
 function createFriendlyCarrier(): CapitalShipState {
   return {
@@ -196,10 +196,10 @@ function createInitialPlayer(): PlayerShipState {
     selectedTargetId: 'raider-1',
     targetPinned: false,
     lockState: { kind: 'none' },
-    missileTriggerHeld: false,
     critPity: 0,
     dropPity: 0,
     nearMissCooldown: 0,
+    hullAlarmCooldown: 0,
     proximityWarning: false,
     hitFlash: 0,
     recoilKick: 0,
@@ -447,6 +447,9 @@ export function stepWorld(
   }
 
   if (world.phase.kind === 'victory' || world.phase.kind === 'failed') {
+    if (input.returnToBriefing) {
+      return createInitialWorld(world.rngState, false, world.sortie);
+    }
     if (input.launchBriefing || input.restartSortie) {
       return createInitialWorld(world.rngState, true, world.sortie);
     }
@@ -507,6 +510,7 @@ export function stepWorld(
     radio: world.radio,
     input,
     dt,
+    playerStartPosition: world.player.position,
     ...(planetary === null
       ? {}
       : {
@@ -551,13 +555,15 @@ export function stepWorld(
     dt,
   );
 
+  const alarm = soundHullAlarm(combatStep.player, dt);
+
   return {
     tick,
     rngState: combatStep.rngState,
     sortie: world.sortie,
     phase,
     cameraMode: 'cockpit',
-    player: combatStep.player,
+    player: alarm.player,
     wingmate: battle?.wingmate ?? combatStep.wingmate,
     enemies,
     friendlyCarrier: combatStep.friendlyCarrier,
@@ -569,8 +575,21 @@ export function stepWorld(
     radio: battle === null ? combatStep.radio : battle.radio,
     ...tally,
     planetary: planetaryNext,
-    events: [...preEvents, ...combatStep.events, ...(battle?.events ?? [])],
+    events: [...preEvents, ...combatStep.events, ...(battle?.events ?? []), ...alarm.events],
   };
+}
+
+/** Repeats `hull_critical` while the hull sits at or below the critical fraction and the fighter is still alive. */
+export function soundHullAlarm(player: PlayerShipState, dt: number): { readonly player: PlayerShipState; readonly events: readonly SimEvent[] } {
+  const critical = player.hull > 0 && player.hull <= player.maxHull * HULL_CRITICAL_FRACTION;
+  if (!critical) {
+    return { player: player.hullAlarmCooldown === 0 ? player : { ...player, hullAlarmCooldown: 0 }, events: [] };
+  }
+  const remaining = player.hullAlarmCooldown - dt;
+  if (remaining > 1e-9) {
+    return { player: { ...player, hullAlarmCooldown: remaining }, events: [] };
+  }
+  return { player: { ...player, hullAlarmCooldown: HULL_ALARM_INTERVAL_SECONDS }, events: [{ kind: 'hull_critical' }] };
 }
 
 /**

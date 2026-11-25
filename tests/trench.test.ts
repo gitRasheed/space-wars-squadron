@@ -275,6 +275,17 @@ describe('mission select', () => {
     expect(world.sortie.level).toBe('trench');
     expect(world.reactors.every((r) => r.hull === r.maxHull)).toBe(true);
   });
+
+  it('returns from the debrief to the briefing card on B, keeping the mission', () => {
+    const failed: WorldState = { ...trenchWorld(), phase: { kind: 'failed', elapsedSeconds: 30, reason: 'FIGHTER DESTROYED' } };
+    const briefed = stepWorld(failed, { ...NEUTRAL_INPUT, returnToBriefing: true }, FIXED_DT);
+    expect(briefed.phase.kind).toBe('briefing');
+    expect(briefed.sortie.level).toBe('trench');
+    expect(stepWorld(briefed, { ...NEUTRAL_INPUT, selectLevel: 'planetary' }, FIXED_DT).sortie.level).toBe('planetary');
+    // B mid-flight does nothing.
+    const flying = stepWorld(trenchWorld(), { ...NEUTRAL_INPUT, returnToBriefing: true }, FIXED_DT);
+    expect(flying.phase.kind).toBe('active');
+  });
 });
 
 describe('trench soak', () => {
@@ -302,6 +313,7 @@ describe('trench soak', () => {
           throttlePushEdge: tick % 240 === 0,
           firePrimary: r3 > 0.45,
           fireMissile: tick % 120 === 0,
+          fireMissilePressed: tick % 120 === 0,
         };
         world = stepWorld(world, input, FIXED_DT);
 
@@ -310,7 +322,7 @@ describe('trench soak', () => {
         expect(len(p)).toBeLessThanOrEqual(FLIGHT_TUNING.arenaRadius + 1e-6);
         expect(isInsideArena(p, TRENCH_ARENA, PAD - 0.01)).toBe(false);
         if (Math.abs(p.x) < TRENCH_DIMENSIONS.wallInnerX && Math.abs(p.z) < TRENCH_DIMENSIONS.halfLength) insideTrenchTicks += 1;
-        expect(world.player.energy.weaponCharge).toBeGreaterThanOrEqual(0);
+        expect(world.player.energy.weaponHeat).toBeGreaterThanOrEqual(0);
         expect(world.player.energy.shieldCharge).toBeGreaterThanOrEqual(0);
         for (const r of world.reactors) {
           expect(r.hull).toBeGreaterThanOrEqual(0);

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { COCKPIT_GUN_LOCAL, FIGHTER_WEAPON_LAYOUT } from '../sim/combat';
 import { SHIP_STATS } from '../sim/ships';
 import type { AsteroidState, EnemyKind } from '../sim/types';
+import { FRIGATE_HULL_SECTIONS } from '../sim/frigateLayout';
 import { FRIGATE_SUBSYSTEM_LAYOUT } from '../sim/world';
 import { celMat, type CelMaterial } from './celMaterial';
 import { BIOME_CARDS, RIM_PALETTE, SCENE_PALETTE } from './palette';
@@ -1681,17 +1682,9 @@ export function buildHostileFrigateMesh(textures: HullTextureSet): HostileFrigat
   // 1. Sculpted 2-volume tapered dreadnought hull (raked prow + flared armored stern — no flat brick wall!).
   addStyledPart(
     root,
-    createTaperedBoxGeometry({
-      frontWidth: 12,
-      frontHeight: 14,
-      backWidth: 80,
-      backHeight: 30,
-      length: 178,
-      frontYOffset: 6,
-      backYOffset: 0,
-    }),
+    createTaperedBoxGeometry(FRIGATE_HULL_SECTIONS.prow),
     hullPlateMat,
-    { position: [0, 2, -46] },
+    { position: [0, FRIGATE_HULL_SECTIONS.prow.centerY, FRIGATE_HULL_SECTIONS.prow.centerZ] },
   );
   // Chisel armored bow ram cap (blunts any knife-edge dagger artifact in persp-front).
   addStyledPart(
@@ -1709,46 +1702,25 @@ export function buildHostileFrigateMesh(textures: HullTextureSet): HostileFrigat
   // Broad armored stern hull section carrying the mid-hull panel texture cleanly.
   addStyledPart(
     root,
-    createTaperedBoxGeometry({
-      frontWidth: 80,
-      frontHeight: 30,
-      backWidth: 68,
-      backHeight: 28,
-      length: 88,
-      uvTile: 0.28,
-    }),
+    createTaperedBoxGeometry({ ...FRIGATE_HULL_SECTIONS.stern, uvTile: 0.28 }),
     hullMat,
-    { position: [0, 2, 85] },
+    { position: [0, FRIGATE_HULL_SECTIONS.stern.centerY, FRIGATE_HULL_SECTIONS.stern.centerZ] },
   );
 
   // Flush ventral armored keel with recessed lower trench (smooth bow rake, no floating dagger point).
   addStyledPart(
     root,
-    createTaperedBoxGeometry({
-      frontWidth: 16,
-      frontHeight: 6,
-      backWidth: 50,
-      backHeight: 18,
-      length: 190,
-      frontYOffset: 4,
-      backYOffset: -2,
-    }),
+    createTaperedBoxGeometry(FRIGATE_HULL_SECTIONS.keel),
     darkArmorMat,
-    { position: [0, -14, 24] },
+    { position: [0, FRIGATE_HULL_SECTIONS.keel.centerY, FRIGATE_HULL_SECTIONS.keel.centerZ] },
   );
 
   // Stepped dorsal armor spine deck.
   addStyledPart(
     root,
-    createTaperedBoxGeometry({
-      frontWidth: 14,
-      frontHeight: 10,
-      backWidth: 36,
-      backHeight: 14,
-      length: 172,
-    }),
+    createTaperedBoxGeometry(FRIGATE_HULL_SECTIONS.spine),
     armorMat,
-    { position: [0, 20, 22] },
+    { position: [0, FRIGATE_HULL_SECTIONS.spine.centerY, FRIGATE_HULL_SECTIONS.spine.centerZ] },
   );
 
   // Spine blades and bow mandibles sharpen the dreadnought profile.

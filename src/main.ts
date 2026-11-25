@@ -1,7 +1,12 @@
+import type { SoundtrackId } from './audio/bakedSoundtrack';
 import { createSynthAudio } from './audio/synthAudio';
 import { createInputChannel } from './input/keyboardMouse';
-import { createCockpitHud } from './render/cockpitHud';
+import { LEVEL_PRESENTATION } from './levelPresentation';
+import { setActiveBiome } from './render/biome';
+import { createCockpitHud, type DrawnBriefing } from './render/cockpitHud';
+import { BIOME_CARDS, type BiomeId } from './render/palette';
 import { createSceneRenderer } from './render/sceneRenderer';
+import { inHotZone } from './sim/energy';
 import { dot, forwardOf, len, sub } from './sim/math';
 import { terrainHeightAt } from './sim/planetaryLayout';
 import { DEFAULT_SORTIE_SEED, FIXED_DT, type LevelId, type Vec3, type WorldState } from './sim/types';
@@ -11,6 +16,10 @@ interface ReadOnlyTelemetry {
   readonly getSnapshot: () => {
     readonly tick: number;
     readonly level: LevelId;
+    readonly biome: BiomeId | null;
+    readonly soundtrack: SoundtrackId | null;
+    /** What the briefing card drew on the last frame, if it is up. */
+    readonly briefing: DrawnBriefing | null;
     readonly phase: WorldState['phase']['kind'];
     readonly playerPosition: Vec3;
     readonly hull: number;
@@ -20,7 +29,9 @@ interface ReadOnlyTelemetry {
     readonly throttle: number;
     readonly overdrive: boolean;
     readonly weaponState: WorldState['player']['energy']['weaponState'];
-    readonly weaponCharge: number;
+    readonly weaponHeat: number;
+    readonly hotZone: boolean;
+    readonly recharging: boolean;
     readonly shieldCharge: number;
     readonly missilesReady: number;
     readonly enemiesRemaining: number;
@@ -153,10 +164,21 @@ function boot(): void {
   const levelParam = params.get('level');
   const requestedLevel: LevelId = levelParam === 'trench' || levelParam === 'planetary' ? levelParam : 'saturn';
   let world = createInitialWorld(DEFAULT_SORTIE_SEED, false, createLevelConfig(requestedLevel, { airWave: params.get('stage') === 'air' }));
-  const input = createInputChannel(glCanvas, () => world.phase.kind !== 'active');
   const renderer = createSceneRenderer(glCanvas);
   const hud = createCockpitHud(hudCanvas);
+  const input = createInputChannel(glCanvas, () => world.phase.kind !== 'active', (x, y) => hud.levelAt(world, x, y));
   const audio = createSynthAudio();
+
+  // Boot, a briefing pick, launch and restart all land here, so the biome and score never disagree.
+  let presentedBiome: BiomeId | null = null;
+  function present(level: LevelId): void {
+    const { biome, soundtrack } = LEVEL_PRESENTATION[level];
+    if (biome === presentedBiome) return;
+    presentedBiome = biome;
+    setActiveBiome(BIOME_CARDS[biome]);
+    audio.setSoundtrack(soundtrack);
+  }
+  present(world.sortie.level);
 
   function syncViewport(): void {
     const width = window.innerWidth;
@@ -178,6 +200,9 @@ function boot(): void {
     getSnapshot: () => ({
       tick: world.tick,
       level: world.sortie.level,
+      biome: presentedBiome,
+      soundtrack: audio.soundtrack(),
+      briefing: hud.drawnBriefing(),
       phase: world.phase.kind,
       playerPosition: world.player.position,
       hull: world.player.hull,
@@ -187,7 +212,9 @@ function boot(): void {
       throttle: world.player.throttle,
       overdrive: world.player.energy.overdrive,
       weaponState: world.player.energy.weaponState,
-      weaponCharge: world.player.energy.weaponCharge,
+      weaponHeat: world.player.energy.weaponHeat,
+      hotZone: inHotZone(world.player.energy),
+      recharging: world.player.energy.recharging,
       shieldCharge: world.player.energy.shieldCharge,
       missilesReady: world.player.missilesReady,
       enemiesRemaining: world.enemies.length,
@@ -251,6 +278,7 @@ function boot(): void {
       audio.sync(after);
     });
     world = advanced.world;
+    present(world.sortie.level);
     flakBursts += advanced.frameEvents.filter((event) => event.kind === 'flak_burst').length;
     const frameWorld = { ...world, events: advanced.frameEvents };
 

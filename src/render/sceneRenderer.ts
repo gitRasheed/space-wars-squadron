@@ -5,14 +5,12 @@ import {
   FIXED_DT,
   type CapitalShipState,
   type ExplosionState,
-  type LevelId,
   type Quat,
   type Vec3,
   type WorldState,
 } from '../sim/types';
 import { FRIGATE_SUBSYSTEM_LAYOUT } from '../sim/world';
 import { computeCameraPose } from './cameraPose';
-import { LEVEL_BIOME, setActiveBiome } from './biome';
 import { celMat } from './celMaterial';
 import {
   buildAsteroidMesh,
@@ -33,7 +31,7 @@ import {
   type FighterMeshRig,
   type HostileFrigateRig,
 } from './models';
-import { BIOME_CARDS, SCENE_PALETTE } from './palette';
+import { SCENE_PALETTE } from './palette';
 import { createPlanetaryScene, type PlanetaryScene } from './planetaryScene';
 import { CAMERA_CLIP, createStylizedPostPass } from './postProcess';
 import { createHullTextureSet } from './textures';
@@ -336,7 +334,6 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   let trenchSky: THREE.Group | null = null;
   // Built on first planetary frame, then kept so switching missions on the briefing card stays instant.
   let planetaryScene: PlanetaryScene | null = null;
-  let currentLevel: LevelId | null = null;
 
   /** Swaps backdrop, level geometry and biome card when the sortie's level changes. */
   function syncLevel(world: WorldState): void {
@@ -349,10 +346,6 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     if (level === 'planetary' && planetaryScene === null) {
       planetaryScene = createPlanetaryScene();
       scene.add(planetaryScene.root, planetaryScene.sky);
-    }
-    if (level !== currentLevel) {
-      currentLevel = level;
-      setActiveBiome(BIOME_CARDS[LEVEL_BIOME[level]]);
     }
     backdrop.visible = level === 'saturn';
     carrierMesh.visible = level !== 'planetary';
@@ -732,7 +725,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     cockpitRig.muzzleFlash.value = leftFlash || rightFlash ? 1 : 0;
 
     // Diegetic overheat feedback: gun tips glow cherry-hot as heat builds and vent curling plumes on lockout.
-    const heat = 1 - Math.min(1, Math.max(0, player.energy.weaponCharge / 100));
+    const heat = Math.min(1, Math.max(0, player.energy.weaponHeat / 100));
     const overheated = player.energy.weaponState === 'overheated';
     const heatPulse = overheated ? 0.85 + 0.15 * Math.sin(world.tick * 0.35) : 1;
     // When the lockout clears, the same tips flash amber in two hard steps.

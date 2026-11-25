@@ -6,7 +6,10 @@ import {
   type PlayerFireSolution,
 } from '../sim/combat';
 import { add, clamp, distance, dot, forwardOf, len, rightOf, scale, sub, upOf } from '../sim/math';
-import type { GroundTargetState, SupplyDrop, Vec3, WorldState } from '../sim/types';
+import { ENERGY_RULES, inHotZone } from '../sim/energy';
+import { HULL_ALARM_INTERVAL_SECONDS, HULL_CRITICAL_FRACTION, type GroundTargetState, type LevelId, type SupplyDrop, type Vec3, type WorldState } from '../sim/types';
+import { LEVEL_PRESENTATION } from '../levelPresentation';
+import { briefingLayout, briefingLevelAt, hudScaleFor } from './overlayLayout';
 import { HUD_PALETTE } from './palette';
 import type { ProjectedPoint } from './sceneRenderer';
 
@@ -54,6 +57,12 @@ export function computeHudReticlePoint(
   return reticlePoint(playerFireSolution(world), project, width, height);
 }
 
+export interface DrawnBriefing {
+  readonly level: LevelId;
+  readonly title: string;
+  readonly objective: string;
+}
+
 export interface CockpitHud {
   readonly resize: (width: number, height: number) => void;
   readonly render: (
@@ -62,6 +71,10 @@ export interface CockpitHud {
     audioMuted: boolean,
     musicEnabled: boolean,
   ) => void;
+  /** The mission button under a viewport point while the briefing card is up. */
+  readonly levelAt: (world: WorldState, clientX: number, clientY: number) => LevelId | null;
+  /** What the last frame's briefing card showed, or null when no briefing was drawn. */
+  readonly drawnBriefing: () => DrawnBriefing | null;
 }
 
 // One hue per meaning: amber for the player's own systems and aim, gold for peaks and rewards, cyan for shields
@@ -140,13 +153,14 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
   let supply: { readonly drop: SupplyDrop; readonly untilTick: number } | null = null;
   let threats: readonly { readonly position: Vec3; readonly untilTick: number }[] = [];
   // When each own-system warning came on, so its pill can blink in and then hold.
+  let briefingShown: DrawnBriefing | null = null;
   let overheatSince: number | null = null;
   let hullLowSince: number | null = null;
   let proximitySince: number | null = null;
   let pullUpSince: number | null = null;
 
   function hudScale(): number {
-    return clamp(cssHeight / 720, 0.85, 1.45);
+    return hudScaleFor(cssHeight);
   }
 
   function canopyBounds(): Rect {
@@ -314,6 +328,9 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
 
   /** The one state word by the reticle: danger first, then reward, then state. */
   function currentStatus(world: WorldState): Status | null {
+    if (hullLowSince !== null) {
+      return { kind: 'warning', text: 'HULL CRITICAL', sinceTick: hullLowSince };
+    }
     if (overheatSince !== null) {
       return { kind: 'warning', text: 'OVERHEAT', sinceTick: overheatSince };
     }
@@ -322,6 +339,12 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     }
     if (world.player.energy.overdrive) {
       return { kind: 'word', text: 'OVERDRIVE', color: GOLD };
+    }
+    if (world.player.energy.recharging) {
+      return { kind: 'word', text: 'RECHARGING', color: CYAN };
+    }
+    if (inHotZone(world.player.energy)) {
+      return { kind: 'word', text: 'HOT ZONE', color: GOLD };
     }
     if (world.tick < shieldDownUntil) {
       return { kind: 'word', text: 'SHIELD DOWN', color: CYAN };
@@ -413,7 +436,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       strokeInked(marker, style.color, style.weight);
     }
 
-    // Both arcs fill upward from the bottom: shields on the left, gun charge on the right.
+    // Both arcs fill upward from the bottom: shields on the left, cannon heat on the right.
     const radius = RETICLE_ARC_RADIUS * s;
     const leftBottom = Math.PI - RETICLE_ARC_SPAN;
     const rightBottom = RETICLE_ARC_SPAN;
@@ -430,11 +453,19 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     ctx.beginPath();
     ctx.arc(cx, cy, radius, leftBottom, leftBottom + sweep * shield);
     ctx.stroke();
-    const charge = clamp(p.energy.weaponCharge / 100, 0, 1);
-    ctx.strokeStyle = AMBER;
+    const heat = clamp(p.energy.weaponHeat / ENERGY_RULES.maxHeat, 0, 1);
+    const hotStart = ENERGY_RULES.hotZoneHeat / ENERGY_RULES.maxHeat;
+    ctx.strokeStyle = overheated ? CRIMSON : AMBER;
     ctx.beginPath();
-    ctx.arc(cx, cy, radius, rightBottom - sweep * charge, rightBottom);
+    ctx.arc(cx, cy, radius, rightBottom - sweep * (overheated ? heat : Math.min(heat, hotStart)), rightBottom);
     ctx.stroke();
+    if (!overheated && heat > hotStart) {
+      // The Hot Zone: the top fifth of the gauge, where crits hit twice as hard.
+      ctx.strokeStyle = GOLD;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, rightBottom - sweep * heat, rightBottom - sweep * hotStart);
+      ctx.stroke();
+    }
 
     const pipW = 8 * s;
     const pipGap = 4 * s;
@@ -869,28 +900,68 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     drawText(prompt.text, mid, cardY + cardH - 24 * s, prompt.color, { size: 14, align: 'center' });
   }
 
+  function drawBriefing(world: WorldState): void {
+    ctx.fillStyle = 'rgba(6, 7, 15, 0.7)';
+    ctx.fillRect(0, 0, cssWidth, cssHeight);
+    const s = hudScale();
+    const layout = briefingLayout(cssWidth, cssHeight);
+    const { card } = layout;
+    const mid = card.x + card.w * 0.5;
+    ctx.fillStyle = 'rgba(11, 13, 24, 0.95)';
+    ctx.fillRect(card.x, card.y, card.w, card.h);
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 6;
+    ctx.strokeRect(card.x, card.y, card.w, card.h);
+    ctx.strokeStyle = AMBER;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(card.x, card.y, card.w, card.h);
+    drawText('SPACE WAR SQUADRONS', mid, card.y + 44 * s, AMBER, { size: 25, align: 'center' });
+    ctx.fillStyle = AMBER;
+    ctx.fillRect(card.x + 22 * s, card.y + 62 * s, card.w - 44 * s, 1.5);
+
+    const selected = world.sortie.level;
+    layout.missions.forEach(({ level, box }, i) => {
+      const on = level === selected;
+      ctx.fillStyle = on ? 'rgba(30, 24, 12, 0.95)' : 'rgba(11, 13, 24, 0.6)';
+      ctx.fillRect(box.x, box.y, box.w, box.h);
+      ctx.strokeStyle = on ? GOLD : TRACK;
+      ctx.lineWidth = on ? 2 : 1;
+      ctx.strokeRect(box.x, box.y, box.w, box.h);
+      drawText(`${i + 1}  ${LEVEL_PRESENTATION[level].title}`, box.x + box.w * 0.5, box.y + box.h * 0.5 + 4 * s, on ? GOLD : CREAM, {
+        size: 11, align: 'center', alpha: on ? 1 : 0.6,
+      });
+    });
+
+    const { title, objective } = LEVEL_PRESENTATION[selected];
+    let y = layout.detailY;
+    drawText(title, mid, y, GOLD, { size: 16, align: 'center' });
+    y += 24 * s;
+    drawText(objective, mid, y, CREAM, { size: 13, align: 'center' });
+    y += 34 * s;
+    const controls = [
+      'MOUSE steer  ·  LMB cannons, fire hot for harder crits  ·  RMB / E lock-on missile',
+      'W / S throttle, tap W at 100% for overdrive  ·  A / D roll  ·  hold C recharge shields',
+      'T target  ·  ESC / P pause  ·  R restart  ·  M / N audio',
+    ];
+    for (const line of controls) {
+      drawText(line, mid, y, HUD_PALETTE.warmWhite, { size: 10, align: 'center', bold: false, alpha: 0.75 });
+      y += 17 * s;
+    }
+    drawText('1 2 3 OR CLICK A MISSION  ·  ENTER OR CLICK TO LAUNCH', mid, card.y + card.h - 20 * s, CREAM, { size: 13, align: 'center' });
+    briefingShown = { level: selected, title, objective };
+  }
+
+  function levelAt(world: WorldState, clientX: number, clientY: number): LevelId | null {
+    if (world.phase.kind !== 'briefing') return null;
+    const rect = canvas.getBoundingClientRect();
+    return briefingLevelAt(briefingLayout(cssWidth, cssHeight), clientX - rect.left, clientY - rect.top);
+  }
+
   function drawOverlay(world: WorldState): void {
     const phase = world.phase;
     const cream = CREAM;
     if (phase.kind === 'briefing') {
-      const trench = world.sortie.level === 'trench';
-      drawCard('SPACE WAR SQUADRONS', AMBER, [
-        {
-          text: trench ? '1  SATURN ORBIT  ·  [ 2  MEGASTRUCTURE TRENCH ]' : '[ 1  SATURN ORBIT ]  ·  2  MEGASTRUCTURE TRENCH',
-          color: GOLD,
-          size: 13,
-        },
-        {
-          text: trench
-            ? 'Fly into the spine and destroy its three conduit cores.'
-            : 'Defend Hearthstone. Destroy the raiders and both frigate cores.',
-          color: cream,
-          size: 13,
-        },
-        { text: 'MOUSE steer  ·  LMB cannons, watch the heat  ·  RMB / E lock-on missile', color: HUD_PALETTE.warmWhite },
-        { text: 'W / S throttle, tap W at 100% for overdrive  ·  A / D roll', color: HUD_PALETTE.warmWhite },
-        { text: 'T target  ·  ESC / P pause  ·  R restart  ·  M / N audio', color: AMBER },
-      ], { text: 'PRESS ENTER OR CLICK TO LAUNCH', color: cream });
+      drawBriefing(world);
     } else if (phase.kind === 'paused') {
       drawCard('SORTIE PAUSED', AMBER, [
         {
@@ -915,10 +986,10 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
           size: 14,
         },
         { text: `Flight time ${phase.elapsedSeconds.toFixed(1)}s`, color: cream, size: 14 },
-      ], { text: 'PRESS R OR ENTER TO FLY AGAIN', color: cream });
+      ], { text: 'R OR ENTER TO FLY AGAIN  ·  B BRIEFING', color: cream });
     } else if (phase.kind === 'failed') {
       drawCard('SORTIE FAILED', AMBER, [{ text: phase.reason, color: cream, size: 14 }], {
-        text: 'PRESS R OR ENTER FOR INSTANT RETRY',
+        text: 'R OR ENTER TO RETRY  ·  B BRIEFING',
         color: cream,
       });
     }
@@ -960,7 +1031,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       for (const evt of world.events) {
         if (evt.kind === 'subsystem_destroyed' || evt.kind === 'ground_target_destroyed') {
           showHitMarker(HIT_MARKERS.objective, tick);
-        } else if (evt.kind === 'shield_broken') {
+        } else if (evt.kind === 'shield_broken' && evt.attackerId === 'player') {
           showHitMarker(HIT_MARKERS.shield, tick);
           shieldDownUntil = tick + SHIELD_DOWN_TICKS;
         } else if (evt.kind === 'hit_confirmed') {
@@ -976,7 +1047,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     }
     const p = world.player;
     overheatSince = p.energy.weaponState === 'overheated' ? (overheatSince ?? tick) : null;
-    hullLowSince = p.hull < p.maxHull * 0.35 ? (hullLowSince ?? tick) : null;
+    hullLowSince = p.hull > 0 && p.hull <= p.maxHull * HULL_CRITICAL_FRACTION ? (hullLowSince ?? tick) : null;
     proximitySince = p.proximityWarning ? (proximitySince ?? tick) : null;
     pullUpSince = world.planetary?.terrainWarning === true ? (pullUpSince ?? tick) : null;
     lastHudTick = tick;
@@ -984,10 +1055,15 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
 
   function render(world: WorldState, project: Project, audioMuted: boolean, musicEnabled: boolean): void {
     ctx.clearRect(0, 0, cssWidth, cssHeight);
+    briefingShown = null;
     readEvents(world);
 
     if (world.player.hitFlash > 0.01) {
       drawEdgeFlash('255, 65, 85', world.player.hitFlash * 0.6);
+    } else if (hullLowSince !== null && world.phase.kind === 'active') {
+      // A slow red breath at the canopy edge, in step with the alarm, so low hull reads without a glance at the dash.
+      const breath = 0.5 - 0.5 * Math.cos(((world.tick - hullLowSince) / (HULL_ALARM_INTERVAL_SECONDS * 60)) * Math.PI * 2);
+      drawEdgeFlash('255, 65, 85', 0.08 + breath * 0.16);
     }
 
     const solution = playerFireSolution(world);
@@ -999,5 +1075,5 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     drawOverlay(world);
   }
 
-  return { resize, render };
+  return { resize, render, levelAt, drawnBriefing: () => briefingShown };
 }

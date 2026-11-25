@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import cues from '../src/audio/combat-cues.json';
+import gameCues from '../src/audio/game-cues.json';
 import { BAKED_LOOP } from '../src/audio/bakedSoundtrack';
-import { renderCue, type CueId } from '../src/audio/combatCues';
+import { CUE_IDS, renderCue, type CueId } from '../src/audio/combatCues';
 import { COMBAT_LOOP_SCORE, renderCombatLoopStereo } from '../src/audio/combatScore';
 import { mixVoice, noiseGenerator, stereoBuffer } from '../src/audio/renderVoice';
 import { createSynthAudio, type SynthAudioOptions } from '../src/audio/synthAudio';
@@ -121,7 +122,7 @@ describe('combat audio', () => {
   it('renders every cue in the quiet syncs after the score, ahead of its first trigger', () => {
     const { ctx, tick } = cockpit(false);
     const createBuffer = vi.spyOn(ctx, 'createBuffer');
-    const playable = Object.keys(cues).length - 1;
+    const playable = CUE_IDS.length;
     for (let i = 0; i < SCORE_TICKS + playable; i++) tick();
     expect(createBuffer).toHaveBeenCalledTimes(1 + playable);
     tick({ kind: 'missile_fired' }, { kind: 'subsystem_destroyed', label: 'SHIELD DOME' });
@@ -195,9 +196,10 @@ describe('combat audio', () => {
     tick({ kind: 'hit_confirmed', isKill: false }, { kind: 'hit_confirmed', isKill: true },
       { kind: 'target_locked' }, { kind: 'missile_fired' }, { kind: 'overdrive_engaged' },
       { kind: 'weapon_overheated' }, { kind: 'player_damaged' },
-      { kind: 'shield_broken', position: { x: 0, y: 0, z: 0 } });
+      { kind: 'shield_broken', position: { x: 0, y: 0, z: 0 }, targetId: 'raider-1', attackerId: 'wingmate' },
+      { kind: 'hull_critical' });
     const expected: CueId[] = ['hit-confirm', 'kill-confirm', 'explosion', 'lock-chirp',
-      'missile-launch', 'boost', 'weapon-overheat', 'player-damage', 'shield-break'];
+      'missile-launch', 'boost', 'weapon-overheat', 'player-damage', 'shield-break', 'hull-warning'];
     expect(ctx.cues).toHaveLength(expected.length);
     for (const [i, id] of expected.entries()) {
       const source = ctx.cues[i];
@@ -229,7 +231,7 @@ describe('combat audio', () => {
     const left = { ...right, x: world.player.position.x - 50 };
     tick({ kind: 'crit_hit', position: right }, { kind: 'supply_drop', drop: 'heat_flush' }, { kind: 'weapon_ready' },
       { kind: 'incoming_fire', position: left }, { kind: 'near_miss', source: 'bolt', reward: 'shield' });
-    const expected: CueId[] = ['crit-hit', 'supply-drop', 'weapon-ready', 'incoming-fire', 'near-miss'];
+    const expected = ['crit-hit', 'supply-drop', 'weapon-ready', 'incoming-fire', 'near-miss'] as const;
     expect(ctx.cues.map(s => s.buffer?.length)).toEqual(expected.map(id => cues[id].durationS * ctx.sampleRate));
     for (const [i, id] of expected.entries()) {
       expect(ctx.cues[i]?.buffer?.getChannelData(0)).toEqual(renderCue(id, ctx.sampleRate).left);
@@ -321,7 +323,7 @@ describe('combat audio', () => {
   });
 
   it('keeps every cue voice inside its buffer, where the game and the reference draw the same noise', () => {
-    for (const cue of Object.values(cues)) {
+    for (const cue of [...Object.values(cues), ...Object.values(gameCues)]) {
       for (const voice of cue.voices) {
         expect(voice.startS + voice.durationS + voice.envelope.releaseS, `${cue.id}/${voice.id}`).toBeLessThanOrEqual(cue.durationS);
       }
@@ -345,7 +347,7 @@ describe('combat audio', () => {
   });
 
   // [frame, left, right] in PCM16 at 48 kHz, read from the reference renders of the standalone recipes.
-  const referenceFrames: Record<CueId, readonly (readonly [number, number, number])[]> = {
+  const referenceFrames: Record<Exclude<keyof typeof cues, 'engine-runup'>, readonly (readonly [number, number, number])[]> = {
     'cannon-shot': [[2669, -1524, -1467], [6093, 415, 761], [8019, -52, -328]],
     'enemy-cannon': [[1918, 1580, 2055], [3835, -475, -572], [5852, -400, -499]],
     'hit-confirm': [[2268, 2793, 2698], [4535, -1104, -334], [6804, 207, 50]],

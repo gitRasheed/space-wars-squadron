@@ -17,6 +17,7 @@ export interface SynthAudio {
   readonly toggleMusic: () => boolean;
   readonly isMusicEnabled: () => boolean;
   readonly setSoundtrack: (id: SoundtrackId | null) => void;
+  readonly soundtrack: () => SoundtrackId | null;
   readonly sync: (world: WorldState) => void;
   readonly destroy: () => void;
 }
@@ -305,6 +306,7 @@ export function createSynthAudio(options: SynthAudioOptions = {}): SynthAudio {
       case 'missile_fired': playCue(bus, 'missile-launch'); break;
       case 'target_locked': playCue(bus, 'lock-chirp'); break;
       case 'player_damaged': playCue(bus, 'player-damage'); break;
+      case 'hull_critical': playCue(bus, 'hull-warning'); break;
       case 'overdrive_engaged': playCue(bus, 'boost'); break;
     }
   }
@@ -350,6 +352,6 @@ export function createSynthAudio(options: SynthAudioOptions = {}): SynthAudio {
   }
 
   return {
-    unlock, toggleMute, isMuted: () => muted, toggleMusic, isMusicEnabled: () => musicEnabled, setSoundtrack, sync, destroy,
+    unlock, toggleMute, isMuted: () => muted, toggleMusic, isMusicEnabled: () => musicEnabled, setSoundtrack, soundtrack: () => soundtrack, sync, destroy,
   };
 }
