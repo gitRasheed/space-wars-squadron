@@ -242,7 +242,7 @@ const STAGES = [
         ...duel.player,
         hull: duel.player.maxHull * 0.2,
         proximityWarning: true,
-        energy: { ...duel.player.energy, weaponState: 'overheated', weaponCharge: 30 },
+        energy: { ...duel.player.energy, weaponState: 'overheated', weaponHeat: 70 },
       };
       globalThis.__STAGE__.play({ ...duel, player }, [], 70);
     },

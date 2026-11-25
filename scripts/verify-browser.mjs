@@ -5,7 +5,7 @@ import { createServer } from 'vite';
 
 const REQUESTED_PORT = process.env.VERIFY_PORT ? Number(process.env.VERIFY_PORT) : 0;
 const OUT_DIR = path.resolve(process.cwd(), process.env.VERIFY_OUT_DIR ?? path.join('artifacts', 'verify'));
-const WAIT_TIMEOUT_MS = 15_000;
+const WAIT_TIMEOUT_MS = Number(process.env.VERIFY_TIMEOUT_MS ?? 15_000);
 
 function assertCondition(condition, message) {
   if (!condition) {
@@ -141,6 +141,29 @@ async function run() {
     page.on('pageerror', (err) => {
       pageErrors.push(err.message);
     });
+    const requestedScores = new Set();
+    page.on('request', (request) => {
+      const score = /\/audio\/([a-z-]+)\.ogg$/.exec(new URL(request.url()).pathname);
+      if (score) requestedScores.add(score[1]);
+    });
+    const { LEVEL_PRESENTATION } = await server.ssrLoadModule('/src/levelPresentation.ts');
+    const { briefingLayout } = await server.ssrLoadModule('/src/render/overlayLayout.ts');
+
+    /** The card must draw this mission's title and objective and the score must switch to its .ogg. */
+    async function expectBriefing(level, description) {
+      const { title, objective, soundtrack } = LEVEL_PRESENTATION[level];
+      const snap = await waitForTelemetry(
+        page,
+        (snap, want) => snap.phase === 'briefing' && snap.level === want.level && snap.briefing?.level === want.level
+          && snap.briefing.title === want.title && snap.briefing.objective === want.objective && snap.soundtrack === want.soundtrack,
+        description,
+        { level, title, objective, soundtrack },
+      );
+      const deadline = Date.now() + WAIT_TIMEOUT_MS;
+      while (!requestedScores.has(soundtrack) && Date.now() < deadline) await page.waitForTimeout(50);
+      assertCondition(requestedScores.has(soundtrack), `${level} briefing never requested audio/${soundtrack}.ogg (saw ${[...requestedScores]})`);
+      return snap;
+    }
 
     await page.goto(baseUrl, { waitUntil: 'networkidle' });
     const initial = await waitForTelemetry(page, (snap) => snap.phase === 'briefing', 'initial briefing phase');
@@ -157,7 +180,7 @@ async function run() {
     await page.keyboard.down('KeyJ');
     const combatSnap = await waitForTelemetry(
       page,
-      (snap) => snap.projectilesCount > 0 || snap.weaponCharge < 100,
+      (snap) => snap.projectilesCount > 0 || snap.weaponHeat > 0,
       'cockpit cannons firing',
     );
     assertCondition(
@@ -276,14 +299,20 @@ async function run() {
       trenchDeep.level === 'trench' && Math.abs(inside.x) < 78 && inside.y > -51.5 && inside.y < 51.5,
       `Player should be flying inside the trench envelope (${JSON.stringify(inside)})`,
     );
-    // 6. Mission selector: the briefing card swaps sorties on 3 and back on 1, before launch.
+    // 6. Mission selector: keys and clicks swap the card's mission, its text and its score before launch.
     await page.goto(baseUrl, { waitUntil: 'networkidle' });
+    requestedScores.clear();
     await waitForTelemetry(page, (snap) => snap.phase === 'briefing' && snap.level === 'saturn', 'default Saturn briefing');
     await page.keyboard.press('Digit3');
-    await waitForTelemetry(page, (snap) => snap.phase === 'briefing' && snap.level === 'planetary', 'mission 3 selected');
+    const briefings = { planetary: await expectBriefing('planetary', 'mission 3 briefing card and score') };
     await page.screenshot({ path: path.join(OUT_DIR, '06-mission-select.png') });
+    const trenchButton = briefingLayout(1280, 720).missions.find((m) => m.level === 'trench').box;
+    await page.mouse.click(trenchButton.x + trenchButton.w / 2, trenchButton.y + trenchButton.h / 2);
+    briefings.trench = await expectBriefing('trench', 'clicked mission 2 briefing card and score');
+    await page.screenshot({ path: path.join(OUT_DIR, '06b-mission-click.png') });
     await page.keyboard.press('Digit1');
-    await waitForTelemetry(page, (snap) => snap.level === 'saturn' && snap.enemiesRemaining > 0, 'mission 1 reselected');
+    briefings.saturn = await expectBriefing('saturn', 'mission 1 briefing card and score');
+    assertCondition(briefings.saturn.enemiesRemaining > 0, 'Saturn sortie should be reloaded with raiders');
 
     // 7. Planetary sortie, direct boot: canyon, pads and markers, then flak engaging the player.
     const planetaryUrl = new URL(baseUrl);
@@ -364,6 +393,7 @@ async function run() {
         'trench-02-mouth.png',
         'trench-03-spine-run.png',
         '06-mission-select.png',
+        '06b-mission-click.png',
         'planetary-01-canyon.png',
         'planetary-02-flak.png',
         'planetary-03-air-wave.png',
@@ -379,6 +409,8 @@ async function run() {
         trenchBriefing,
         trenchMouth,
         trenchDeep,
+        briefings,
+        requestedScores: [...requestedScores],
         canyonSnap,
         flakSnap,
         airSnap,

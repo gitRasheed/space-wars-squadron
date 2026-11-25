@@ -15,8 +15,8 @@
 |---|---|---|---|---|---|---|
 | 1 | Sortie Lifecycle & Launch/Restart | Sum (`SortiePhase`) + dual write sites | Traced | Medium (Common) | `src/main.ts:59-82`, `src/input/keyboardMouse.ts:62-63`, `src/sim/world.ts:153-184` | 3 |
 | 2 | Input Steering & Focus / Pointer Lock | Implicit 2-flag product (`pointerLocked` × `cursorActive` × held keys) | Traced | Medium (Common) | `src/input/keyboardMouse.ts:14-40,102-129,154-164` | 2 |
-| 3 | Throttle Overdrive & Weapon Heat | `overdrive` × `WeaponState` (`ready`/`overheated`) × charges | Traced (pass 3) | Medium (Common) | `src/sim/energy.ts`, `src/sim/flight.ts` | 1 |
-| 4 | Target Selection, Pin & Missile Lock | Sum (`LockState`) × `selectedTargetId` × `targetPinned` × `missileTriggerHeld` × `missilesReady` | Traced (pass 3) | Medium (Common) | `src/sim/combat.ts` (`resolveTargetSelection`, `stepPlayerWeapons`) | 1 |
+| 3 | Throttle Overdrive & Weapon Heat | `overdrive` × `recharging` × `WeaponState` (`ready`/`overheated`) × heat and shield | Traced (pass 3) | Medium (Common) | `src/sim/energy.ts`, `src/sim/flight.ts` | 1 |
+| 4 | Target Selection, Pin & Missile Lock | Sum (`LockState`) × `selectedTargetId` × `targetPinned` × `missilesReady` (fresh press is the `fireMissilePressed` input edge) | Traced (pass 3) | Medium (Common) | `src/sim/combat.ts` (`resolveTargetSelection`, `stepPlayerWeapons`) | 1 |
 | 6 | Enemy Maneuver | Sum (`EnemyManeuver`: `patrol`/`approach`/`break_away`) | Traced (pass 3) | Medium (Common) | `src/sim/combat.ts` (`stepEnemyAi`) | 1 |
 | 7 | Planetary Stage (ground attack → air superiority) | Sum (`PlanetaryStage`) × ground-target hulls × `enemies` | Traced (pass 4) | Low (Edge) | `src/sim/planetary.ts` (`stepGroundBattle`, `remainingPlanetaryHostiles`), `src/sim/world.ts` | 1 |
 | 5 | Web Audio Engine Lifecycle | Implicit (`muted` × `ctx` × `document.hidden`) | Traced | Low (Edge) | `src/audio/synthAudio.ts:13-57,125-138` | 0 |
@@ -97,3 +97,11 @@
 
 - **Machine 7, one-way hand-off.** `PlanetaryStage` lives on the optional `world.planetary`, so `SortiePhase` and its formal model are untouched. `ground_attack` becomes `air_superiority` once `airWaveThreshold` ground targets are down, which spawns the air wave exactly once; nothing moves it back. Restart rebuilds it from `world.sortie.planetary`.
 - **Victory gate.** Stage 1 has no air enemies and no frigate cores, so the orbital rule (`enemies === 0 && cores === 0`) would have won on the first tick. Planetary sorties count living ground targets plus the unspawned wave as remaining hostiles (`remainingPlanetaryHostiles`). `tests/planetary.test.ts` pins this, and dropping the gate fails 8 tests.
+
+## 9. Core loop pass (2026-11-25): heat, Hot Zone, manual recharge
+
+- **Machine 3, heat counts up.** `weaponHeat` runs 0 to 100; a shot that reaches 100 overheats, and the lockout ends when heat cools back to 0. The Hot Zone is `ready ∧ heat ≥ 80`, read before the shot and stamped on the bolt. `formal/EnergyAndLock.tla` bands heat as 0 / warm / Hot Zone / full, asserts only a lockout sits at full heat, and probes that the Hot Zone and an overheat are reachable in two and three shots.
+- **Machine 3, manual recharge.** Holding `C` sets `energy.recharging` for that tick: Overdrive drops and cannot start, cannons and missiles hold fire, shields fill at 28/s past the regen delay, a ready gun's heat holds, and a lockout keeps cooling so `OverheatCompletes` still holds. `RechargeExclusive` checks it in both projections; `ShieldRechargeMutant.tla` must fail it, and `run-formal-check.mjs` measures from TS that the C key lets no shot or Overdrive through.
+- **Machine 4, missile press.** The sim no longer infers a fresh press from `missileTriggerHeld`. Input sends `fireMissilePressed` for any press since the last tick, so a press and release between two ticks still launches.
+- **Machine 1, debrief.** `B` from victory or failure rebuilds the world at the briefing card with the same mission selected.
+

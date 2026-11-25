@@ -76,9 +76,17 @@ describe('formal TLA+ timing agreement at 60 Hz', () => {
       return ohState.weaponState === 'ready';
     });
 
+    let rechargeState: EnergyState = { ...damaged, shieldCharge: 0 };
+    const rechargeTicks = ticksUntil(() => {
+      rechargeState = stepEnergy(rechargeState, false, false, true, FIXED_DT).energy;
+      return rechargeState.shieldCharge >= 100;
+    });
+
     const rack = player.maxMissiles;
     expect(shieldDelayTicks).toBe(133);
     expect(overheatTicks).toBe(400);
+    // 28/s from empty, straight through the regen delay the hit just set.
+    expect(rechargeTicks).toBe(215);
     expect(acquireTicks).toBe(48);
     expect((shotTicks[1] ?? 0) - (shotTicks[0] ?? 0)).toBe(9);
     expect((missileTicks[1] ?? 0) - (missileTicks[0] ?? 0)).toBe(34);
