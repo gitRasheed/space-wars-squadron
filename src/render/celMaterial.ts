@@ -1,18 +1,10 @@
 import * as THREE from 'three';
-import { CEL_SHADING, RIM_PALETTE, SUN_DIRECTION } from './palette';
+import { BIOME_UNIFORMS } from './biome';
+import { CEL_SHADING } from './palette';
 
 export function glslVec3(values: readonly [number, number, number]): string {
   return `vec3(${values.map((v) => v.toFixed(4)).join(', ')})`;
 }
-
-function glslDirection(x: number, y: number, z: number): string {
-  const length = Math.hypot(x, y, z);
-  return glslVec3([x / length, y / length, z / length]);
-}
-
-const SUN_GLSL = glslDirection(SUN_DIRECTION.x, SUN_DIRECTION.y, SUN_DIRECTION.z);
-// Skylight arrives from above on the side away from the sun.
-const BOUNCE_GLSL = glslDirection(-SUN_DIRECTION.x, 0.6, -SUN_DIRECTION.z);
 
 // A band edge widened by one pixel of its own gradient: crisp, but it never crawls.
 export const CEL_STEP_GLSL = `
@@ -23,6 +15,8 @@ float celStep(float edge, float value) {
 `;
 
 const CEL_VERTEX = `
+uniform vec3 uSunDirection;
+uniform vec3 uBounceDirection;
 varying vec3 vNormal;
 varying vec3 vViewPosition;
 varying vec3 vSunView;
@@ -35,8 +29,8 @@ void main() {
   vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
   vViewPosition = -mvPosition.xyz;
   vNormal = normalMatrix * normal;
-  vSunView = (viewMatrix * vec4(${SUN_GLSL}, 0.0)).xyz;
-  vBounceView = (viewMatrix * vec4(${BOUNCE_GLSL}, 0.0)).xyz;
+  vSunView = (viewMatrix * vec4(uSunDirection, 0.0)).xyz;
+  vBounceView = (viewMatrix * vec4(uBounceDirection, 0.0)).xyz;
   vLocal = position;
   vLocalNormal = normal;
   vUv = uv;
@@ -52,6 +46,11 @@ uniform vec3 uRimColor;
 uniform float uRimStrength;
 uniform float uPanelSize;
 uniform float uGloss;
+uniform vec3 uBandHighlight;
+uniform vec3 uBandBase;
+uniform vec3 uBandShadow;
+uniform vec3 uBandBounce;
+uniform vec3 uGlint;
 #ifdef USE_MAP
 uniform sampler2D uMap;
 #endif
@@ -118,16 +117,18 @@ void main() {
   albedo *= plate;
 
   float ndl = dot(n, sun);
-  vec3 band = mix(${glslVec3(CEL_SHADING.shadow)}, ${glslVec3(CEL_SHADING.bounce)}, celStep(${CEL_SHADING.bounceEdge.toFixed(3)}, dot(n, normalize(vBounceView))));
-  band = mix(band, ${glslVec3(CEL_SHADING.base)}, celStep(${CEL_SHADING.shadowEdge.toFixed(3)}, ndl));
-  band = mix(band, ${glslVec3(CEL_SHADING.highlight)}, celStep(${CEL_SHADING.highlightEdge.toFixed(3)}, ndl));
+  vec3 band = mix(uBandShadow, uBandBounce, celStep(${CEL_SHADING.bounceEdge.toFixed(3)}, dot(n, normalize(vBounceView))));
+  band = mix(band, uBandBase, celStep(${CEL_SHADING.shadowEdge.toFixed(3)}, ndl));
+  band = mix(band, uBandHighlight, celStep(${CEL_SHADING.highlightEdge.toFixed(3)}, ndl));
   vec3 color = albedo * band;
 
-  float rim = celStep(${CEL_SHADING.rimEdge.toFixed(3)}, 1.0 - max(dot(n, v), 0.0));
-  color += uRimColor * (rim * uRimStrength);
+  // Curvature in 1/m: zero across a flat face, so a plate turning edge-on cannot light up as one slab.
+  float flatFace = 1.0 - smoothstep(0.0, 0.04, length(fwidth(n)) / max(length(fwidth(vViewPosition)), 1e-6));
+  float rim = celStep(mix(${CEL_SHADING.rimEdge.toFixed(3)}, ${CEL_SHADING.rimFlatEdge.toFixed(3)}, flatFace), 1.0 - max(dot(n, v), 0.0));
+  color += uRimColor * (rim * uRimStrength * mix(1.0, ${CEL_SHADING.rimFlatGain.toFixed(3)}, flatFace));
 
   float glint = celStep(0.5, pow(max(dot(n, normalize(sun + v)), 0.0), 40.0));
-  color += ${glslVec3(CEL_SHADING.glint)} * (glint * uGloss) * (0.3 + 0.7 * albedo);
+  color += uGlint * (glint * uGloss) * (0.3 + 0.7 * albedo);
 
   #ifdef USE_MUZZLE_FLASH
   // The cockpit rides the camera, so the flash sits at a fixed view-space point between the gun tips.
@@ -148,6 +149,7 @@ export interface CelOptions {
   readonly map?: THREE.Texture | undefined;
   readonly emissive?: number;
   readonly emissiveIntensity?: number;
+  /** Faction rim; omitted, the surface takes the active biome's rim. */
   readonly rimColor?: number;
   readonly rimStrength?: number;
   /** Armor plate height in local units; 0 leaves the albedo flat. */
@@ -159,19 +161,21 @@ export interface CelOptions {
 
 export interface CelMaterial extends THREE.ShaderMaterial {
   readonly uniforms: {
+    readonly uEmissive: THREE.IUniform<THREE.Color>;
     readonly uEmissiveIntensity: THREE.IUniform<number>;
     readonly [name: string]: THREE.IUniform;
   };
 }
 
-/** The one material every lit hull, rock and cockpit part uses: three bands, a stepped rim, a hard glint. */
+/** The one material every lit hull, rock and cockpit part uses: three bands, a stepped rim, a hard glint, lit by the active biome. */
 export function celMat(color: number, options: CelOptions = {}): CelMaterial {
   const defines: Record<string, string> = {};
   const uniforms: Record<string, THREE.IUniform> = {
     uAlbedo: { value: new THREE.Color(color) },
     uEmissive: { value: new THREE.Color(options.emissive ?? 0x000000) },
     uEmissiveIntensity: { value: options.emissiveIntensity ?? 0 },
-    uRimColor: { value: new THREE.Color(options.rimColor ?? RIM_PALETTE.neutral) },
+    ...BIOME_UNIFORMS.surface,
+    uRimColor: options.rimColor === undefined ? BIOME_UNIFORMS.rim : { value: new THREE.Color(options.rimColor) },
     uRimStrength: { value: options.rimStrength ?? 0.18 },
     uPanelSize: { value: options.panel ?? 0 },
     uGloss: { value: options.gloss ?? 0.1 },

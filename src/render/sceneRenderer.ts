@@ -1,7 +1,14 @@
 import * as THREE from 'three';
 import { COMBAT_TUNING } from '../sim/combat';
-import { add, forwardOf, scale } from '../sim/math';
-import { FIXED_DT, type ExplosionState, type Quat, type Vec3, type WorldState } from '../sim/types';
+import { add, distance, dot, forwardOf, len, lenSq, rightOf, scale, sub, upOf } from '../sim/math';
+import {
+  FIXED_DT,
+  type CapitalShipState,
+  type ExplosionState,
+  type Quat,
+  type Vec3,
+  type WorldState,
+} from '../sim/types';
 import { FRIGATE_SUBSYSTEM_LAYOUT } from '../sim/world';
 import { computeCameraPose } from './cameraPose';
 import { celMat } from './celMaterial';
@@ -16,7 +23,10 @@ import {
   buildPlayerFighterMesh,
   createSoftDotTexture,
   ENEMY_SHIELD_BUBBLE,
+  enemyShieldRadius,
   gaugeNeedleAngle,
+  STRUT_LED_BOOST,
+  strutLedRestColor,
   type CockpitRig,
   type FighterMeshRig,
   type HostileFrigateRig,
@@ -27,6 +37,7 @@ import { createHullTextureSet } from './textures';
 import {
   createBlastShellBatch,
   createBoltBatch,
+  createCritBurstBatch,
   createShieldShatterBatch,
   createShockRingBatch,
   createSparkPool,
@@ -63,14 +74,31 @@ interface MissileVisual {
 }
 
 const BOLT_LENGTH = 15;
-// A cyan blast this large is a shield collapsing, not a shield hit.
-const SHIELD_BREAK_RADIUS = 14;
+const CRIT_BURST_TICKS = 6;
+const CRIT_BURST_RADIUS = 3.2;
+const SHIELD_SHATTER_TICKS = 31;
+const NEAR_MISS_GLINT_TICKS = 3;
+const READY_FLASH_TICKS = 12;
+const LED_PULSE_TICKS = 24;
+const NEVER = -Infinity;
+
+/** A one-shot effect the renderer times itself, in sim ticks from the event that started it. */
+interface TimedBurst {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+  readonly radius: number;
+  readonly bornTick: number;
+  readonly seed: number;
+}
 
 const BOLT_TINTS = {
   friendly: new THREE.Color(SCENE_PALETTE.friendlyBolt).multiplyScalar(2.1),
   hostile: new THREE.Color(SCENE_PALETTE.hostileBolt).multiplyScalar(2.1),
   flame: new THREE.Color(SCENE_PALETTE.missileTrail).multiplyScalar(2.2),
 } as const;
+
+const REWARD_GOLD = new THREE.Color(SCENE_PALETTE.rewardGold);
 
 const BLAST_TINTS: Record<ExplosionState['tint'], THREE.Color> = {
   amber: new THREE.Color(SCENE_PALETTE.explosionAmber),
@@ -85,6 +113,48 @@ function seedFromId(id: string): number {
     hash = (Math.imul(hash, 31) + id.charCodeAt(i)) | 0;
   }
   return ((hash >>> 0) % 1024) / 1024;
+}
+
+function capitalClearance(ship: CapitalShipState, offset: Vec3): number {
+  const outside = (along: Vec3, half: number): number => Math.max(Math.abs(dot(offset, along)) - half, 0);
+  return Math.hypot(
+    outside(rightOf(ship.orientation), ship.halfExtents.x),
+    outside(upOf(ship.orientation), ship.halfExtents.y),
+    outside(forwardOf(ship.orientation), ship.halfExtents.z),
+  );
+}
+
+/** Which canopy side a near miss passed on: -1 left, 1 right, 0 when nothing in the world explains it. */
+function grazedSide(world: WorldState, source: 'bolt' | 'buzz'): -1 | 0 | 1 {
+  const { position, velocity, orientation } = world.player;
+  const passes: { readonly offset: Vec3; readonly clearance: number }[] = [];
+  if (source === 'bolt') {
+    for (const proj of world.projectiles) {
+      if (proj.kind !== 'bolt' || proj.faction !== 'hostile') continue;
+      const rel = sub(proj.position, position);
+      const closing = sub(proj.velocity, velocity);
+      // The bolt has flown on since the graze; its miss vector is the part that stayed put.
+      const miss = sub(rel, scale(closing, dot(rel, closing) / Math.max(lenSq(closing), 1e-6)));
+      passes.push({ offset: miss, clearance: len(miss) });
+    }
+  } else {
+    for (const enemy of world.enemies) {
+      passes.push({ offset: sub(enemy.position, position), clearance: distance(enemy.position, position) });
+    }
+    for (const rock of world.asteroids) {
+      passes.push({ offset: sub(rock.position, position), clearance: distance(rock.position, position) - rock.radius });
+    }
+    for (const ship of [world.friendlyCarrier, world.hostileFrigate]) {
+      const offset = sub(ship.position, position);
+      passes.push({ offset, clearance: capitalClearance(ship, offset) });
+    }
+  }
+  const nearest = passes.reduce<(typeof passes)[number] | null>(
+    (best, pass) => (best === null || pass.clearance < best.clearance ? pass : best),
+    null,
+  );
+  if (nearest === null) return 0;
+  return dot(nearest.offset, rightOf(orientation)) < 0 ? -1 : 1;
 }
 
 function setPose(obj: THREE.Object3D, pos: Vec3, quat: Quat): void {
@@ -194,6 +264,10 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   const enemyVisuals = new Map<string, EnemyVisual>();
   const missileVisuals = new Map<string, MissileVisual>();
   const burstExplosions = new Set<string>();
+  // The sim also spawns a blast where a shield breaks; the shatter replaces it, so those ids are skipped.
+  const shieldBreakBlasts = new Set<string>();
+  let shieldBreaks: TimedBurst[] = [];
+  let critBursts: TimedBurst[] = [];
 
   const wingmateTrail = createTrail(SCENE_PALETTE.wingmateTrail, 34, 0.65);
   scene.add(wingmateTrail.line);
@@ -202,8 +276,9 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   const blastShells = createBlastShellBatch();
   const shockRings = createShockRingBatch();
   const shieldShatters = createShieldShatterBatch();
+  const critStars = createCritBurstBatch();
   const sparks = createSparkPool();
-  scene.add(bolts.mesh, blastShells.mesh, shockRings.mesh, shieldShatters.mesh, sparks.mesh);
+  scene.add(bolts.mesh, blastShells.mesh, shockRings.mesh, shieldShatters.mesh, critStars.mesh, sparks.mesh);
 
   const dustCount = 150;
   const dustPositions = new Float32Array(dustCount * 3);
@@ -280,6 +355,11 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   let lastTick = -1;
   let lastRenderTimeMs = 0;
   let shakeIntensity = 0;
+  let streakKick = 0;
+  let glintTick = NEVER;
+  let glintSide: -1 | 0 | 1 = 0;
+  let readyFlashTick = NEVER;
+  let ledPulseTick = NEVER;
   const charmSwing = { x: 0, z: 0, vx: 0, vz: 0 };
 
   function updateDustField(center: Vec3): void {
@@ -305,6 +385,8 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     const targetOpacity = overdrive ? 0.52 : 0;
     const alpha = 1 - Math.exp(-12 * dt);
     streakMat.opacity += (targetOpacity - streakMat.opacity) * alpha;
+    // A near miss snaps the streaks on for a beat; the easing above lets them drain away.
+    streakMat.opacity = Math.max(streakMat.opacity, streakKick * 0.18);
     speedStreaks.visible = streakMat.opacity > 0.01;
     if (!speedStreaks.visible) {
       return;
@@ -510,11 +592,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
         sparks.burst(exp.position, world.tick - exp.elapsed / FIXED_DT, tint.getHex(), exp.radius);
       }
 
-      if (exp.tint === 'cyan' && exp.radius >= SHIELD_BREAK_RADIUS) {
-        shieldShatters.push(x, y, z, exp.radius * 0.52, t, seed, tint.r, tint.g, tint.b);
-        shockRings.push(x, y, z, exp.radius * 1.2, t, seed, tint.r, tint.g, tint.b);
-        continue;
-      }
+      if (shieldBreakBlasts.has(exp.id)) continue;
       blastShells.push(x, y, z, exp.radius, t, seed, tint.r, tint.g, tint.b);
       if (exp.radius > 15) {
         // Kills get a second, later-blooming lobe so the fireball is not one clean ball.
@@ -527,15 +605,44 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
       }
       shockRings.push(x, y, z, exp.radius * 1.35, t, seed, tint.r, tint.g, tint.b);
     }
+    const shieldTint = BLAST_TINTS.cyan;
+    for (const brk of shieldBreaks) {
+      const t = (world.tick - brk.bornTick) / SHIELD_SHATTER_TICKS;
+      shieldShatters.push(brk.x, brk.y, brk.z, brk.radius, t, brk.seed, shieldTint.r, shieldTint.g, shieldTint.b);
+      shockRings.push(brk.x, brk.y, brk.z, brk.radius * 3.4, t, brk.seed, shieldTint.r, shieldTint.g, shieldTint.b);
+    }
     blastShells.end();
     shockRings.end();
     shieldShatters.end();
 
+    critStars.begin();
+    for (const star of critBursts) {
+      const t = (world.tick - star.bornTick + 0.5) / CRIT_BURST_TICKS;
+      critStars.push(star.x, star.y, star.z, star.radius, t, star.seed, REWARD_GOLD.r, REWARD_GOLD.g, REWARD_GOLD.b);
+    }
+    critStars.end();
+
     if (burstExplosions.size > world.explosions.length) {
       const active = new Set(world.explosions.map((exp) => exp.id));
       for (const id of burstExplosions) {
-        if (!active.has(id)) burstExplosions.delete(id);
+        if (!active.has(id)) {
+          burstExplosions.delete(id);
+          shieldBreakBlasts.delete(id);
+        }
       }
+    }
+  }
+
+  function startShieldBreak(world: WorldState, at: Vec3): void {
+    const owner = world.enemies.find((enemy) => distance(enemy.position, at) < 12);
+    shieldBreaks.push({
+      ...at,
+      radius: enemyShieldRadius(owner?.kind ?? 'raider'),
+      bornTick: world.tick,
+      seed: seedFromId(`${world.tick}:${at.x}`),
+    });
+    for (const exp of world.explosions) {
+      if (exp.tint === 'cyan' && distance(exp.position, at) < 1e-3) shieldBreakBlasts.add(exp.id);
     }
   }
 
@@ -596,11 +703,32 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     const heat = 1 - Math.min(1, Math.max(0, player.energy.weaponCharge / 100));
     const overheated = player.energy.weaponState === 'overheated';
     const heatPulse = overheated ? 0.85 + 0.15 * Math.sin(world.tick * 0.35) : 1;
-    cockpitRig.barrelHeatMat.uniforms.uEmissiveIntensity.value = overheated
-      ? (1.1 + heat * 1.4) * heatPulse
-      : heat > 0.35
-        ? (heat - 0.35) * 1.35
-        : 0;
+    // When the lockout clears, the same tips flash amber in two hard steps.
+    const readyAge = world.tick - readyFlashTick;
+    const readyFlash = readyAge >= 0 && readyAge < READY_FLASH_TICKS;
+    const barrelGlow = cockpitRig.barrelHeatMat.uniforms;
+    barrelGlow.uEmissive.value.setHex(readyFlash ? SCENE_PALETTE.barrelReady : SCENE_PALETTE.barrelHot);
+    barrelGlow.uEmissiveIntensity.value = readyFlash
+      ? (readyAge < 5 ? 2.4 : 1.1)
+      : overheated
+        ? (1.1 + heat * 1.4) * heatPulse
+        : heat > 0.35
+          ? (heat - 0.35) * 1.35
+          : 0;
+
+    const glinting = world.tick - glintTick < NEAR_MISS_GLINT_TICKS;
+    cockpitRig.strutGlints.left.visible = glinting && glintSide <= 0;
+    cockpitRig.strutGlints.right.visible = glinting && glintSide >= 0;
+
+    // A supply drop chases gold up both struts, then lights every rung for one beat.
+    const pulseAge = world.tick - ledPulseTick;
+    for (const led of cockpitRig.strutLeds) {
+      const chase = pulseAge - led.rung * 3;
+      const gold = pulseAge < LED_PULSE_TICKS && ((chase >= 0 && chase < 6) || pulseAge >= 16);
+      led.material.color
+        .setHex(gold ? SCENE_PALETTE.rewardGold : strutLedRestColor(led.rung))
+        .multiplyScalar(gold ? 2.4 : STRUT_LED_BOOST);
+    }
     cockpitRig.heatVents.time.value = world.tick * FIXED_DT;
     cockpitRig.heatVents.heat.value = heat;
     for (const plume of cockpitRig.heatVents.plumes) {
@@ -675,7 +803,14 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     if (tickReset) {
       sparks.clear();
       burstExplosions.clear();
+      shieldBreakBlasts.clear();
+      shieldBreaks = [];
+      critBursts = [];
       shakeIntensity = 0;
+      streakKick = 0;
+      glintTick = NEVER;
+      readyFlashTick = NEVER;
+      ledPulseTick = NEVER;
       clearTrail(wingmateTrail);
       for (const visual of enemyVisuals.values()) {
         clearTrail(visual.trail);
@@ -692,6 +827,20 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
           shakeIntensity = Math.min(1, shakeIntensity + 0.65);
         } else if (evt.kind === 'shield_broken') {
           shakeIntensity = Math.min(1, shakeIntensity + 0.28);
+          startShieldBreak(world, evt.position);
+        } else if (evt.kind === 'crit_hit') {
+          critBursts.push({ ...evt.position, radius: CRIT_BURST_RADIUS, bornTick: world.tick, seed: (world.tick % 60) / 60 });
+        } else if (evt.kind === 'near_miss') {
+          glintTick = world.tick;
+          glintSide = grazedSide(world, evt.source);
+          const tint = evt.source === 'bolt' ? SCENE_PALETTE.nearMissGlint : SCENE_PALETTE.buzzGlint;
+          cockpitRig.strutGlints.left.material.color.setHex(tint).multiplyScalar(2.6);
+          cockpitRig.strutGlints.right.material.color.setHex(tint).multiplyScalar(2.6);
+          streakKick = 1;
+        } else if (evt.kind === 'supply_drop') {
+          ledPulseTick = world.tick;
+        } else if (evt.kind === 'weapon_ready') {
+          readyFlashTick = world.tick;
         } else if (evt.kind === 'hit_confirmed') {
           shakeIntensity = Math.min(1, shakeIntensity + (evt.isKill ? 0.34 : 0.12));
         } else if (evt.kind === 'cannon_fired' && evt.faction === 'friendly') {
@@ -702,6 +851,11 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     shakeIntensity *= Math.exp(-10 * dt);
     if (shakeIntensity < 0.004) {
       shakeIntensity = 0;
+    }
+    streakKick *= Math.exp(-9 * dt);
+    if (tickAdvanced) {
+      shieldBreaks = shieldBreaks.filter((brk) => world.tick - brk.bornTick < SHIELD_SHATTER_TICKS);
+      critBursts = critBursts.filter((star) => world.tick - star.bornTick < CRIT_BURST_TICKS);
     }
 
     setPose(wingmateRig.root, world.wingmate.position, world.wingmate.orientation);

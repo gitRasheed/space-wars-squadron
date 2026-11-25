@@ -263,6 +263,56 @@ export function createShockRingBatch(capacity = 64): FxBatch {
   return batch;
 }
 
+/**
+ * Critical-hit star: a flat six-point burst that snaps out, hollows from the middle and is gone, with no fade.
+ * Same layout as shells; the radius is held to a band of view angle so it reads at any combat range.
+ */
+export function createCritBurstBatch(capacity = 16): FxBatch {
+  const material = fxMaterial(
+    `
+    attribute vec4 aCenter;
+    attribute vec2 aFx;
+    attribute vec3 aTint;
+    varying vec2 vDisc;
+    varying vec2 vFx;
+    varying vec3 vTint;
+
+    void main() {
+      vec4 view = viewMatrix * vec4(aCenter.xyz, 1.0);
+      float dist = length(view.xyz);
+      float radius = clamp(aCenter.w, dist * 0.022, dist * 0.085);
+      view.xy += position.xy * (radius * 2.0);
+      vDisc = position.xy * 2.0;
+      vFx = aFx;
+      vTint = aTint;
+      gl_Position = projectionMatrix * view;
+    }
+    `,
+    `
+    varying vec2 vDisc;
+    varying vec2 vFx;
+    varying vec3 vTint;
+    ${CEL_STEP_GLSL}
+
+    void main() {
+      float t = vFx.x;
+      float r = length(vDisc);
+      float sector = fract((atan(vDisc.y, vDisc.x) + vFx.y * 6.2832) / 1.0472);
+      float point = abs(sector * 2.0 - 1.0);
+      float reach = mix(0.5, 1.0, 1.0 - pow(1.0 - t, 3.0)) * mix(0.3, 1.0, point * point);
+      float hollow = reach * smoothstep(0.3, 1.0, t) * 0.86;
+      float star = (1.0 - celStep(reach, r)) * celStep(hollow, r);
+      vec3 color = mix(vTint * 2.4, vec3(3.3, 3.1, 2.6), (1.0 - celStep(reach * 0.45, r)) * (1.0 - celStep(0.34, t)));
+      gl_FragColor = vec4(color, star);
+    }
+    `,
+    THREE.DoubleSide,
+  );
+  const batch = createFxBatch(new THREE.PlaneGeometry(1, 1), material, capacity, BLAST_LAYOUT);
+  batch.mesh.renderOrder = 3;
+  return batch;
+}
+
 function createGeodesicGeometry(radius: number): THREE.BufferGeometry {
   const geometry = new THREE.IcosahedronGeometry(radius, 1);
   const position = geometry.getAttribute('position');

@@ -1,36 +1,109 @@
-export const SUN_DIRECTION = {
-  x: 0.84,
-  y: 0.18,
-  z: -0.51,
-} as const;
+export type Rgb = readonly [number, number, number];
 
-// Light multipliers per cel band, keyed on N·L against SUN_DIRECTION: warm highlight, saturated base, indigo shadow.
-// Faces in shadow that look toward the sky opposite the sun step up to `bounce`, so backlit shapes keep their form.
+/** Everything about the look that belongs to a place rather than to a ship: light, ink and grade. */
+export interface BiomeCard {
+  readonly sunDirection: { readonly x: number; readonly y: number; readonly z: number };
+  /** Light multipliers per cel band, keyed on N·L. Shadowed faces looking at the sky step up to `bounce`. */
+  readonly bands: {
+    readonly highlight: Rgb;
+    readonly base: Rgb;
+    readonly shadow: Rgb;
+    readonly bounce: Rgb;
+  };
+  readonly glint: Rgb;
+  /** Rim on surfaces that carry no faction rim of their own. */
+  readonly rim: number;
+  readonly inkTint: Rgb;
+  readonly vignetteTint: Rgb;
+  /** Display-space grade: shadows are multiplied and lifted, highlights multiplied. */
+  readonly grade: {
+    readonly shadowGain: Rgb;
+    readonly shadowLift: Rgb;
+    readonly highlightGain: Rgb;
+  };
+}
+
+// Band lumas stay near 0.85 / 0.48 / 0.17 / 0.28 in every biome; a card moves hue only.
+export const BIOME_CARDS = {
+  saturnOrbit: {
+    sunDirection: { x: 0.84, y: 0.18, z: -0.51 },
+    bands: {
+      highlight: [1.0, 0.84, 0.64],
+      base: [0.52, 0.47, 0.52],
+      shadow: [0.14, 0.16, 0.36],
+      bounce: [0.24, 0.27, 0.54],
+    },
+    glint: [1.0, 0.9, 0.76],
+    rim: 0x7c96d8,
+    inkTint: [0.007, 0.008, 0.02],
+    vignetteTint: [0.78, 0.74, 1.0],
+    grade: {
+      shadowGain: [0.92, 0.97, 1.12],
+      shadowLift: [0.008, 0.004, 0.024],
+      highlightGain: [1.05, 1.0, 0.93],
+    },
+  },
+  megastructureTrench: {
+    sunDirection: { x: 0.35, y: 0.85, z: -0.4 },
+    bands: {
+      highlight: [1.0, 0.82, 0.5],
+      base: [0.56, 0.45, 0.38],
+      shadow: [0.07, 0.18, 0.24],
+      bounce: [0.36, 0.26, 0.2],
+    },
+    glint: [1.0, 0.86, 0.6],
+    rim: 0x9fb0f0,
+    inkTint: [0.004, 0.009, 0.014],
+    vignetteTint: [0.7, 0.86, 0.92],
+    grade: {
+      shadowGain: [0.9, 1.0, 1.06],
+      shadowLift: [0.002, 0.01, 0.014],
+      highlightGain: [1.06, 1.0, 0.9],
+    },
+  },
+  sunsetGroundSupport: {
+    sunDirection: { x: 0.8, y: 0.21, z: -0.56 },
+    bands: {
+      highlight: [1.0, 0.82, 0.6],
+      base: [0.6, 0.44, 0.5],
+      shadow: [0.2, 0.13, 0.38],
+      bounce: [0.32, 0.24, 0.56],
+    },
+    glint: [1.0, 0.88, 0.7],
+    rim: 0x8f8fe0,
+    inkTint: [0.012, 0.007, 0.022],
+    vignetteTint: [0.82, 0.72, 0.98],
+    grade: {
+      shadowGain: [0.96, 0.93, 1.12],
+      shadowLift: [0.012, 0.004, 0.024],
+      highlightGain: [1.06, 0.99, 0.92],
+    },
+  },
+} as const satisfies Record<string, BiomeCard>;
+
+export type BiomeId = keyof typeof BIOME_CARDS;
+
+// Band edges and the rim shape are the house style, the same in every biome.
 export const CEL_SHADING = {
-  highlight: [1.0, 0.84, 0.64],
-  base: [0.52, 0.47, 0.52],
-  shadow: [0.14, 0.16, 0.36],
-  bounce: [0.24, 0.27, 0.54],
   bounceEdge: 0.6,
   highlightEdge: 0.42,
   shadowEdge: -0.12,
   rimEdge: 0.78,
-  glint: [1.0, 0.9, 0.76],
+  // A flat face crosses the rim edge all at once, so it waits until it is nearly edge-on and lights at part strength.
+  rimFlatEdge: 0.9,
+  rimFlatGain: 0.6,
   muzzleFlash: [1.0, 0.6, 0.22],
 } as const;
 
 // Rim light doubles as figure-ground separation, so its hue says whose ship it is.
 export const RIM_PALETTE = {
-  neutral: 0x7c96d8,
   friendly: 0x9fdcff,
   hostile: 0xff8fb0,
   rock: 0x9a8fd0,
 } as const;
 
-export const INK_PALETTE = {
-  tint: [0.007, 0.008, 0.02],
-  keep: 0.1,
-} as const;
+/** Share of the colour under an ink line that survives; the rest is the biome's ink tint. */
+export const INK_KEEP = 0.1;
 
 export const SCENE_PALETTE = {
   playerStripe: 0xe88332,
@@ -59,19 +132,24 @@ export const SCENE_PALETTE = {
   heatWisp: 0xffd9bd,
   heatWispCool: 0xb9c4de,
   clampCore: 0xff843b,
+  barrelHot: 0xff3b18,
+  barrelReady: 0xf4b459,
+  ledCyan: 0x6be5ff,
+  ledAmber: 0xf4b459,
+  rewardGold: 0xffd966,
+  nearMissGlint: 0x5dffb3,
+  buzzGlint: 0xfff0d4,
 } as const;
 
 export const HUD_PALETTE = {
   amber: '#f4b459',
   cyan: '#6be5ff',
   crimson: '#ff4d63',
-  emerald: '#5dffb0',
   warmWhite: '#fff0d4',
   cream: '#f6e8cf',
   radioText: '#f2e6cf',
   boostGold: '#ffd966',
   missileOrange: '#ff8e4d',
-  frigateOrange: '#ff8040',
   subsystemMagenta: '#ff52b8',
   panelBg: 'rgba(7, 10, 18, 0.68)',
   inkStroke: '#070812',

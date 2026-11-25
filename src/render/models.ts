@@ -4,7 +4,7 @@ import { SHIP_STATS } from '../sim/ships';
 import type { AsteroidState, EnemyKind } from '../sim/types';
 import { FRIGATE_SUBSYSTEM_LAYOUT } from '../sim/world';
 import { celMat, type CelMaterial } from './celMaterial';
-import { RIM_PALETTE, SCENE_PALETTE, SUN_DIRECTION } from './palette';
+import { BIOME_CARDS, RIM_PALETTE, SCENE_PALETTE } from './palette';
 import { INK_LAYER } from './postProcess';
 import { createHeatVents, createShieldBubble, type HeatVents } from './vfx';
 import type { HullTextureSet } from './textures';
@@ -612,6 +612,25 @@ export interface CockpitRig {
   readonly throttleNeedle: THREE.Group;
   readonly heatNeedle: THREE.Group;
   readonly charm: THREE.Group;
+  /** Each LED owns its material so the renderer can recolour it; `rung` counts up the strut from 0. */
+  readonly strutLeds: readonly StrutLed[];
+  /** One hidden light streak per canopy strut, for whatever grazes that side. */
+  readonly strutGlints: { readonly left: StrutGlint; readonly right: StrutGlint };
+}
+
+export type StrutGlint = THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
+
+export interface StrutLed {
+  readonly rung: number;
+  readonly material: THREE.MeshBasicMaterial;
+}
+
+export const STRUT_LED_RUNGS = 4;
+export const STRUT_LED_BOOST = 1.5;
+
+/** Resting colour of a strut LED: the top rung of each strut is amber, the rest cyan. */
+export function strutLedRestColor(rung: number): number {
+  return rung === STRUT_LED_RUNGS - 1 ? SCENE_PALETTE.ledAmber : SCENE_PALETTE.ledCyan;
 }
 
 function buildMuzzleBurst(scale = 1): THREE.Group {
@@ -688,8 +707,14 @@ export function buildCockpitRig(): CockpitRig {
   const bevelMat = celMat(0x7683a6, { ...interior, gloss: 0.2 });
   const barrelMat = celMat(0x4d5672, { ...interior, gloss: 0.26 });
   const accentMat = celMat(0xd98332, { emissive: 0x4f2304, emissiveIntensity: 0.3, muzzleFlash });
-  const ledAmber = glowMat(0xf4b459, 1, { hdrBoost: 1.5 });
-  const ledCyan = glowMat(0x6be5ff, 1, { hdrBoost: 1.5 });
+  const ledAmber = glowMat(SCENE_PALETTE.ledAmber, 1, { hdrBoost: STRUT_LED_BOOST });
+  const ledCyan = glowMat(SCENE_PALETTE.ledCyan, 1, { hdrBoost: STRUT_LED_BOOST });
+  const strutLeds: StrutLed[] = [];
+  const glintGeo = new THREE.BoxGeometry(0.016, 0.34, 0.022);
+  const strutGlints = {
+    left: new THREE.Mesh(glintGeo, glowMat(SCENE_PALETTE.nearMissGlint)),
+    right: new THREE.Mesh(glintGeo, glowMat(SCENE_PALETTE.nearMissGlint)),
+  };
 
   const strutProfile = new THREE.BoxGeometry(0.048, 1.76, 0.1);
   const hazardGeo = new THREE.BoxGeometry(0.008, 0.028, 0.104);
@@ -711,11 +736,17 @@ export function buildCockpitRig(): CockpitRig {
         rotation: [side * 0.5, 0, 0],
       });
     }
-    for (let i = 0; i < 4; i += 1) {
-      addStyledPart(strut, strutLedGeo, i === 3 ? ledAmber : ledCyan, {
-        position: [-side * 0.024, 0.02 + i * 0.045, -0.02],
+    for (let rung = 0; rung < STRUT_LED_RUNGS; rung += 1) {
+      const material = glowMat(strutLedRestColor(rung), 1, { hdrBoost: STRUT_LED_BOOST });
+      strutLeds.push({ rung, material });
+      addStyledPart(strut, strutLedGeo, material, {
+        position: [-side * 0.024, 0.02 + rung * 0.045, -0.02],
       });
     }
+    const glint = side < 0 ? strutGlints.left : strutGlints.right;
+    glint.position.set(-side * 0.022, 0.44, 0.05);
+    glint.visible = false;
+    strut.add(glint);
 
     addStyledPart(root, new THREE.BoxGeometry(0.22, 0.13, 1.08), frameMat, {
       position: [side * 1.12, -0.72, -0.92],
@@ -731,7 +762,7 @@ export function buildCockpitRig(): CockpitRig {
   brakeGeo.rotateX(Math.PI / 2);
   const gunTipGeo = new THREE.CylinderGeometry(0.016, 0.024, 0.24, 8);
   gunTipGeo.rotateX(Math.PI / 2);
-  const barrelHeatMat = celMat(0x5c6682, { emissive: 0xff3b18, emissiveIntensity: 0 });
+  const barrelHeatMat = celMat(0x5c6682, { emissive: SCENE_PALETTE.barrelHot, emissiveIntensity: 0 });
   const heatVents = createHeatVents([-1, 1]);
 
   function buildBarrelAssembly(side: -1 | 1): { readonly barrel: THREE.Group; readonly muzzle: THREE.Group } {
@@ -898,10 +929,17 @@ export function buildCockpitRig(): CockpitRig {
     throttleNeedle: throttleGauge.needle,
     heatNeedle: heatGauge.needle,
     charm,
+    strutLeds,
+    strutGlints,
   };
 }
 
 export const ENEMY_SHIELD_BUBBLE = 'enemy-shield-bubble';
+
+/** The shield shell sits just outside the sim's hit sphere, so the flare and the collapse match what was hit. */
+export function enemyShieldRadius(kind: EnemyKind): number {
+  return SHIP_STATS.enemies[kind].hitRadius * 1.18;
+}
 
 export function buildEnemyMesh(kind: EnemyKind, textures: HullTextureSet): THREE.Group {
   const root = new THREE.Group();
@@ -1224,9 +1262,7 @@ export function buildEnemyMesh(kind: EnemyKind, textures: HullTextureSet): THREE
     }
   }
 
-  // Geodesic shield bubble: derived from SHIP_STATS hitRadius so visual shield shell matches sim bounds.
-  const shieldRadius = SHIP_STATS.enemies[kind].hitRadius * 1.18;
-  const shieldBubble = createShieldBubble(shieldRadius).mesh;
+  const shieldBubble = createShieldBubble(enemyShieldRadius(kind)).mesh;
   shieldBubble.name = ENEMY_SHIELD_BUBBLE;
   root.add(shieldBubble);
 
@@ -2116,7 +2152,8 @@ export function buildOrbitalBackdrop(
 ): THREE.Group {
   const group = new THREE.Group();
   // Keep the star off to the far right flank so it rim-lights ships cleanly without glaring in the player's eyes.
-  const sunDir = new THREE.Vector3(SUN_DIRECTION.x, SUN_DIRECTION.y, SUN_DIRECTION.z).normalize();
+  const sun = BIOME_CARDS.saturnOrbit.sunDirection;
+  const sunDir = new THREE.Vector3(sun.x, sun.y, sun.z).normalize();
 
   const skyGeo = new THREE.SphereGeometry(5400, 36, 24);
   const skyBake = renderer === undefined ? null : bakeSkyBody(renderer, skyGeo, sunDir);
