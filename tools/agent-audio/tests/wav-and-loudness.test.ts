@@ -315,3 +315,45 @@ describe('BS.1770-4 loudness and 4x true peak contracts', () => {
     }
   });
 });
+
+describe('loop-mode true peak wraps the interpolator around the seam', () => {
+  // A seamless 1 kHz loop whose first sample sits on a peak: zero padding would step from silence into it.
+  const sr: SupportedSampleRate = 48000;
+  const amp = 10 ** (-1.412 / 20);
+  const base = Float64Array.from({ length: sr }, (_, i) => amp * Math.cos((2 * Math.PI * 1000 * i) / sr));
+  const rotate = (by: number): Float64Array => Float64Array.from(base, (_, i) => base[(i + by) % base.length] ?? 0);
+
+  it('measures the same true peak and verdict for every rotation of the loop', () => {
+    const reports = [0, 7, 12, 31].map((by) => {
+      const x = rotate(by);
+      return checkAudio({ sampleRate: sr, channels: [x, x.slice()], format: 'float32' }, `rot${by}.wav`, { loop: true });
+    });
+    const peaks = reports.map((r) => r.loudness.truePeakDbtp ?? Number.NaN);
+    for (const p of peaks) assert.ok(Math.abs(p - (peaks[0] ?? 0)) <= 0.01, `true peaks ${peaks.join(', ')}`);
+    assert.ok((peaks[0] ?? 0) < -1.3, `loop true peak ${peaks[0]}`);
+    const verdicts = reports.map((r) => r.findings.some((f) => f.code === 'TRUE_PEAK_EXCEEDED'));
+    assert.deepEqual(verdicts, [false, false, false, false]);
+  });
+
+  it('reads a peak that falls between the last and first sample at full height', () => {
+    // A periodic pulse of 10 Hz harmonics peaking half a sample before frame 0, so its only peak straddles the seam.
+    const n = 4800;
+    const pulse = Float64Array.from({ length: n }, (_, i) => {
+      let v = 0;
+      for (let k = 1; k <= 200; k += 1) v += Math.cos((2 * Math.PI * k * (i + 0.5)) / n);
+      return (0.5 * v) / 200;
+    });
+    const peaks = [0, 7, 31, n / 2].map((by) => {
+      const x = Float64Array.from(pulse, (_, i) => pulse[(i + by) % n] ?? 0);
+      return measureTruePeak([x], { loop: true }).truePeakDbtp ?? Number.NaN;
+    });
+    for (const p of peaks) assert.ok(Math.abs(p - (peaks[3] ?? 0)) <= 0.01, `pulse true peaks ${peaks.join(', ')}`);
+  });
+
+  it('keeps zero padding at the edges of a one-shot', () => {
+    const x = rotate(0);
+    assert.equal(measureTruePeak([x]).truePeakDbtp?.toFixed(3), '-0.447');
+    const oneShot = checkAudio({ sampleRate: sr, channels: [x], format: 'float32' }, 'one-shot.wav');
+    assert.equal(oneShot.loudness.truePeakDbtp, -0.447);
+  });
+});

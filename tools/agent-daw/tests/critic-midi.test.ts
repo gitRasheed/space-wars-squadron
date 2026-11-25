@@ -96,3 +96,53 @@ test('pitch bends export as pitch-wheel sweeps', () => {
   for (let i = 0; i + 2 < bytes.length; i += 1) if ((bytes[i] ?? 0) === 0xe0) bends += 1;
   assert.ok(bends >= 9, `found ${bends} bend events`);
 });
+
+// Channel events of one exported track in file order; the exporter writes a full status byte on every event.
+function channelEvents(bytes: Uint8Array, trackIndex: number): { tick: number; kind: number; d1: number; d2: number }[] {
+  const u32 = (o: number): number => ((bytes[o] ?? 0) << 24 | (bytes[o + 1] ?? 0) << 16 | (bytes[o + 2] ?? 0) << 8 | (bytes[o + 3] ?? 0)) >>> 0;
+  let o = 14;
+  for (let t = 0; t < trackIndex; t += 1) o += 8 + u32(o + 4);
+  const end = o + 8 + u32(o + 4);
+  let i = o + 8;
+  let tick = 0;
+  const vlq = (): number => {
+    let v = 0;
+    for (;;) {
+      const b = bytes[i++] ?? 0;
+      v = (v << 7) | (b & 0x7f);
+      if ((b & 0x80) === 0) return v;
+    }
+  };
+  const out: { tick: number; kind: number; d1: number; d2: number }[] = [];
+  while (i < end) {
+    tick += vlq();
+    const status = bytes[i++] ?? 0;
+    if (status === 0xff) {
+      i += 1;
+      const len = vlq();
+      i += len;
+      continue;
+    }
+    const kind = status & 0xf0;
+    const d1 = bytes[i++] ?? 0;
+    const d2 = kind === 0xc0 || kind === 0xd0 ? 0 : (bytes[i++] ?? 0);
+    out.push({ tick, kind, d1, d2 });
+  }
+  return out;
+}
+
+test('the wheel is back at centre before an unbent note that starts where a bent one ends', () => {
+  for (const bentBeats of [1, 4 / PPQ]) {
+    const p = project({ bars: 1, tracks: [track('g', 'guitar-electric', [{ midi: 52, startBeat: 0, durationBeats: bentBeats, velocity: 100, pitchBend: 2 }, { midi: 55, startBeat: bentBeats, durationBeats: 1, velocity: 100 }])] });
+    const events = channelEvents(exportMidi(p), 1);
+    const nextOn = events.findIndex((e) => e.kind === 0x90 && e.d1 === 55);
+    const boundary = Math.round(bentBeats * PPQ);
+    assert.equal(events[nextOn]?.tick, boundary);
+    const bends = events.slice(0, nextOn).filter((e) => e.kind === 0xe0);
+    const wheel = (e: { d1: number; d2: number } | undefined): number => (e === undefined ? -1 : e.d1 | (e.d2 << 7));
+    assert.equal(wheel(bends.at(-1)), 8192, `wheel at the unbent note-on after a ${bentBeats}-beat bend`);
+    assert.ok(bends.some((e) => wheel(e) === 9557), 'the sweep reaches +2 semitones');
+    const resetIdx = events.findIndex((e, k) => k < nextOn && e.kind === 0xe0 && e.tick === boundary && wheel(e) === 8192 && events.slice(0, k).some((b) => b.kind === 0xe0 && wheel(b) === 9557));
+    assert.ok(resetIdx >= 0, 'a centre reset follows the last bend step');
+  }
+});

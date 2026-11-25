@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { gateAudio, type GateReport } from '../src/gate.js';
 import { renderProject } from '../src/render.js';
-import { decodeWav, encodeWav, type Audio } from '../src/wav.js';
+import { WavError, decodeWav, encodeWav, type Audio } from '../src/wav.js';
 import { SR, project, tmpDir, track } from './helpers.js';
+
+const cli = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../dist/cli.js');
 
 // A short, clean orchestral loop: strings, piano, timpani and snare through the loop-safe master.
 const clean: Audio = (() => {
@@ -136,4 +140,18 @@ test('the gate writes labelled waveform and spectrogram PNGs', () => {
     assert.deepEqual([...fs.readFileSync(f).subarray(1, 4)], [80, 78, 71]);
   }
   fs.rmSync(path.resolve(dir), { recursive: true, force: true });
+});
+
+test('a WAV cut short under its original header is rejected, by decodeWav and by gate with exit 2', () => {
+  const full = encodeWav({ sampleRate: SR, channels: [new Float64Array(2 * SR).fill(0.25), new Float64Array(2 * SR).fill(0.25)] }, 32);
+  const half = full.slice(0, Math.floor(full.length / 2));
+  assert.throws(() => decodeWav(half), (e: Error) => e instanceof WavError && /truncated/.test(e.message));
+  const file = path.join(tmpDir(), 'half.wav');
+  fs.writeFileSync(file, half);
+  const r = spawnSync(process.execPath, [cli, 'gate', file], { encoding: 'utf8' });
+  assert.equal(r.status, 2, r.stdout);
+  assert.match(r.stderr, /truncated/);
+  // A missing pad byte after an odd-sized final chunk is not truncation.
+  const odd = encodeWav({ sampleRate: SR, channels: [new Float64Array(3)] }, 24);
+  assert.equal(decodeWav(odd).channels[0]?.length, 3);
 });

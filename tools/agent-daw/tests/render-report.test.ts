@@ -63,3 +63,35 @@ test('section brightness: 0 is the existing voicing sample for sample, and raisi
     assert.ok(rolloff(bright) > rolloff(plain) * 1.25, `${type} rolloff ${rolloff(plain)} -> ${rolloff(bright)}`);
   }
 });
+
+test('one-shot stems end on the same frame as the master, with the same fade', () => {
+  const tracks = [
+    track('horn', 'brass-horn', [{ midi: 50, startBeat: 0, durationBeats: 4, velocity: 100 }]),
+    track('pad', 'synth-pad', [{ midi: 57, startBeat: 0, durationBeats: 4, velocity: 100 }], { layer: 'tension' }),
+  ];
+  // tailS 0 cuts while the notes still sound, so the fade has live audio to shape.
+  for (const tailS of [3, 0]) {
+    const r = renderProject(project({ bars: 1, loop: false, kind: 'cue', tracks }), { tailS });
+    const layers = Object.keys(r.stems);
+    assert.deepEqual(layers.sort(), ['base', 'tension']);
+    for (const layer of layers) {
+      const stem = r.stems[layer as 'base'];
+      assert.ok(stem !== undefined);
+      assert.equal(stem.left.length, r.frames, `${layer} stem frames vs master with tailS ${tailS}`);
+      assert.equal(stem.right.length, r.frames);
+      assert.equal(Math.abs(stem.left[r.frames - 1] ?? 1), 0);
+      assert.equal(Math.abs(stem.right[r.frames - 1] ?? 1), 0);
+    }
+    if (tailS === 0) {
+      const fade = Math.round(0.01 * SR);
+      for (const layer of layers) {
+        const stem = r.stems[layer as 'base'];
+        assert.ok(stem !== undefined);
+        const before = Math.max(...stem.left.subarray(r.frames - 2 * fade, r.frames - fade).map(Math.abs));
+        const last = Math.max(...stem.left.subarray(r.frames - fade / 10, r.frames).map(Math.abs));
+        assert.ok(before > 1e-3, `${layer} still sounds before the fade`);
+        assert.ok(last < before * 0.2, `${layer} fades out: ${last} vs ${before}`);
+      }
+    }
+  }
+});

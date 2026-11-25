@@ -9,10 +9,12 @@ export interface Audio {
 
 export type BitDepth = 16 | 24 | 32;
 
+export class WavError extends Error {}
+
 export function decodeWav(bytes: Uint8Array): Audio {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const tag = (o: number): string => String.fromCharCode(bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]);
-  if (bytes.byteLength < 12 || tag(0) !== 'RIFF' || tag(8) !== 'WAVE') throw new Error('not a RIFF/WAVE file');
+  if (bytes.byteLength < 12 || tag(0) !== 'RIFF' || tag(8) !== 'WAVE') throw new WavError('not a RIFF/WAVE file');
   let format = 0;
   let channels = 0;
   let sampleRate = 0;
@@ -22,7 +24,10 @@ export function decodeWav(bytes: Uint8Array): Audio {
     const id = tag(o);
     const size = view.getUint32(o + 4, true);
     const body = o + 8;
+    // A missing pad byte after the last chunk is common and harmless; missing payload is not.
+    if (body + size > bytes.byteLength) throw new WavError(`WAV is truncated: "${id}" chunk declares ${size} bytes but only ${bytes.byteLength - body} remain`);
     if (id === 'fmt ') {
+      if (size < 16) throw new WavError(`WAV fmt chunk is ${size} bytes, expected at least 16`);
       format = view.getUint16(body, true);
       channels = view.getUint16(body + 2, true);
       sampleRate = view.getUint32(body + 4, true);
@@ -30,11 +35,11 @@ export function decodeWav(bytes: Uint8Array): Audio {
       // WAVE_FORMAT_EXTENSIBLE keeps the real format in the first two bytes of the subformat GUID.
       if (format === 0xfffe && size >= 40) format = view.getUint16(body + 24, true);
     } else if (id === 'data') {
-      data = { offset: body, size: Math.min(size, bytes.byteLength - body) };
+      data = { offset: body, size };
     }
     o = body + size + (size % 2);
   }
-  if (data === null || channels === 0) throw new Error('WAV has no fmt or data chunk');
+  if (data === null || channels === 0) throw new WavError('WAV has no fmt or data chunk');
   const bytesPer = bits / 8;
   const frames = Math.floor(data.size / (bytesPer * channels));
   const out = Array.from({ length: channels }, () => new Float64Array(frames));
@@ -50,7 +55,7 @@ export function decodeWav(bytes: Uint8Array): Audio {
         v = ((x << 8) >> 8) / 8388608;
       } else if (format === 1 && bits === 32) v = view.getInt32(p, true) / 2147483648;
       else if (format === 1 && bits === 8) v = (bytes[p] - 128) / 128;
-      else throw new Error(`unsupported WAV encoding: format ${format}, ${bits} bits`);
+      else throw new WavError(`unsupported WAV encoding: format ${format}, ${bits} bits`);
       out[c][i] = v;
     }
   }

@@ -111,7 +111,8 @@ const TRUE_PEAK_TAPS: Float64Array = (() => {
   return flat;
 })();
 
-export function measureTruePeak(channels: readonly Float64Array[]): {
+// A loop is measured circularly: its seam has no edge, so the taps wrap instead of reading zeros.
+export function measureTruePeak(channels: readonly Float64Array[], options?: { readonly loop?: boolean }): {
   readonly truePeakLinear: number;
   readonly truePeakDbtp: number | null;
   readonly channel: number | null;
@@ -127,7 +128,8 @@ export function measureTruePeak(channels: readonly Float64Array[]): {
       continue;
     }
     const n = buf.length;
-    for (let i = -HALF_TAPS; i < n + HALF_TAPS; i += 1) {
+    const loop = options?.loop === true;
+    for (let i = loop ? 0 : -HALF_TAPS; i < (loop ? n : n + HALF_TAPS); i += 1) {
       const base = i - (HALF_TAPS - 1);
       const interior = base >= 0 && base + TAPS_PER_PHASE <= n;
       for (let p = 0; p < TRUE_PEAK_TAPS.length; p += TAPS_PER_PHASE) {
@@ -135,6 +137,10 @@ export function measureTruePeak(channels: readonly Float64Array[]): {
         if (interior) {
           for (let k = 0; k < TAPS_PER_PHASE; k += 1) {
             acc += (buf[base + k] ?? 0) * (TRUE_PEAK_TAPS[p + k] ?? 0);
+          }
+        } else if (loop) {
+          for (let k = 0; k < TAPS_PER_PHASE; k += 1) {
+            acc += (buf[(((base + k) % n) + n) % n] ?? 0) * (TRUE_PEAK_TAPS[p + k] ?? 0);
           }
         } else {
           for (let k = 0; k < TAPS_PER_PHASE; k += 1) {
@@ -213,8 +219,9 @@ function blockEnergies(
 export function measureLoudness(
   channels: readonly Float64Array[],
   sampleRate: SupportedSampleRate,
+  options?: { readonly loop?: boolean },
 ): LoudnessMetrics {
-  const truePeak = measureTruePeak(channels);
+  const truePeak = measureTruePeak(channels, options);
   const frames = channels[0]?.length ?? 0;
   const blockFrames = HOPS_PER_BLOCK * Math.round(0.1 * sampleRate);
 

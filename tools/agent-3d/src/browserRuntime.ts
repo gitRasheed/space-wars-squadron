@@ -79,6 +79,27 @@ function isObjectVisibleInHierarchy(obj) {
   return true;
 }
 
+// Mirrors WebGLRenderer: InstancedMesh.count wins; otherwise instanceCount is clamped by the instanced
+// attributes the shader reads, and an unclamped Infinity reaches GL as 0 instances.
+function drawnInstances(mesh, spans) {
+  if (mesh.isInstancedMesh) return mesh.count;
+  const geo = mesh.geometry;
+  if (!geo.isInstancedBufferGeometry) return 1;
+  const read = new Set();
+  for (const s of spans) {
+    if (typeof s.material.vertexShader === 'string') for (const id of s.material.vertexShader.split(/[^A-Za-z0-9_]+/)) read.add(id);
+  }
+  let max = Infinity;
+  for (const [name, attr] of Object.entries(geo.attributes)) {
+    const data = attr.isInterleavedBufferAttribute ? attr.data : attr;
+    if (!attr.isInstancedBufferAttribute && !data.isInstancedInterleavedBuffer) continue;
+    if (!read.has(name)) continue;
+    max = Math.min(max, data.meshPerAttribute * data.count);
+  }
+  const n = Math.min(geo.instanceCount, max);
+  return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
+}
+
 function activeSpansForMesh(mesh) {
   const geo = mesh.geometry;
   const pos = geo && geo.getAttribute('position');
@@ -237,20 +258,18 @@ function inspectRoot(root, inputKind, glbSource, card) {
       hiddenMeshCount += 1;
       return;
     }
-    const instances = obj.isInstancedMesh ? obj.count : 1;
-    if (instances <= 0) {
-      hiddenMeshCount += 1;
-      return;
-    }
     const spans = activeSpansForMesh(obj);
-    if (spans.length === 0) {
+    const drawn = spans.length === 0 ? 0 : drawnInstances(obj, spans);
+    if (drawn <= 0) {
       hiddenMeshCount += 1;
       return;
     }
+    // Only InstancedMesh carries per-instance matrices and colors; geometry instancing places copies in the shader.
+    const instances = obj.isInstancedMesh ? drawn : 1;
     activeMeshEntries.push({ mesh: obj, spans, instances });
     uniqueGeos.add(obj.geometry);
     for (const span of spans) {
-      trianglesByOccurrence += span.triCount * instances;
+      trianglesByOccurrence += span.triCount * drawn;
       effectiveMaterials.add(span.material);
       collectMaterialTextures(span.material, effectiveTextures);
     }

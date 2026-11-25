@@ -7,7 +7,7 @@ export { critique, CRITIC_WEIGHTS, type Critique } from './critic.js';
 export { gateAudio, CATEGORIES, type GateReport, type GateOptions, type Category } from './gate.js';
 export { exportMidi, parseMidi } from './midi.js';
 export { runEdit, normalize, pitchShift, stretch, trimSilence, fade, layer, EDIT_OPS } from './edit.js';
-export { readWav, writeWav, decodeWav, encodeWav, type Audio } from './wav.js';
+export { readWav, writeWav, decodeWav, encodeWav, WavError, type Audio } from './wav.js';
 export { measureLoudness, measureTruePeak } from './loudness.js';
 export { TOOLS } from './tools.js';
 export { handleMessage } from './mcp.js';

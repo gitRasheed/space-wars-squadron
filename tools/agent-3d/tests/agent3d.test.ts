@@ -505,4 +505,43 @@ export function buildAsset(THREE) {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it('counts InstancedBufferGeometry triangles the way WebGLRenderer draws them', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-3d-ibg-'));
+    try {
+      const factory = (name: string, instanceCount: string, extra = '', material = 'new THREE.MeshBasicMaterial({ color: 0xff0000 })'): string => {
+        const file = path.join(tmpDir, `${name}.mjs`);
+        fs.writeFileSync(
+          file,
+          `
+export function buildAsset(THREE) {
+  const geo = new THREE.InstancedBufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0], 3));
+  ${extra}
+  geo.instanceCount = ${instanceCount};
+  return new THREE.Mesh(geo, ${material});
+}
+`,
+        );
+        return file;
+      };
+      const tris = async (file: string): Promise<number> =>
+        (await runAssetSession({ assetPath: file, card: null, renderSheet: false })).metrics.trianglesByOccurrence;
+
+      const zero = factory('zero', '0');
+      const zeroRes = await runAssetSession({ assetPath: zero, card: null, renderSheet: false });
+      assert.equal(zeroRes.metrics.trianglesByOccurrence, 0);
+      assert.ok(evaluateAssetGates(zeroRes.metrics, null).findings.some((f) => f.id === 'EMPTY_GEOMETRY'));
+      assert.equal(await main(['check', zero]), 1);
+
+      assert.equal(await tris(factory('three', '3')), 3);
+      // Infinity (the default) with no instanced attribute the shader reads draws zero instances.
+      assert.equal(await tris(factory('default', 'Infinity', "geo.setAttribute('offset', new THREE.InstancedBufferAttribute(new Float32Array(12), 3));")), 0);
+      // A shader that reads an instanced attribute clamps the draw to that attribute's instances.
+      const shader = `new THREE.ShaderMaterial({ vertexShader: 'attribute vec3 offset; void main() { gl_Position = projectionMatrix * modelViewMatrix * vec4(position + offset, 1.0); }', fragmentShader: 'void main() { gl_FragColor = vec4(1.0); }' })`;
+      assert.equal(await tris(factory('clamped', 'Infinity', "geo.setAttribute('offset', new THREE.InstancedBufferAttribute(new Float32Array(12), 3));", shader)), 4);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

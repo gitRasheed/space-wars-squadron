@@ -197,16 +197,23 @@ export function renderProject(p: Project, opts: RenderOptions = {}): RenderResul
   const mastered = masterBus(mix, p.master, p.loop, p.sampleRate);
   // Stems get the same DC filter and the bus compressor's gain curve and make-up taken from the full mix,
   // so they sum exactly to the pre-limiter master; only the last fraction of a dB of limiting is missing.
-  for (const [layer, stem] of Object.entries(stems) as [Layer, Stereo][]) stems[layer] = masterStem(stem, mastered.gainCurve, p.master.hpfHz, p.loop, p.sampleRate);
-  const out = p.loop ? mastered.out : trimTail(mastered.out, frames - Math.round((opts.tailS ?? 3) * p.sampleRate), p.sampleRate);
+  // One-shot stems take the master's cut point and fade so they stay frame-aligned with it.
+  const end = p.loop ? frames : tailEnd(mastered.out, frames - Math.round((opts.tailS ?? 3) * p.sampleRate));
+  const finish = (buf: Stereo): Stereo => (p.loop ? buf : cutWithFade(buf, end, p.sampleRate));
+  for (const [layer, stem] of Object.entries(stems) as [Layer, Stereo][]) stems[layer] = finish(masterStem(stem, mastered.gainCurve, p.master.hpfHz, p.loop, p.sampleRate));
+  const out = finish(mastered.out);
   return { mix: out, stems, frames: out.left.length, loop: p.loop, master: mastered.stats, tracks: stats, warnings: trackBalance(stats) };
 }
 
-// One-shots end where the audio decays below -80 dBFS, with a short fade.
-function trimTail(buf: Stereo, minFrames: number, sr = SAMPLE_RATE): Stereo {
+// One-shots end where the audio decays below -80 dBFS.
+function tailEnd(buf: Stereo, minFrames: number): number {
   const floor = dbToGain(-80);
   let end = buf.left.length;
   while (end > minFrames && Math.abs(buf.left[end - 1]) < floor && Math.abs(buf.right[end - 1]) < floor) end -= 1;
+  return end;
+}
+
+function cutWithFade(buf: Stereo, end: number, sr = SAMPLE_RATE): Stereo {
   const out = { left: buf.left.slice(0, end), right: buf.right.slice(0, end) };
   const fade = Math.min(end, Math.round(0.01 * sr));
   for (let i = 0; i < fade; i += 1) {

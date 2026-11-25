@@ -98,7 +98,8 @@ export function exportMidi(p: Project): Uint8Array {
           const v = Math.max(0, Math.min(16383, Math.round(8192 + ((bend * k) / steps / 12) * 8191)));
           events.push({ tick: on + Math.round(((off - on) * k) / steps), order: 15, bytes: [0xe0 | ch, v & 0x7f, (v >> 7) & 0x7f] });
         }
-        events.push({ tick: off, order: 11, bytes: [0xe0 | ch, 0, 64] });
+        // After every sweep step on this tick, before any note-on: short notes can land several steps on the off tick.
+        events.push({ tick: off, order: 18, bytes: [0xe0 | ch, 0, 64] });
       }
     }
     chunks.push(trackChunk(events));

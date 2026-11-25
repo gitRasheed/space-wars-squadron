@@ -596,7 +596,7 @@ export function checkAudio(
   };
   const frames = audio.channels[0]?.length ?? 0;
   const durationS = roundNum(frames / audio.sampleRate, 4);
-  const loudness = measureLoudness(audio.channels, audio.sampleRate);
+  const loudness = measureLoudness(audio.channels, audio.sampleRate, { loop: loopChecked });
   const stereo = measureStereo(audio.channels);
   const aliasingRatio = measureAliasingRatio(audio.channels, audio.sampleRate);
   const spectral: SpectralMetrics = {
