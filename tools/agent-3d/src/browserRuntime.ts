@@ -1,20 +1,25 @@
 import fs from 'node:fs';
-import http from 'node:http';
-import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import * as esbuild from 'esbuild';
-import { chromium } from 'playwright';
 import { inspectGlbSource } from './glbHeader.js';
-import type { AssetMetrics, GlbSourceInfo, StyleCard, ViewMetrics } from './types.js';
+import {
+  bundleBrowserEntry,
+  DEFAULT_TIMEOUT_MS,
+  validateTimeout,
+  WEBGL_SWIFTSHADER_FLAGS,
+  withHarnessPage,
+  withTimeout,
+} from './harness.js';
+import type { AssetMetrics, CaptureSettings, GlbSourceInfo, StyleCard, ViewMetrics } from './types.js';
 
-export const DEFAULT_TIMEOUT_MS = 30000;
+export { DEFAULT_TIMEOUT_MS };
 
-const requireFromHere = createRequire(import.meta.url);
-// Works on Node 20.0.0+ without relying on import.meta.resolve (added in 20.6).
-const THREE_BUILD_DIR = path.dirname(requireFromHere.resolve('three'));
-const THREE_ENTRY = path.resolve(THREE_BUILD_DIR, 'three.module.js');
-const THREE_DIR = path.resolve(THREE_BUILD_DIR, '..');
+export const DEFAULT_CAPTURE: CaptureSettings = {
+  tileWidth: 420,
+  tileHeight: 315,
+  zoom: 1,
+  lighting: 'studio',
+};
 
 export interface BrowserSessionOptions {
   readonly assetPath: string;
@@ -22,11 +27,16 @@ export interface BrowserSessionOptions {
   readonly renderSheet: boolean;
   readonly timeoutMs?: number;
   readonly contactSheetPath?: string;
+  readonly capture?: CaptureSettings;
+  /** Directory for one PNG per view (`<view-id>.png`); omit to skip. */
+  readonly viewsDir?: string;
 }
 
 export interface BrowserSessionResult {
   readonly metrics: AssetMetrics;
   readonly views: readonly ViewMetrics[];
+  readonly consoleErrors: readonly string[];
+  readonly viewPaths: readonly string[];
 }
 
 function buildRuntimeEntrySource(factoryImportPath: string | null): string {
@@ -40,6 +50,9 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { deltaE76, hexSrgbToLinearRgb, linearRgbToLabD65, linearRgbToHexSrgb } from './color.js';
 ${importLine}
+
+const MAX_REPORTED_COLORS = 48;
+const MAX_SHAPE_POINTS = 60000;
 
 function axisVec(name, fallback) {
   switch (name) {
@@ -215,6 +228,7 @@ function inspectRoot(root, inputKind, glbSource, card) {
   });
 
   // Compute exact world bounds from vertices referenced by active spans only.
+  const worldPoints = [];
   for (const entry of activeMeshEntries) {
     const { mesh, spans, instances } = entry;
     const geo = mesh.geometry;
@@ -236,6 +250,7 @@ function inspectRoot(root, inputKind, glbSource, card) {
       for (const vi of referencedVerts) {
         vA.fromBufferAttribute(pos, vi).applyMatrix4(combinedMat);
         worldBox.expandByPoint(vA);
+        worldPoints.push(vA.x, vA.y, vA.z);
       }
     }
   }
@@ -296,130 +311,151 @@ function inspectRoot(root, inputKind, glbSource, card) {
     }
   }
 
-  let palette = {
-    status: 'skipped_no_palette',
-    assessedMeshes: 0,
-    texturedMeshes: 0,
-    sampledCorners: 0,
-    maxDeltaE76: null,
-    worstViolation: null,
+  const palEntries = card && card.palette
+    ? Object.entries(card.palette).map(([role, hex]) => {
+        const lin = hexSrgbToLinearRgb(hex);
+        return { role, hex, lab: linearRgbToLabD65(lin[0], lin[1], lin[2]) };
+      })
+    : [];
+  const hasPalette = palEntries.length > 0;
+
+  let assessedMeshes = 0;
+  let texturedMeshes = 0;
+  let shaderMeshes = 0;
+  let sampledCorners = 0;
+  let maxDelta = 0;
+  let worst = null;
+  const colorSamples = new Map();
+
+  const evalLinearColor = (meshName, lr, lg, lb) => {
+    sampledCorners += 1;
+    const hexSrgb = linearRgbToHexSrgb(lr, lg, lb);
+    let entry = colorSamples.get(hexSrgb);
+    if (!entry) {
+      let bestRole = null;
+      let bestHex = null;
+      let bestD = null;
+      if (hasPalette) {
+        const lab = linearRgbToLabD65(lr, lg, lb);
+        bestD = Infinity;
+        for (const p of palEntries) {
+          const d = deltaE76(lab, p.lab);
+          if (d < bestD) {
+            bestD = d;
+            bestRole = p.role;
+            bestHex = p.hex;
+          }
+        }
+      }
+      entry = { hexSrgb, samples: 0, meshes: new Set(), nearestRole: bestRole, nearestHex: bestHex, deltaE76: bestD };
+      colorSamples.set(hexSrgb, entry);
+    }
+    entry.samples += 1;
+    entry.meshes.add(meshName);
+    if (entry.deltaE76 !== null && entry.deltaE76 > maxDelta) {
+      maxDelta = entry.deltaE76;
+      worst = {
+        meshName,
+        hexSrgb,
+        nearestRole: entry.nearestRole,
+        nearestHex: entry.nearestHex,
+        deltaE76: entry.deltaE76,
+      };
+    }
   };
 
-  if (card && card.palette && Object.keys(card.palette).length > 0) {
-    const palEntries = Object.entries(card.palette).map(([role, hex]) => {
-      const lin = hexSrgbToLinearRgb(hex);
-      return { role, hex, lab: linearRgbToLabD65(lin[0], lin[1], lin[2]) };
-    });
+  for (const entry of activeMeshEntries) {
+    const { mesh, spans, instances } = entry;
+    const geo = mesh.geometry;
+    const colorAttr = geo.getAttribute('color');
+    const idx = geo.index;
+    const meshName = mesh.name || 'unnamed';
+    let meshHadTextured = false;
+    let meshHadShader = false;
+    let meshHadAssessed = false;
 
-    let assessedMeshes = 0;
-    let texturedMeshes = 0;
-    let sampledCorners = 0;
-    let maxDelta = 0;
-    let worst = null;
-
-    const evalLinearColor = (meshName, lr, lg, lb) => {
-      sampledCorners += 1;
-      const lab = linearRgbToLabD65(lr, lg, lb);
-      let bestRole = '';
-      let bestHex = '#000000';
-      let bestD = Infinity;
-      for (const p of palEntries) {
-        const d = deltaE76(lab, p.lab);
-        if (d < bestD) {
-          bestD = d;
-          bestRole = p.role;
-          bestHex = p.hex;
-        }
+    for (const span of spans) {
+      const mat = span.material;
+      const emission = mat.emissive?.clone().multiplyScalar(mat.emissiveIntensity);
+      const hasEmissiveTexture = mat.emissiveMap?.isTexture && emission &&
+        (emission.r !== 0 || emission.g !== 0 || emission.b !== 0);
+      const hasColorTexture =
+        mat.map?.isTexture || hasEmissiveTexture ||
+        (Boolean(mat.isShaderMaterial) && materialHasUniformTexture(mat));
+      if (hasColorTexture) {
+        meshHadTextured = true;
+        continue;
       }
-      if (bestD > maxDelta) {
-        maxDelta = bestD;
-        worst = {
-          meshName,
-          hexSrgb: linearRgbToHexSrgb(lr, lg, lb),
-          nearestRole: bestRole,
-          nearestHex: bestHex,
-          deltaE76: bestD,
-        };
+      // A custom shader without a color property computes its output in GLSL, so its authored color is unknowable here.
+      if (mat.isShaderMaterial && !mat.color) {
+        meshHadShader = true;
+        continue;
       }
-    };
+      meshHadAssessed = true;
+      const matR = mat.color ? mat.color.r : 1;
+      const matG = mat.color ? mat.color.g : 1;
+      const matB = mat.color ? mat.color.b : 1;
+      const sample = (r, g, b) => evalLinearColor(meshName,
+        THREE.MathUtils.clamp(r + (emission?.r ?? 0), 0, 1),
+        THREE.MathUtils.clamp(g + (emission?.g ?? 0), 0, 1),
+        THREE.MathUtils.clamp(b + (emission?.b ?? 0), 0, 1),
+      );
+      const useVertexColors = Boolean(mat.vertexColors) && Boolean(colorAttr);
+      const hasInstColor = Boolean(mesh.isInstancedMesh && mesh.instanceColor);
 
-    for (const entry of activeMeshEntries) {
-      const { mesh, spans, instances } = entry;
-      const geo = mesh.geometry;
-      const colorAttr = geo.getAttribute('color');
-      const idx = geo.index;
-      const meshName = mesh.name || 'unnamed';
-      let meshHadTextured = false;
-      let meshHadAssessed = false;
-
-      for (const span of spans) {
-        const mat = span.material;
-        const emission = mat.emissive?.clone().multiplyScalar(mat.emissiveIntensity);
-        const hasEmissiveTexture = mat.emissiveMap?.isTexture && emission &&
-          (emission.r !== 0 || emission.g !== 0 || emission.b !== 0);
-        const hasColorTexture =
-          mat.map?.isTexture || hasEmissiveTexture ||
-          (Boolean(mat.isShaderMaterial) && materialHasUniformTexture(mat));
-        if (hasColorTexture) {
-          meshHadTextured = true;
-          continue;
+      for (let inst = 0; inst < instances; inst += 1) {
+        let ir = 1, ig = 1, ib = 1;
+        if (hasInstColor) {
+          mesh.getColorAt(inst, instColor);
+          ir = instColor.r;
+          ig = instColor.g;
+          ib = instColor.b;
         }
-        meshHadAssessed = true;
-        const matR = mat.color ? mat.color.r : 1;
-        const matG = mat.color ? mat.color.g : 1;
-        const matB = mat.color ? mat.color.b : 1;
-        const sample = (r, g, b) => evalLinearColor(meshName,
-          THREE.MathUtils.clamp(r + (emission?.r ?? 0), 0, 1),
-          THREE.MathUtils.clamp(g + (emission?.g ?? 0), 0, 1),
-          THREE.MathUtils.clamp(b + (emission?.b ?? 0), 0, 1),
-        );
-        const useVertexColors = Boolean(mat.vertexColors) && Boolean(colorAttr);
-        const hasInstColor = Boolean(mesh.isInstancedMesh && mesh.instanceColor);
-
-        for (let inst = 0; inst < instances; inst += 1) {
-          let ir = 1, ig = 1, ib = 1;
-          if (hasInstColor) {
-            mesh.getColorAt(inst, instColor);
-            ir = instColor.r;
-            ig = instColor.g;
-            ib = instColor.b;
+        if (useVertexColors) {
+          const seen = new Set();
+          for (let i = span.start; i < span.end; i += 1) {
+            const vi = idx ? idx.getX(i) : i;
+            if (seen.has(vi)) continue;
+            seen.add(vi);
+            sample(
+              matR * ir * colorAttr.getX(vi),
+              matG * ig * colorAttr.getY(vi),
+              matB * ib * colorAttr.getZ(vi),
+            );
           }
-          if (useVertexColors) {
-            const seen = new Set();
-            for (let i = span.start; i < span.end; i += 1) {
-              const vi = idx ? idx.getX(i) : i;
-              if (seen.has(vi)) continue;
-              seen.add(vi);
-              sample(
-                matR * ir * colorAttr.getX(vi),
-                matG * ig * colorAttr.getY(vi),
-                matB * ib * colorAttr.getZ(vi),
-              );
-            }
-          } else {
-            sample(matR * ir, matG * ig, matB * ib);
-          }
+        } else {
+          sample(matR * ir, matG * ig, matB * ib);
         }
       }
-
-      if (meshHadTextured) texturedMeshes += 1;
-      if (meshHadAssessed) assessedMeshes += 1;
     }
 
-    palette = {
-      status:
-        texturedMeshes > 0 && assessedMeshes > 0
-          ? 'partial_textured'
-          : texturedMeshes > 0
-            ? 'unassessed_textured'
-            : 'assessed',
-      assessedMeshes,
-      texturedMeshes,
-      sampledCorners,
-      maxDeltaE76: sampledCorners > 0 ? maxDelta : null,
-      worstViolation: worst,
-    };
+    if (meshHadTextured) texturedMeshes += 1;
+    if (meshHadShader) shaderMeshes += 1;
+    if (meshHadAssessed) assessedMeshes += 1;
   }
+
+  const unassessed = texturedMeshes + shaderMeshes;
+  const colors = [...colorSamples.values()]
+    .sort((a, b) => b.samples - a.samples || (b.deltaE76 ?? 0) - (a.deltaE76 ?? 0) || a.hexSrgb.localeCompare(b.hexSrgb))
+    .slice(0, MAX_REPORTED_COLORS)
+    .map((c) => ({ ...c, meshes: [...c.meshes].sort().slice(0, 4) }));
+  const palette = {
+    status: !hasPalette
+      ? 'skipped_no_palette'
+      : unassessed > 0 && assessedMeshes > 0
+        ? 'partial_textured'
+        : unassessed > 0
+          ? 'unassessed_textured'
+          : 'assessed',
+    assessedMeshes,
+    texturedMeshes,
+    shaderMeshes,
+    sampledCorners,
+    distinctColors: colorSamples.size,
+    maxDeltaE76: hasPalette && sampledCorners > 0 ? maxDelta : null,
+    worstViolation: worst,
+    colors,
+  };
 
   return {
     metrics: {
@@ -446,10 +482,119 @@ function inspectRoot(root, inputKind, glbSource, card) {
           }
         : null,
       palette,
+      shape: hasBounds ? measureShape(worldPoints, worldBox, card) : null,
     },
     worldBox: hasBounds ? worldBox : null,
     center,
     boundingRadius,
+  };
+}
+
+function axisIndex(v) {
+  const ax = [Math.abs(v.x), Math.abs(v.y), Math.abs(v.z)];
+  return ax[0] >= ax[1] && ax[0] >= ax[2] ? 0 : ax[1] >= ax[2] ? 1 : 2;
+}
+
+// Length runs along the card's front axis, width across it, height along +Y (or Z for a Y-facing asset).
+function measureShape(points, box, card) {
+  const geometry = (card && card.geometry) || {};
+  const lengthAxis = axisIndex(axisVec(card && card.frontAxis, new THREE.Vector3(0, 0, 1)));
+  const heightAxis = lengthAxis === 1 ? 2 : 1;
+  const widthAxis = 3 - lengthAxis - heightAxis;
+  const names = ['x', 'y', 'z'];
+  const min = [box.min.x, box.min.y, box.min.z];
+  const max = [box.max.x, box.max.y, box.max.z];
+  const size = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
+  const maxExtent = Math.max(size[0], size[1], size[2]);
+  const length = size[lengthAxis];
+  const width = size[widthAxis];
+  const height = size[heightAxis];
+  const ratio = (a, b) => (b > 0 ? a / b : null);
+
+  const n = points.length / 3;
+  const stride = Math.max(1, Math.ceil(n / MAX_SHAPE_POINTS));
+
+  const symFraction = geometry.symmetryToleranceFraction ?? 0.01;
+  const symTol = Math.max(symFraction * maxExtent, 1e-12);
+  const planeCoord = (min[widthAxis] + max[widthAxis]) * 0.5;
+  const cellKey = (x, y, z) => Math.floor(x / symTol) + ',' + Math.floor(y / symTol) + ',' + Math.floor(z / symTol);
+  // Index every point; only the queries are strided, so a sampled vertex can always find its mirror.
+  const grid = new Map();
+  for (let i = 0; i < n; i += 1) {
+    const o = i * 3;
+    const key = cellKey(points[o], points[o + 1], points[o + 2]);
+    let cell = grid.get(key);
+    if (!cell) {
+      cell = [];
+      grid.set(key, cell);
+    }
+    cell.push(o);
+  }
+  let sampled = 0;
+  let matched = 0;
+  const q = [0, 0, 0];
+  for (let i = 0; i < n; i += stride) {
+    const o = i * 3;
+    q[0] = points[o];
+    q[1] = points[o + 1];
+    q[2] = points[o + 2];
+    q[widthAxis] = 2 * planeCoord - q[widthAxis];
+    sampled += 1;
+    const cx = Math.floor(q[0] / symTol);
+    const cy = Math.floor(q[1] / symTol);
+    const cz = Math.floor(q[2] / symTol);
+    let found = false;
+    for (let dx = -1; dx <= 1 && !found; dx += 1) {
+      for (let dy = -1; dy <= 1 && !found; dy += 1) {
+        for (let dz = -1; dz <= 1 && !found; dz += 1) {
+          const cell = grid.get((cx + dx) + ',' + (cy + dy) + ',' + (cz + dz));
+          if (!cell) continue;
+          for (const c of cell) {
+            if (Math.hypot(points[c] - q[0], points[c + 1] - q[1], points[c + 2] - q[2]) <= symTol) {
+              found = true;
+              break;
+            }
+          }
+        }
+      }
+    }
+    if (found) matched += 1;
+  }
+
+  const groundFraction = geometry.groundToleranceFraction ?? 0.01;
+  const groundTol = groundFraction * maxExtent;
+  let fx0 = Infinity, fx1 = -Infinity, fz0 = Infinity, fz1 = -Infinity;
+  for (let i = 0; i < n; i += 1) {
+    const o = i * 3;
+    if (points[o + 1] > box.min.y + groundTol) continue;
+    fx0 = Math.min(fx0, points[o]);
+    fx1 = Math.max(fx1, points[o]);
+    fz0 = Math.min(fz0, points[o + 2]);
+    fz1 = Math.max(fz1, points[o + 2]);
+  }
+  const groundArea = size[0] * size[2];
+  const footprint = groundArea > 0 && fx1 >= fx0 ? ((fx1 - fx0) * (fz1 - fz0)) / groundArea : null;
+
+  return {
+    lengthAxis: names[lengthAxis],
+    widthAxis: names[widthAxis],
+    heightAxis: names[heightAxis],
+    length,
+    width,
+    height,
+    lengthToWidth: ratio(length, width),
+    heightToLength: ratio(height, length),
+    groundOffset: box.min.y,
+    groundFootprintRatio: footprint,
+    groundToleranceFraction: groundFraction,
+    mirror: {
+      planeAxis: names[widthAxis],
+      planeCoord,
+      planeOffsetFraction: maxExtent > 0 ? Math.abs(planeCoord) / maxExtent : 0,
+      matchRatio: sampled > 0 ? matched / sampled : 1,
+      sampledPoints: sampled,
+      toleranceFraction: symFraction,
+    },
   };
 }
 
@@ -467,9 +612,41 @@ function boxCorners(box) {
   ];
 }
 
-function renderContactSheet(root, worldBox, center, radius, card) {
-  const tileW = 420;
-  const tileH = 315;
+// Presets change lights and tone mapping only, so cameras, background, and gates stay comparable.
+function addLightingRig(scene, preset, radius, renderer) {
+  const at = (x, y, z) => new THREE.Vector3(x, y, z).multiplyScalar(radius * 4);
+  const directional = (color, intensity, pos) => {
+    const light = new THREE.DirectionalLight(color, intensity);
+    light.position.copy(pos);
+    scene.add(light);
+  };
+  if (preset === 'cel') {
+    // Hard warm key, cool rim, and a violet-to-blue sky fill with no tone mapping, as stylized toon games light ships.
+    renderer.toneMapping = THREE.NoToneMapping;
+    directional(0xffdfbd, 2.4, at(0.9, 1.2, 1.1));
+    directional(0x6b88ff, 1.05, at(-1.1, 0.5, -1.4));
+    scene.add(new THREE.HemisphereLight(0x7c88b8, 0x1b172c, 0.78));
+    return;
+  }
+  if (preset === 'dramatic') {
+    // Low raking key from one side and a faint opposite rim leave deep form shadows.
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.2;
+    directional(0xffd2a0, 3.4, at(1.6, 0.35, 0.2));
+    directional(0x5a78ff, 0.9, at(-1.2, 0.9, -1.0));
+    scene.add(new THREE.HemisphereLight(0x5a6488, 0x0a0812, 0.25));
+    return;
+  }
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
+  directional(0xfff1dc, 2.2, at(1.2, 1.5, 1.0));
+  directional(0x7ca2ff, 1.0, at(-1.3, 0.7, -1.1));
+  scene.add(new THREE.HemisphereLight(0xaab8e0, 0x242038, 0.85));
+}
+
+function renderContactSheet(root, worldBox, center, radius, card, capture) {
+  const tileW = capture.tileWidth;
+  const tileH = capture.tileHeight;
   const cols = 3;
   const rows = 3;
   const labelH = 26;
@@ -478,24 +655,12 @@ function renderContactSheet(root, worldBox, center, radius, card) {
   renderer.setSize(tileW, tileH, false);
   renderer.setPixelRatio(1);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
 
   const safeRadius = Math.max(radius, 1e-6);
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x161926);
   scene.add(root);
-
-  const keyLight = new THREE.DirectionalLight(0xfff1dc, 2.2);
-  keyLight.position.set(1.2, 1.5, 1.0).multiplyScalar(safeRadius * 4);
-  scene.add(keyLight);
-
-  const rimLight = new THREE.DirectionalLight(0x7ca2ff, 1.0);
-  rimLight.position.set(-1.3, 0.7, -1.1).multiplyScalar(safeRadius * 4);
-  scene.add(rimLight);
-
-  const hemi = new THREE.HemisphereLight(0xaab8e0, 0x242038, 0.85);
-  scene.add(hemi);
+  addLightingRig(scene, capture.lighting, safeRadius, renderer);
 
   const front = axisVec(card && card.frontAxis, new THREE.Vector3(0, 0, 1)).normalize();
   const worldUp = new THREE.Vector3(0, 1, 0);
@@ -562,6 +727,7 @@ function renderContactSheet(root, worldBox, center, radius, card) {
   });
 
   const views = [];
+  const viewImages = [];
 
   for (let idx = 0; idx < viewDefs.length; idx += 1) {
     const def = viewDefs[idx];
@@ -612,6 +778,8 @@ function renderContactSheet(root, worldBox, center, radius, card) {
       cam.position.copy(center).addScaledVector(camZ, dist);
     }
 
+    cam.zoom = capture.zoom;
+    cam.updateProjectionMatrix();
     cam.up.copy(def.up);
     cam.lookAt(center);
     cam.updateMatrixWorld();
@@ -629,6 +797,7 @@ function renderContactSheet(root, worldBox, center, radius, card) {
     const dx = col * tileW;
     const dy = row * (tileH + labelH);
     ctx.drawImage(renderer.domElement, dx, dy + labelH);
+    if (capture.saveViews) viewImages.push({ id: def.id, dataUrl: renderer.domElement.toDataURL('image/png') });
 
     ctx.fillStyle = '#0b0e18';
     ctx.fillRect(dx, dy, tileW, labelH);
@@ -698,11 +867,12 @@ function renderContactSheet(root, worldBox, center, radius, card) {
   renderer.dispose();
   return {
     views,
+    viewImages,
     sheetDataUrl: sheetCanvas.toDataURL('image/png'),
   };
 }
 
-export async function run({ inputKind, glbUrl, glbSource, card, renderSheet }) {
+export async function run({ inputKind, glbUrl, glbSource, card, renderSheet, capture }) {
   let root;
   if (inputKind === 'glb') {
     const resp = await fetch(glbUrl);
@@ -725,31 +895,30 @@ export async function run({ inputKind, glbUrl, glbSource, card, renderSheet }) {
 
   const inspected = inspectRoot(root, inputKind, glbSource, card);
   let views = [];
+  let viewImages = [];
   let sheetDataUrl = null;
   if (renderSheet) {
-    const out = renderContactSheet(root, inspected.worldBox, inspected.center, inspected.boundingRadius, card);
+    const out = renderContactSheet(root, inspected.worldBox, inspected.center, inspected.boundingRadius, card, capture);
     views = out.views;
+    viewImages = out.viewImages;
     sheetDataUrl = out.sheetDataUrl;
   }
   return {
     metrics: inspected.metrics,
     views,
+    viewImages,
     sheetDataUrl,
   };
 }
 `;
 }
 
-async function withTimeout<T>(execution: Promise<T>, ms: number): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    const deadline = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error(`Asset execution timed out after ${ms} ms`)), ms);
-    });
-    return await Promise.race([execution, deadline]);
-  } finally {
-    clearTimeout(timer);
+function decodePng(dataUrl: string | null | undefined, what: string): Buffer {
+  const prefix = 'data:image/png;base64,';
+  if (typeof dataUrl !== 'string' || !dataUrl.startsWith(prefix)) {
+    throw new Error(`Browser harness did not return a valid ${what} PNG`);
   }
+  return Buffer.from(dataUrl.slice(prefix.length), 'base64');
 }
 
 export async function runAssetSession(options: BrowserSessionOptions): Promise<BrowserSessionResult> {
@@ -760,119 +929,63 @@ export async function runAssetSession(options: BrowserSessionOptions): Promise<B
   if (path.extname(absAsset).toLowerCase() === '.gltf') {
     throw new Error('Unsupported .gltf input. Supply a binary .glb or a Three.js factory module.');
   }
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647) {
-    throw new Error('--timeout must be a positive integer in milliseconds (at most 2147483647)');
-  }
+  const timeoutMs = validateTimeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const capture = options.capture ?? DEFAULT_CAPTURE;
   const isGlb = absAsset.toLowerCase().endsWith('.glb');
   const glbSource: GlbSourceInfo | null = isGlb ? inspectGlbSource(absAsset) : null;
-  const glbBytes = isGlb ? fs.readFileSync(absAsset) : null;
+  const files = new Map<string, { type: string; body: Buffer }>();
+  if (isGlb) files.set('/asset.glb', { type: 'model/gltf-binary', body: fs.readFileSync(absAsset) });
 
-  const threeExamplesDir = path.resolve(THREE_DIR, 'examples');
-  const bundleResult = await esbuild.build({
-    stdin: {
-      contents: buildRuntimeEntrySource(isGlb ? null : absAsset),
-      resolveDir: path.dirname(fileURLToPath(import.meta.url)),
-      loader: 'ts',
-    },
-    bundle: true,
-    format: 'esm',
-    platform: 'browser',
-    target: 'es2022',
-    write: false,
-    alias: {
-      three: THREE_ENTRY,
-      'three/examples': threeExamplesDir,
-    },
-    logOverride: { 'import-is-undefined': 'silent' },
-  });
-  const jsBundle = bundleResult.outputFiles[0]?.text;
-  if (jsBundle === undefined) {
-    throw new Error('Failed to bundle browser harness');
-  }
+  const jsBundle = await bundleBrowserEntry(
+    buildRuntimeEntrySource(isGlb ? null : absAsset),
+    path.dirname(fileURLToPath(import.meta.url)),
+  );
 
-  const server = http.createServer((req, res) => {
-    if (req.url === '/' || req.url === '/index.html') {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end('<!doctype html><html><body></body></html>');
-      return;
-    }
-    if (req.url === '/harness.js') {
-      res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8' });
-      res.end(jsBundle);
-      return;
-    }
-    if (req.url === '/asset.glb' && glbBytes !== null) {
-      res.writeHead(200, { 'Content-Type': 'model/gltf-binary' });
-      res.end(glbBytes);
-      return;
-    }
-    res.writeHead(404);
-    res.end('Not found');
-  });
-
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
-  const address = server.address();
-  if (address === null || typeof address === 'string') {
-    server.close();
-    throw new Error('Failed to bind ephemeral HTTP port');
-  }
-  const baseUrl = `http://127.0.0.1:${address.port}`;
-
-  let browser;
-  try {
-    browser = await chromium.launch({
-      headless: true,
-      args: [
-        '--use-gl=angle',
-        '--use-angle=swiftshader',
-        '--enable-unsafe-swiftshader',
-        '--ignore-gpu-blocklist',
-      ],
-    });
-    const page = await browser.newPage({ viewport: { width: 1280, height: 960 } });
-    const pageErrors: string[] = [];
-    page.on('pageerror', (err) => pageErrors.push(err.message));
-
-    await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
-    const execution = page.evaluate(async (params) => {
+  return withHarnessPage({ jsBundle, files, args: WEBGL_SWIFTSHADER_FLAGS, timeoutMs }, async (h) => {
+    const execution = h.page.evaluate(async (params) => {
       const { run } = await import(params.harnessUrl);
       return run(params) as Promise<{
         metrics: AssetMetrics;
         views: ViewMetrics[];
+        viewImages: { id: string; dataUrl: string }[];
         sheetDataUrl: string | null;
       }>;
     }, {
-      harnessUrl: `${baseUrl}/harness.js`,
+      harnessUrl: `${h.baseUrl}/harness.js`,
       inputKind: isGlb ? 'glb' : 'factory',
-      glbUrl: `${baseUrl}/asset.glb`,
+      glbUrl: `${h.baseUrl}/asset.glb`,
       glbSource,
       card: options.card,
       renderSheet: options.renderSheet,
+      capture: { ...capture, saveViews: options.viewsDir !== undefined },
     });
     const payload = await withTimeout(execution, timeoutMs);
 
-    if (pageErrors.length > 0) {
-      throw new Error(`Browser page errors: ${pageErrors.join('; ')}`);
+    if (h.pageErrors.length > 0) {
+      throw new Error(`Browser page errors: ${h.pageErrors.join('; ')}`);
     }
 
     if (options.renderSheet && options.contactSheetPath !== undefined) {
-      if (payload.sheetDataUrl === null || !payload.sheetDataUrl.startsWith('data:image/png;base64,')) {
-        throw new Error('Browser harness did not return a valid contact sheet PNG');
-      }
-      const pngBytes = Buffer.from(payload.sheetDataUrl.slice('data:image/png;base64,'.length), 'base64');
+      const pngBytes = decodePng(payload.sheetDataUrl, 'contact sheet');
       fs.mkdirSync(path.dirname(path.resolve(options.contactSheetPath)), { recursive: true });
       fs.writeFileSync(options.contactSheetPath, pngBytes);
+    }
+
+    const viewPaths: string[] = [];
+    if (options.renderSheet && options.viewsDir !== undefined) {
+      fs.mkdirSync(path.resolve(options.viewsDir), { recursive: true });
+      for (const image of payload.viewImages) {
+        const viewPath = path.join(path.resolve(options.viewsDir), `${image.id}.png`);
+        fs.writeFileSync(viewPath, decodePng(image.dataUrl, `view ${image.id}`));
+        viewPaths.push(viewPath);
+      }
     }
 
     return {
       metrics: payload.metrics,
       views: payload.views,
+      consoleErrors: [...h.consoleErrors],
+      viewPaths,
     };
-  } finally {
-    if (browser !== undefined) {
-      await browser.close();
-    }
-    server.close();
-  }
+  });
 }

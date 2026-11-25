@@ -2,10 +2,37 @@
   "id": "space-wars-ships",
   "frontAxis": "-Z",
   "topUpAxis": "-Z",
+  "palette": {
+    "ivory-hull": "#ede6d5",
+    "amber-trim": "#e88332",
+    "cobalt-panel": "#465068",
+    "obsidian-hull": "#232838",
+    "crimson-accent": "#f04c48",
+    "cyan-glow": "#96ffff",
+    "warm-gold": "#ffb849",
+    "ink-outline": "#070712",
+    "slate-panel": "#67708d",
+    "steel-plate": "#bcc6db",
+    "violet-panel": "#755c83",
+    "ember-glow": "#ffac75",
+    "lamp-glow": "#ffffa8",
+    "white-glow": "#ffffdb",
+    "flash-white": "#ffffff",
+    "rose-glow": "#ff9db2",
+    "blush-glow": "#ffbed0",
+    "coral-glow": "#ff81a6",
+    "magenta-shield": "#ff67f0",
+    "orchid-flare": "#ffc9ff"
+  },
+  "paletteDeltaE76Max": 12,
   "budgets": {
     "trisMax": 6000,
     "materialsMax": 16,
     "texturesMax": 8,
     "degenerateTrianglesMax": 0
+  },
+  "geometry": {
+    "lengthToWidth": [0.5, 5],
+    "heightToLength": [0.1, 1.5]
   }
 }

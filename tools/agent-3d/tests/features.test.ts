@@ -1,0 +1,403 @@
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { after, describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { Document, getBounds, NodeIO } from '@gltf-transform/core';
+import { listBatchAssets } from '../src/cli.js';
+import {
+  classifyGpuProbe,
+  evaluateAssetGates,
+  runAssetSession,
+  runGpuProbe,
+  WEBGPU_SWIFTSHADER_FLAGS,
+  type BatchReport,
+  type Check3DReport,
+  type StyleCard,
+  type TurntableReport,
+} from '../src/index.js';
+
+const root = fileURLToPath(new URL('../../', import.meta.url));
+const dir = fs.mkdtempSync(path.join(root, 'dist-test', 'features-'));
+after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+function fixture(name: string, contents: string): string {
+  const file = path.join(dir, name);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, contents);
+  return file;
+}
+
+function factory(name: string, body: string): string {
+  return fixture(name, `export function buildAsset(THREE) {\n${body}\n}`);
+}
+
+function cli(...args: string[]) {
+  const result = spawnSync(process.execPath, [path.join(root, 'dist/cli.js'), ...args], {
+    encoding: 'utf8',
+    timeout: 60000,
+  });
+  assert.ifError(result.error);
+  return result;
+}
+
+function pngSize(file: string): { readonly width: number; readonly height: number } {
+  const bytes = fs.readFileSync(file);
+  return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
+}
+
+const box = factory('box.mjs', `return new THREE.Mesh(new THREE.BoxGeometry(1, 0.6, 2),
+  new THREE.MeshStandardMaterial({ color: 0xcc8844 }));`);
+
+describe('turntable capture flags', () => {
+  it('writes nine view PNGs at --tile-size and records the capture settings', () => {
+    const out = path.join(dir, 'tiles');
+    const result = cli('turntable', box, '--out', out, '--tile-size', '160x120', '--save-views');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const report = JSON.parse(result.stdout) as TurntableReport;
+    assert.deepEqual(report.capture, { tileWidth: 160, tileHeight: 120, zoom: 1, lighting: 'studio' });
+    assert.equal(report.viewPaths.length, 9);
+    for (const view of report.views) {
+      const file = path.join(out, `${view.id}.png`);
+      assert.ok(report.viewPaths.includes(file), `missing ${file}`);
+      assert.deepEqual(pngSize(file), { width: 160, height: 120 });
+    }
+    assert.deepEqual(pngSize(path.join(out, 'contact-sheet.png')), { width: 480, height: 3 * (120 + 26) });
+  });
+
+  it('skips view PNGs without --save-views', () => {
+    const out = path.join(dir, 'no-views');
+    const result = cli('turntable', box, '--out', out, '--tile-size', '96x96');
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual((JSON.parse(result.stdout) as TurntableReport).viewPaths, []);
+    assert.deepEqual(fs.readdirSync(out).sort(), ['contact-sheet.png', 'report.json']);
+  });
+
+  it('zooms the framing in and downgrades edge clipping to info', () => {
+    const base = JSON.parse(cli('turntable', box, '--out', path.join(dir, 'z1'), '--tile-size', '128x96').stdout) as TurntableReport;
+    const result = cli('turntable', box, '--out', path.join(dir, 'z4'), '--tile-size', '128x96', '--zoom', '4');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const zoomed = JSON.parse(result.stdout) as TurntableReport;
+    for (const [i, view] of zoomed.views.entries()) {
+      assert.ok(view.coverageRatio > base.views[i]!.coverageRatio, `${view.id} did not zoom in`);
+    }
+    const clipped = zoomed.findings.filter((f) => f.id === 'VIEW_EDGE_CLIPPED');
+    assert.ok(clipped.length > 0);
+    assert.ok(clipped.every((f) => f.severity === 'info'));
+  });
+
+  it('renders every lighting preset without a flat beauty tile and with distinct pixels', () => {
+    const hashes = new Set<string>();
+    for (const lighting of ['studio', 'cel', 'dramatic']) {
+      const out = path.join(dir, `light-${lighting}`);
+      const result = cli('turntable', box, '--out', out, '--tile-size', '128x96', '--lighting', lighting);
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const report = JSON.parse(result.stdout) as TurntableReport;
+      assert.equal(report.capture.lighting, lighting);
+      assert.ok(!report.findings.some((f) => f.id === 'VIEW_BEAUTY_FLAT'));
+      hashes.add(crypto.createHash('sha256').update(fs.readFileSync(path.join(out, 'contact-sheet.png'))).digest('hex'));
+    }
+    assert.equal(hashes.size, 3);
+  });
+
+  it('rejects malformed capture flags with exit 2', () => {
+    const out = path.join(dir, 'bad-flags');
+    for (const args of [
+      ['--tile-size', '840'],
+      ['--tile-size', '32x32'],
+      ['--tile-size', '4096x300'],
+      ['--zoom', '0'],
+      ['--zoom', '1e3'],
+      ['--lighting', 'neon'],
+      ['--save-views', '--no-fail-on-console-error', '--fail-on-console-error'],
+    ]) {
+      const result = cli('turntable', box, '--out', out, ...args);
+      assert.equal(result.status, 2, `${args.join(' ')} should exit 2`);
+    }
+  });
+});
+
+describe('console error gate', () => {
+  const brokenShader = factory('broken-shader.mjs', `return new THREE.Mesh(new THREE.BoxGeometry(), new THREE.ShaderMaterial({
+    vertexShader: 'void main() { gl_Position = vec4(position, 1.0); }',
+    fragmentShader: 'void main() { gl_FragColor = vec4(undefinedThing, 1.0); }',
+  }));`);
+
+  it('fails a turntable whose shader does not compile, with the WebGL diagnostic in the finding', () => {
+    const result = cli('turntable', brokenShader, '--out', path.join(dir, 'shader'), '--tile-size', '96x72');
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+    const report = JSON.parse(result.stdout) as TurntableReport;
+    const finding = report.findings.find((f) => f.id === 'CONSOLE_ERROR');
+    assert.equal(finding?.severity, 'fail');
+    assert.match(finding?.message ?? '', /undefinedThing|Shader Error|compile/i);
+    assert.ok(report.consoleErrors.length > 0);
+  });
+
+  it('reports the same errors as a warning with --no-fail-on-console-error', () => {
+    const result = cli(
+      'turntable', brokenShader, '--out', path.join(dir, 'shader-warn'), '--tile-size', '96x72', '--no-fail-on-console-error',
+    );
+    const report = JSON.parse(result.stdout) as TurntableReport;
+    assert.equal(report.findings.find((f) => f.id === 'CONSOLE_ERROR')?.severity, 'warn');
+    assert.ok(!report.findings.some((f) => f.id === 'CONSOLE_ERROR' && f.severity === 'fail'));
+  });
+
+  it('catches console.error during check, and passes a clean asset with the explicit flag', () => {
+    const noisy = factory('noisy.mjs', `console.error('texture atlas missing');
+      return new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());`);
+    const result = cli('check', noisy);
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+    const report = JSON.parse(result.stdout) as Check3DReport;
+    assert.deepEqual(report.consoleErrors, ['texture atlas missing']);
+    assert.equal(cli('check', box, '--fail-on-console-error').status, 0);
+  });
+});
+
+describe('palette sampling', () => {
+  it('lists each sampled color with its nearest role and skips colorless ShaderMaterials', async () => {
+    const asset = factory('two-tone.mjs', `const root = new THREE.Group();
+      root.add(new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial({ color: 0xe88332 })));
+      const b = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial({ color: 0x232838 }));
+      b.position.x = 2; root.add(b);
+      const glow = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.ShaderMaterial({
+        vertexShader: 'void main() { gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+        fragmentShader: 'void main() { gl_FragColor = vec4(1.0); }',
+      }));
+      glow.position.x = -2; root.add(glow);
+      return root;`);
+    const card: StyleCard = {
+      id: 'two-tone', palette: { 'amber-trim': '#e88332', 'obsidian-hull': '#232838' }, paletteDeltaE76Max: 1,
+    };
+    const session = await runAssetSession({ assetPath: asset, card, renderSheet: false });
+    const palette = session.metrics.palette;
+    assert.equal(palette.status, 'partial_textured');
+    assert.equal(palette.shaderMeshes, 1);
+    assert.equal(palette.assessedMeshes, 2);
+    assert.equal(palette.distinctColors, 2);
+    assert.deepEqual(palette.colors.map((c) => [c.hexSrgb, c.nearestRole]).sort(), [
+      ['#232838', 'obsidian-hull'],
+      ['#e88332', 'amber-trim'],
+    ]);
+    const evaluated = evaluateAssetGates(session.metrics, card);
+    assert.equal(evaluated.ok, true);
+    assert.ok(evaluated.findings.some((f) => f.id === 'PALETTE_UNASSESSED_SHADER'));
+  });
+});
+
+describe('geometry gates', () => {
+  const measure = async (name: string, body: string, card: StyleCard) => {
+    const session = await runAssetSession({ assetPath: factory(name, body), card, renderSheet: false });
+    return { shape: session.metrics.shape!, result: evaluateAssetGates(session.metrics, card) };
+  };
+  const ids = (r: { readonly findings: readonly { readonly id: string }[] }) => r.findings.map((f) => f.id);
+
+  it('measures mirror symmetry across the width axis', async () => {
+    const card: StyleCard = { id: 'sym', geometry: { mirrorSymmetryMin: 0.95 } };
+    const sym = await measure('sym.mjs', 'return new THREE.Mesh(new THREE.BoxGeometry(2, 1, 4), new THREE.MeshBasicMaterial());', card);
+    assert.equal(sym.shape.mirror.planeAxis, 'x');
+    assert.equal(sym.shape.mirror.matchRatio, 1);
+    assert.deepEqual(ids(sym.result), []);
+
+    const lopsided = await measure('lopsided.mjs', `const root = new THREE.Group();
+      root.add(new THREE.Mesh(new THREE.BoxGeometry(2, 1, 4), new THREE.MeshBasicMaterial()));
+      const pod = new THREE.Mesh(new THREE.SphereGeometry(0.6, 12, 8), new THREE.MeshBasicMaterial());
+      pod.position.set(1.6, 0, 1); root.add(pod);
+      return root;`, card);
+    assert.ok(lopsided.shape.mirror.matchRatio < 0.95, `match ${lopsided.shape.mirror.matchRatio}`);
+    assert.deepEqual(ids(lopsided.result), ['MIRROR_SYMMETRY_LOW']);
+  });
+
+  it('keeps mirror symmetry exact when the vertex count exceeds the query sample cap', async () => {
+    const card: StyleCard = { id: 'sym-dense', geometry: { mirrorSymmetryMin: 0.99 } };
+    // 72,000 vertices laid out as (p, mirror(p)) pairs, so a strided grid would hold only one side.
+    const dense = await measure('dense.mjs', `let seed = 7;
+      const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+      const pos = new Float32Array(72000 * 3);
+      for (let i = 0; i < 36000; i += 1) {
+        const x = 0.1 + rand(), y = rand(), z = rand();
+        pos.set([x, y, z, -x, y, z], i * 6);
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      return new THREE.Mesh(geo, new THREE.MeshBasicMaterial());`, card);
+    assert.equal(dense.shape.mirror.sampledPoints, 36000);
+    assert.equal(dense.shape.mirror.matchRatio, 1);
+    assert.deepEqual(ids(dense.result), []);
+  });
+
+  it('flags floating, sinking, and point-contact assets against ground rules', async () => {
+    const card: StyleCard = { id: 'ground', geometry: { groundContact: true, groundFootprintMin: 0.25 } };
+    const grounded = await measure('grounded.mjs', `const m = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial());
+      m.position.y = 0.5; return m;`, card);
+    assert.equal(grounded.shape.groundOffset, 0);
+    assert.equal(grounded.shape.groundFootprintRatio, 1);
+    assert.deepEqual(ids(grounded.result), []);
+
+    const floating = await measure('floating.mjs', `const m = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial());
+      m.position.y = 0.8; return m;`, card);
+    assert.deepEqual(ids(floating.result), ['GROUND_FLOATING']);
+    const sinking = await measure('sinking.mjs', 'return new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial());', card);
+    assert.deepEqual(ids(sinking.result), ['GROUND_SINKING']);
+
+    const spike = await measure('spike.mjs', `const m = new THREE.Mesh(new THREE.ConeGeometry(0.5, 1, 8), new THREE.MeshBasicMaterial());
+      m.rotation.x = Math.PI; m.position.y = 0.5; return m;`, card);
+    assert.ok(Math.abs(spike.shape.groundOffset) < 1e-6);
+    assert.ok((spike.shape.groundFootprintRatio ?? 1) < 0.01);
+    assert.deepEqual(ids(spike.result), ['GROUND_FOOTPRINT_SMALL']);
+  });
+
+  it('checks length/width and height/length against the front axis', async () => {
+    const body = 'return new THREE.Mesh(new THREE.BoxGeometry(2, 1, 8), new THREE.MeshBasicMaterial());';
+    const zFront = await measure('long.mjs', body, { id: 'z', frontAxis: '-Z', geometry: { lengthToWidth: [3, 5], heightToLength: [0.1, 0.2] } });
+    assert.equal(zFront.shape.lengthToWidth, 4);
+    assert.equal(zFront.shape.heightToLength, 0.125);
+    assert.deepEqual(ids(zFront.result), []);
+    const xFront = await measure('long-x.mjs', body, { id: 'x', frontAxis: '+X', geometry: { lengthToWidth: [3, 5] } });
+    assert.equal(xFront.shape.lengthAxis, 'x');
+    assert.equal(xFront.shape.lengthToWidth, 0.25);
+    assert.deepEqual(ids(xFront.result), ['ASPECT_LENGTH_TO_WIDTH']);
+  });
+
+  it('rejects malformed geometry card entries with exit 2', () => {
+    for (const geometry of [{ mirrorSymmetry: 1 }, { lengthToWidth: [3, 1] }, { groundContact: 'yes' }, { mirrorSymmetryMin: 2 }]) {
+      const card = fixture('geo-card.json', JSON.stringify({ id: 'geo', geometry }));
+      assert.equal(cli('check', box, '--card', card).status, 2, JSON.stringify(geometry));
+    }
+  });
+});
+
+describe('quantized GLB bounds', () => {
+  it('matches gltf-transform getBounds on normalized int16 positions under a node transform', async () => {
+    const doc = new Document();
+    const buffer = doc.createBuffer();
+    // Quantized positions span the full int16 range; only the node scale maps them to meters.
+    const positions = new Int16Array([
+      -32767, 0, -32767, 32767, 0, -32767, 0, 0, 32767,
+      -32767, 0, -32767, 0, 0, 32767, 0, 16000, 0,
+      32767, 0, -32767, 0, 16000, 0, 0, 0, 32767,
+    ]);
+    const accessor = doc.createAccessor().setType('VEC3').setArray(positions).setNormalized(true).setBuffer(buffer);
+    const prim = doc.createPrimitive().setAttribute('POSITION', accessor);
+    const node = doc.createNode('ship').setMesh(doc.createMesh('ship').addPrimitive(prim))
+      .setScale([3, 2, 5]).setTranslation([0, 1.5, 0]);
+    const scene = doc.createScene('scene').addChild(node);
+    const file = path.join(dir, 'quantized.glb');
+    await new NodeIO().write(file, doc);
+
+    const reference = getBounds(scene);
+    const session = await runAssetSession({ assetPath: file, card: null, renderSheet: false });
+    const bounds = session.metrics.worldBounds!;
+    const measured = [bounds.min.x, bounds.min.y, bounds.min.z, bounds.max.x, bounds.max.y, bounds.max.z];
+    const expected = [...reference.min, ...reference.max];
+    for (const [i, v] of measured.entries()) {
+      assert.ok(Math.abs(v - expected[i]!) < 1e-4, `bound ${i}: ${v} vs ${expected[i]}`);
+    }
+    assert.equal(session.metrics.shape?.groundOffset, bounds.min.y);
+    assert.ok(Math.abs(bounds.min.y - 1.5) < 1e-4);
+  });
+});
+
+describe('batch', () => {
+  const okCard = { id: 'batch-card', palette: { amber: '#cc8844' }, paletteDeltaE76Max: 2 };
+
+  it('runs every asset, writes per-asset folders and a summary, and exits 1 on a gate failure', () => {
+    const batchDir = path.join(dir, 'batch-a');
+    fs.mkdirSync(batchDir, { recursive: true });
+    fs.copyFileSync(box, path.join(batchDir, 'b-good.mjs'));
+    fs.writeFileSync(path.join(batchDir, 'a-off-palette.mjs'), `export function buildAsset(THREE) {
+      return new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshStandardMaterial({ color: 0x0044ff }));
+    }`);
+    fs.writeFileSync(path.join(batchDir, 'card.json'), JSON.stringify(okCard));
+    fs.writeFileSync(path.join(batchDir, 'types.d.ts'), 'export {};');
+    fs.writeFileSync(path.join(batchDir, 'notes.txt'), 'ignored');
+    assert.deepEqual(listBatchAssets(batchDir).map((f) => path.basename(f)), ['a-off-palette.mjs', 'b-good.mjs']);
+
+    const out = path.join(dir, 'batch-a-out');
+    const result = cli('batch', batchDir, '--card', path.join(batchDir, 'card.json'), '--out', out, '--tile-size', '96x72');
+    assert.equal(result.status, 1, result.stderr);
+    const summary = JSON.parse(result.stdout) as BatchReport;
+    assert.deepEqual(summary, JSON.parse(fs.readFileSync(path.join(out, 'summary.json'), 'utf8')));
+    assert.equal(summary.schemaVersion, 'agent-3d/batch/v1');
+    assert.equal(summary.cardId, 'batch-card');
+    assert.deepEqual([summary.total, summary.passed, summary.failed, summary.ok], [2, 1, 1, false]);
+    const [bad, good] = summary.assets;
+    assert.equal(bad?.name, 'a-off-palette');
+    assert.deepEqual(bad?.failures, ['PALETTE_DELTA_E_EXCEEDED']);
+    assert.equal(good?.ok, true);
+    assert.equal(good?.triangles, 12);
+    assert.equal(good?.degenerateTriangles, 0);
+    assert.equal(good?.paletteStatus, 'assessed');
+    for (const name of ['a-off-palette', 'b-good']) {
+      assert.ok(fs.existsSync(path.join(out, name, 'contact-sheet.png')));
+      assert.ok(fs.existsSync(path.join(out, name, 'report.json')));
+    }
+    assert.match(result.stderr, /^asset\s+tris\s+degen\s+palette/m);
+    assert.match(result.stderr, /1\/2 passed against card 'batch-card'/);
+    assert.equal(fs.readFileSync(path.join(out, 'summary.txt'), 'utf8'), result.stderr);
+  });
+
+  it('keeps going after an asset throws and exits 2', () => {
+    const batchDir = path.join(dir, 'batch-b');
+    fs.mkdirSync(batchDir, { recursive: true });
+    fs.writeFileSync(path.join(batchDir, 'a-throws.mjs'), 'export function buildAsset() { throw new Error("boom"); }');
+    fs.copyFileSync(box, path.join(batchDir, 'b-good.mjs'));
+    const result = cli('batch', batchDir, '--out', path.join(dir, 'batch-b-out'), '--tile-size', '96x72');
+    assert.equal(result.status, 2, result.stderr);
+    const summary = JSON.parse(result.stdout) as BatchReport;
+    assert.match(summary.assets[0]?.error ?? '', /boom/);
+    assert.equal(summary.assets[1]?.ok, true);
+    assert.match(result.stderr, /a-throws: .*boom/);
+  });
+
+  it('refuses an empty directory and assets that would share an output folder', () => {
+    const empty = path.join(dir, 'batch-empty');
+    fs.mkdirSync(empty, { recursive: true });
+    assert.equal(cli('batch', empty, '--out', path.join(dir, 'x')).status, 2);
+    const clash = path.join(dir, 'batch-clash');
+    fs.mkdirSync(clash, { recursive: true });
+    fs.copyFileSync(box, path.join(clash, 'ship.mjs'));
+    fs.copyFileSync(box, path.join(clash, 'ship.js'));
+    assert.throws(() => listBatchAssets(clash), /share the output folder 'ship'/);
+  });
+});
+
+describe('gpu-probe', () => {
+  it('uses the full SwiftShader WebGPU flag set and never --disable-vulkan-surface', () => {
+    assert.deepEqual([...WEBGPU_SWIFTSHADER_FLAGS].sort(), [
+      '--enable-features=Vulkan',
+      '--enable-unsafe-swiftshader',
+      '--enable-unsafe-webgpu',
+      '--ignore-gpu-blocklist',
+      '--use-angle=swiftshader',
+      '--use-gl=angle',
+      '--use-vulkan=swiftshader',
+      '--use-webgpu-adapter=swiftshader',
+    ]);
+    assert.ok(!WEBGPU_SWIFTSHADER_FLAGS.some((f) => f.startsWith('--disable-vulkan-surface')));
+  });
+
+  it('maps backends and colour counts to exit codes', () => {
+    const gl = { backend: 'WebGLRenderer', uniqueColors: 900, error: null };
+    assert.equal(classifyGpuProbe({ backend: 'WebGPUBackend', uniqueColors: 50, error: null }, gl).exitCode, 0);
+    assert.equal(classifyGpuProbe({ backend: 'WebGPUBackend', uniqueColors: 49, error: null }, gl).exitCode, 1);
+    assert.equal(classifyGpuProbe({ backend: 'WebGLBackend', uniqueColors: 900, error: null }, gl).exitCode, 3);
+    assert.equal(classifyGpuProbe({ backend: null, uniqueColors: 0, error: 'no adapter' }, gl).exitCode, 3);
+    assert.equal(
+      classifyGpuProbe({ backend: null, uniqueColors: 0, error: 'x' }, { backend: null, uniqueColors: 0, error: 'y' }).exitCode,
+      4,
+    );
+  });
+
+  it('runs end to end on the bundled Chromium and always renders the WebGL reference', async () => {
+    const out = path.join(dir, 'gpu');
+    const result = await runGpuProbe({ browser: 'chromium', headed: false, timeoutMs: 60000, outDir: out });
+    assert.ok([0, 1, 3].includes(result.exitCode), `unexpected verdict ${result.verdict}`);
+    assert.ok(result.webgl.uniqueColors >= 50);
+    assert.equal(result.ok, result.exitCode === 0);
+    for (const name of ['probe.json', 'REPORT.md', 'webgl.png']) {
+      assert.ok(fs.existsSync(path.join(out, name)), `missing ${name}`);
+    }
+  });
+});

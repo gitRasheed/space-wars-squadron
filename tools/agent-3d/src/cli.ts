@@ -2,9 +2,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DEFAULT_TIMEOUT_MS, runAssetSession } from './browserRuntime.js';
+import { DEFAULT_CAPTURE, DEFAULT_TIMEOUT_MS, runAssetSession } from './browserRuntime.js';
 import { evaluateAssetGates } from './evaluate.js';
-import type { AxisDirection, Check3DReport, StyleCard, TurntableReport } from './types.js';
+import { runGpuProbe } from './gpuProbe.js';
+import type {
+  AxisDirection,
+  BatchAssetRow,
+  BatchReport,
+  CaptureSettings,
+  Check3DReport,
+  LightingPreset,
+  StyleCard,
+  TurntableReport,
+} from './types.js';
 
 const VALID_AXES = new Set<AxisDirection>(['+X', '-X', '+Y', '-Y', '+Z', '-Z']);
 const VALID_HORIZONTAL_AXES = new Set<AxisDirection>(['+X', '-X', '+Z', '-Z']);
@@ -20,6 +30,7 @@ const VALID_CARD_KEYS = new Set([
   'separationMinDeltaE76',
   'separationRoles',
   'budgets',
+  'geometry',
 ]);
 const VALID_BUDGET_KEYS = new Set([
   'trisMax',
@@ -29,13 +40,39 @@ const VALID_BUDGET_KEYS = new Set([
   'degenerateTrianglesMax',
   'requireTriangleLists',
 ]);
+const VALID_GEOMETRY_KEYS = new Set([
+  'groundContact',
+  'groundToleranceFraction',
+  'groundFootprintMin',
+  'mirrorSymmetryMin',
+  'symmetryToleranceFraction',
+  'lengthToWidth',
+  'heightToLength',
+]);
+const LIGHTING_PRESETS = new Set<LightingPreset>(['studio', 'cel', 'dramatic']);
+const BATCH_ASSET_EXTENSIONS = new Set(['.glb', '.ts', '.mts', '.js', '.mjs']);
+const MIN_TILE = 64;
+const MAX_TILE = 2048;
+const CONSOLE_FLAGS = ['--fail-on-console-error', '--no-fail-on-console-error'];
+const CAPTURE_VALUE_FLAGS = ['--tile-size', '--zoom', '--lighting'];
 
 function usage(): string {
   return [
     'Usage:',
-    '  agent-3d check <asset.glb|factory.ts|factory.mjs> [--card <style-card.json>] [--out <report.json>] [--timeout <ms>]',
-    '  agent-3d turntable <asset.glb|factory.ts|factory.mjs> --out <dir> [--card <style-card.json>] [--timeout <ms>]',
+    '  agent-3d check <asset> [--card <style-card.json>] [--out <report.json>] [--timeout <ms>] [--no-fail-on-console-error]',
+    '  agent-3d turntable <asset> --out <dir> [--card <style-card.json>] [--timeout <ms>] [capture options]',
+    '  agent-3d batch <dir> --out <dir> [--card <style-card.json>] [--timeout <ms>] [capture options]',
+    '  agent-3d gpu-probe [--out <dir>] [--browser chrome|chromium] [--headed] [--timeout <ms>]',
+    '',
+    '<asset> is a .glb or a factory module (.ts, .mts, .js, .mjs). batch runs every such file in <dir>.',
+    'Capture options:',
+    '  --tile-size <WxH>         view tile size in pixels (default 420x315, each side 64-2048)',
+    '  --zoom <factor>           framing multiplier, 0.25-8 (default 1; above 1 edge clipping is info)',
+    '  --lighting <preset>       studio (default), cel, or dramatic',
+    '  --save-views              also write <view-id>.png for each of the nine views',
+    '  --no-fail-on-console-error  report browser console errors as warnings instead of failing',
     'Exit codes: 0 pass, 1 gate violation, 2 invalid input / unsupported gate / renderer error',
+    'gpu-probe exit codes: 0 WebGPU ok, 1 WebGPU blank, 2 launch error, 3 silent WebGL fallback, 4 WebGL failed too',
   ].join('\n');
 }
 
@@ -43,19 +80,31 @@ function isFiniteNum(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v);
 }
 
+interface ParsedArgs {
+  readonly positional: readonly string[];
+  readonly flags: ReadonlyMap<string, string>;
+  readonly switches: ReadonlySet<string>;
+}
+
 function parseArgs(
   args: readonly string[],
-  valueFlags: ReadonlySet<string>,
-): { readonly positional: readonly string[]; readonly flags: ReadonlyMap<string, string> } {
+  valueFlags: readonly string[],
+  booleanFlags: readonly string[] = [],
+): ParsedArgs {
   const positional: string[] = [];
   const flags = new Map<string, string>();
+  const switches = new Set<string>();
   for (let i = 0; i < args.length; i += 1) {
     const token = args[i];
     if (token === undefined) {
       continue;
     }
     if (token.startsWith('--')) {
-      if (!valueFlags.has(token)) {
+      if (booleanFlags.includes(token)) {
+        switches.add(token);
+        continue;
+      }
+      if (!valueFlags.includes(token)) {
         throw new Error(`Unknown flag: ${token}`);
       }
       const val = args[i + 1];
@@ -68,7 +117,71 @@ function parseArgs(
       positional.push(token);
     }
   }
-  return { positional, flags };
+  if (switches.has('--fail-on-console-error') && switches.has('--no-fail-on-console-error')) {
+    throw new Error('--fail-on-console-error and --no-fail-on-console-error are mutually exclusive');
+  }
+  return { positional, flags, switches };
+}
+
+function parseTimeout(flags: ReadonlyMap<string, string>): number {
+  return Number(flags.get('--timeout') ?? DEFAULT_TIMEOUT_MS);
+}
+
+function parseCapture(flags: ReadonlyMap<string, string>): CaptureSettings {
+  let { tileWidth, tileHeight, zoom, lighting } = DEFAULT_CAPTURE;
+  const tile = flags.get('--tile-size');
+  if (tile !== undefined) {
+    const m = /^(\d+)x(\d+)$/.exec(tile);
+    const w = Number(m?.[1]);
+    const h = Number(m?.[2]);
+    if (m === null || w < MIN_TILE || h < MIN_TILE || w > MAX_TILE || h > MAX_TILE) {
+      throw new Error(`--tile-size must be <W>x<H> with each side ${MIN_TILE}-${MAX_TILE}, got '${tile}'`);
+    }
+    tileWidth = w;
+    tileHeight = h;
+  }
+  const zoomFlag = flags.get('--zoom');
+  if (zoomFlag !== undefined) {
+    zoom = Number(zoomFlag);
+    if (!/^\d+(\.\d+)?$/.test(zoomFlag) || zoom < 0.25 || zoom > 8) {
+      throw new Error(`--zoom must be a number from 0.25 to 8, got '${zoomFlag}'`);
+    }
+  }
+  const lightingFlag = flags.get('--lighting');
+  if (lightingFlag !== undefined) {
+    if (!LIGHTING_PRESETS.has(lightingFlag as LightingPreset)) {
+      throw new Error(`--lighting must be one of ${[...LIGHTING_PRESETS].join(', ')}, got '${lightingFlag}'`);
+    }
+    lighting = lightingFlag as LightingPreset;
+  }
+  return { tileWidth, tileHeight, zoom, lighting };
+}
+
+function validateRange(value: unknown, name: string): void {
+  if (
+    !Array.isArray(value) || value.length !== 2 || !isFiniteNum(value[0]) || !isFiniteNum(value[1]) ||
+    value[0] < 0 || value[0] > value[1]
+  ) {
+    throw new Error(`geometry.${name} must be [min, max] with 0 <= min <= max`);
+  }
+}
+
+function validateGeometry(value: unknown): void {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('geometry must be a JSON object');
+  }
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (!VALID_GEOMETRY_KEYS.has(k)) {
+      throw new Error(`Unknown geometry key '${k}'`);
+    }
+    if (k === 'groundContact') {
+      if (typeof v !== 'boolean') throw new Error('geometry.groundContact must be boolean');
+    } else if (k === 'lengthToWidth' || k === 'heightToLength') {
+      validateRange(v, k);
+    } else if (!isFiniteNum(v) || v < 0 || v > 1) {
+      throw new Error(`geometry.${k} must be a number from 0 to 1, got ${String(v)}`);
+    }
+  }
 }
 
 function validateCard(parsed: unknown, cardPath: string): StyleCard {
@@ -165,6 +278,9 @@ function validateCard(parsed: unknown, cardPath: string): StyleCard {
       }
     }
   }
+  if (obj['geometry'] !== undefined) {
+    validateGeometry(obj['geometry']);
+  }
   return obj as unknown as StyleCard;
 }
 
@@ -190,8 +306,13 @@ function assertOutputDoesNotClobberInputs(outPath: string, inputPaths: readonly 
   }
 }
 
+function exitCodeFor(report: { readonly ok: boolean; readonly unsupportedGate: boolean }): number {
+  if (report.unsupportedGate) return 2;
+  return report.ok ? 0 : 1;
+}
+
 async function runCheck(args: readonly string[]): Promise<number> {
-  const { positional, flags } = parseArgs(args, new Set(['--card', '--out', '--timeout']));
+  const { positional, flags, switches } = parseArgs(args, ['--card', '--out', '--timeout'], CONSOLE_FLAGS);
   const assetPath = positional[0];
   if (positional.length !== 1 || assetPath === undefined) {
     process.stderr.write(`${usage()}\n`);
@@ -206,11 +327,14 @@ async function runCheck(args: readonly string[]): Promise<number> {
 
   const session = await runAssetSession({
     assetPath,
-    timeoutMs: Number(flags.get('--timeout') ?? DEFAULT_TIMEOUT_MS),
+    timeoutMs: parseTimeout(flags),
     card,
     renderSheet: false,
   });
-  const evalResult = evaluateAssetGates(session.metrics, card);
+  const evalResult = evaluateAssetGates(session.metrics, card, undefined, {
+    consoleErrors: session.consoleErrors,
+    failOnConsoleError: !switches.has('--no-fail-on-console-error'),
+  });
   const report: Check3DReport = {
     schemaVersion: 'agent-3d/check/v1',
     ok: evalResult.ok,
@@ -218,6 +342,7 @@ async function runCheck(args: readonly string[]): Promise<number> {
     asset: assetPath,
     cardId: card?.id ?? null,
     metrics: session.metrics,
+    consoleErrors: session.consoleErrors,
     findings: evalResult.findings,
   };
   const serialized = `${JSON.stringify(report, null, 2)}\n`;
@@ -226,54 +351,230 @@ async function runCheck(args: readonly string[]): Promise<number> {
     fs.writeFileSync(outJson, serialized);
   }
   process.stdout.write(serialized);
-  if (report.unsupportedGate) {
-    return 2;
-  }
-  return report.ok ? 0 : 1;
+  return exitCodeFor(report);
 }
 
-async function runTurntable(args: readonly string[]): Promise<number> {
-  const { positional, flags } = parseArgs(args, new Set(['--card', '--out', '--timeout']));
-  const assetPath = positional[0];
-  const outDir = flags.get('--out');
-  if (positional.length !== 1 || assetPath === undefined || outDir === undefined) {
-    process.stderr.write(`${usage()}\n`);
-    return 2;
-  }
-  const cardPath = flags.get('--card');
-  const contactSheetPath = path.join(path.resolve(outDir), 'contact-sheet.png');
-  const reportPath = path.join(path.resolve(outDir), 'report.json');
-  assertOutputDoesNotClobberInputs(contactSheetPath, [assetPath, cardPath]);
-  assertOutputDoesNotClobberInputs(reportPath, [assetPath, cardPath]);
-  const card = loadCard(cardPath);
+interface TurntableOptions {
+  readonly card: StyleCard | null;
+  readonly cardPath: string | undefined;
+  readonly timeoutMs: number;
+  readonly capture: CaptureSettings;
+  readonly saveViews: boolean;
+  readonly failOnConsoleError: boolean;
+}
+
+interface TurntableJob extends TurntableOptions {
+  readonly assetPath: string;
+  readonly outDir: string;
+}
+
+function turntableOptions(parsed: ParsedArgs): TurntableOptions {
+  const cardPath = parsed.flags.get('--card');
+  return {
+    card: loadCard(cardPath),
+    cardPath,
+    timeoutMs: parseTimeout(parsed.flags),
+    capture: parseCapture(parsed.flags),
+    saveViews: parsed.switches.has('--save-views'),
+    failOnConsoleError: !parsed.switches.has('--no-fail-on-console-error'),
+  };
+}
+
+async function turntableReport(job: TurntableJob): Promise<{ readonly report: TurntableReport; readonly reportPath: string }> {
+  const outDir = path.resolve(job.outDir);
+  const contactSheetPath = path.join(outDir, 'contact-sheet.png');
+  const reportPath = path.join(outDir, 'report.json');
+  assertOutputDoesNotClobberInputs(contactSheetPath, [job.assetPath, job.cardPath]);
+  assertOutputDoesNotClobberInputs(reportPath, [job.assetPath, job.cardPath]);
 
   const session = await runAssetSession({
-    assetPath,
-    timeoutMs: Number(flags.get('--timeout') ?? DEFAULT_TIMEOUT_MS),
-    card,
+    assetPath: job.assetPath,
+    timeoutMs: job.timeoutMs,
+    card: job.card,
     renderSheet: true,
     contactSheetPath,
+    capture: job.capture,
+    ...(job.saveViews ? { viewsDir: outDir } : {}),
   });
-  const evalResult = evaluateAssetGates(session.metrics, card, session.views);
+  const evalResult = evaluateAssetGates(session.metrics, job.card, session.views, {
+    consoleErrors: session.consoleErrors,
+    failOnConsoleError: job.failOnConsoleError,
+    capture: job.capture,
+  });
   const report: TurntableReport = {
     schemaVersion: 'agent-3d/turntable/v1',
     ok: evalResult.ok,
     unsupportedGate: evalResult.unsupportedGate,
-    asset: assetPath,
-    cardId: card?.id ?? null,
+    asset: job.assetPath,
+    cardId: job.card?.id ?? null,
     contactSheetPath,
+    viewPaths: session.viewPaths,
+    capture: job.capture,
     metrics: session.metrics,
     views: session.views,
+    consoleErrors: session.consoleErrors,
     findings: evalResult.findings,
   };
-  const serialized = `${JSON.stringify(report, null, 2)}\n`;
-  fs.mkdirSync(path.resolve(outDir), { recursive: true });
-  fs.writeFileSync(reportPath, serialized);
-  process.stdout.write(serialized);
-  if (report.unsupportedGate) {
+  fs.mkdirSync(outDir, { recursive: true });
+  fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+  return { report, reportPath };
+}
+
+const TURNTABLE_VALUE_FLAGS = ['--card', '--out', '--timeout', ...CAPTURE_VALUE_FLAGS];
+const TURNTABLE_SWITCHES = ['--save-views', ...CONSOLE_FLAGS];
+
+async function runTurntable(args: readonly string[]): Promise<number> {
+  const parsed = parseArgs(args, TURNTABLE_VALUE_FLAGS, TURNTABLE_SWITCHES);
+  const assetPath = parsed.positional[0];
+  const outDir = parsed.flags.get('--out');
+  if (parsed.positional.length !== 1 || assetPath === undefined || outDir === undefined) {
+    process.stderr.write(`${usage()}\n`);
     return 2;
   }
-  return report.ok ? 0 : 1;
+  const { report } = await turntableReport({ ...turntableOptions(parsed), assetPath, outDir });
+  process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  return exitCodeFor(report);
+}
+
+export function listBatchAssets(dir: string): readonly string[] {
+  const abs = path.resolve(dir);
+  if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
+    throw new Error(`Batch directory not found: ${abs}`);
+  }
+  const assets = fs.readdirSync(abs)
+    .filter((name) => BATCH_ASSET_EXTENSIONS.has(path.extname(name).toLowerCase()) && !name.endsWith('.d.ts'))
+    .filter((name) => fs.statSync(path.join(abs, name)).isFile())
+    .sort()
+    .map((name) => path.join(abs, name));
+  const seen = new Map<string, string>();
+  for (const asset of assets) {
+    const name = assetName(asset);
+    const prior = seen.get(name);
+    if (prior !== undefined) {
+      throw new Error(`Batch assets ${path.basename(prior)} and ${path.basename(asset)} share the output folder '${name}'`);
+    }
+    seen.set(name, asset);
+  }
+  return assets;
+}
+
+function assetName(assetPath: string): string {
+  return path.basename(assetPath, path.extname(assetPath));
+}
+
+function formatBatchTable(batch: BatchReport): string {
+  const header = ['asset', 'tris', 'degen', 'palette', 'samples', 'maxΔE76', 'result'];
+  const rows = batch.assets.map((a) => [
+    a.name,
+    a.triangles?.toString() ?? '-',
+    a.degenerateTriangles?.toString() ?? '-',
+    a.paletteStatus ?? '-',
+    a.paletteSamples?.toString() ?? '-',
+    a.paletteMaxDeltaE76?.toFixed(2) ?? '-',
+    a.error !== null ? 'ERROR' : a.ok ? 'PASS' : 'FAIL',
+  ]);
+  const widths = header.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i]?.length ?? 0)));
+  const line = (cells: readonly string[]): string => cells.map((c, i) => c.padEnd(widths[i] ?? 0)).join('  ').trimEnd();
+  const out = [line(header), line(widths.map((w) => '-'.repeat(w))), ...rows.map(line)];
+  for (const a of batch.assets) {
+    if (a.error !== null) out.push(`${a.name}: ${a.error}`);
+    else if (a.failures.length > 0) out.push(`${a.name}: ${a.failures.join(', ')}`);
+  }
+  out.push(`${batch.passed}/${batch.total} passed${batch.cardId !== null ? ` against card '${batch.cardId}'` : ''}`);
+  return `${out.join('\n')}\n`;
+}
+
+async function runBatch(args: readonly string[]): Promise<number> {
+  const parsed = parseArgs(args, TURNTABLE_VALUE_FLAGS, TURNTABLE_SWITCHES);
+  const dir = parsed.positional[0];
+  const outDir = parsed.flags.get('--out');
+  if (parsed.positional.length !== 1 || dir === undefined || outDir === undefined) {
+    process.stderr.write(`${usage()}\n`);
+    return 2;
+  }
+  const options = turntableOptions(parsed);
+  const assets = listBatchAssets(dir);
+  if (assets.length === 0) {
+    throw new Error(`No .glb or factory modules found in ${path.resolve(dir)}`);
+  }
+
+  const rows: BatchAssetRow[] = [];
+  // Sequential on purpose: each asset already drives a multithreaded software rasterizer.
+  for (const asset of assets) {
+    const name = assetName(asset);
+    try {
+      const { report, reportPath } = await turntableReport({ ...options, assetPath: asset, outDir: path.join(outDir, name) });
+      const palette = report.metrics.palette;
+      rows.push({
+        name,
+        asset,
+        ok: report.ok,
+        exitCode: exitCodeFor(report),
+        reportPath,
+        triangles: report.metrics.trianglesByOccurrence,
+        degenerateTriangles: report.metrics.degenerateTriangles,
+        paletteStatus: palette.status,
+        paletteSamples: palette.sampledCorners,
+        paletteMaxDeltaE76: palette.maxDeltaE76,
+        failures: report.findings.filter((f) => f.severity === 'fail' || f.severity === 'unsupported').map((f) => f.id),
+        error: null,
+      });
+    } catch (err) {
+      rows.push({
+        name,
+        asset,
+        ok: false,
+        exitCode: 2,
+        reportPath: null,
+        triangles: null,
+        degenerateTriangles: null,
+        paletteStatus: null,
+        paletteSamples: null,
+        paletteMaxDeltaE76: null,
+        failures: [],
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  const passed = rows.filter((r) => r.ok).length;
+  const batch: BatchReport = {
+    schemaVersion: 'agent-3d/batch/v1',
+    ok: passed === rows.length,
+    dir: path.resolve(dir),
+    outDir: path.resolve(outDir),
+    cardId: options.card?.id ?? null,
+    capture: options.capture,
+    total: rows.length,
+    passed,
+    failed: rows.length - passed,
+    assets: rows,
+  };
+  const table = formatBatchTable(batch);
+  fs.mkdirSync(path.resolve(outDir), { recursive: true });
+  fs.writeFileSync(path.join(path.resolve(outDir), 'summary.json'), `${JSON.stringify(batch, null, 2)}\n`);
+  fs.writeFileSync(path.join(path.resolve(outDir), 'summary.txt'), table);
+  process.stdout.write(`${JSON.stringify(batch)}\n`);
+  process.stderr.write(table);
+  return Math.max(0, ...rows.map((r) => r.exitCode));
+}
+
+async function runGpuProbeCli(args: readonly string[]): Promise<number> {
+  const { positional, flags, switches } = parseArgs(args, ['--out', '--browser', '--timeout'], ['--headed']);
+  const browser = flags.get('--browser') ?? 'chrome';
+  if (positional.length !== 0 || (browser !== 'chrome' && browser !== 'chromium')) {
+    process.stderr.write(`${usage()}\n`);
+    return 2;
+  }
+  const outDir = flags.get('--out');
+  const result = await runGpuProbe({
+    browser,
+    headed: switches.has('--headed'),
+    timeoutMs: parseTimeout(flags),
+    ...(outDir !== undefined ? { outDir } : {}),
+  });
+  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  return result.exitCode;
 }
 
 export async function main(argv: readonly string[]): Promise<number> {
@@ -284,6 +585,12 @@ export async function main(argv: readonly string[]): Promise<number> {
     }
     if (cmd === 'turntable') {
       return await runTurntable(argv.slice(1));
+    }
+    if (cmd === 'batch') {
+      return await runBatch(argv.slice(1));
+    }
+    if (cmd === 'gpu-probe') {
+      return await runGpuProbeCli(argv.slice(1));
     }
     process.stderr.write(`${usage()}\n`);
     return 2;

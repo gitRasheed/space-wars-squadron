@@ -1,13 +1,91 @@
 import { deltaE76, hexSrgbToLinearRgb, linearRgbToLabD65 } from './color.js';
-import type { AssetMetrics, GateFinding, StyleCard, ViewMetrics } from './types.js';
+import type { AssetMetrics, CaptureSettings, GateFinding, StyleCard, StyleCardGeometry, ViewMetrics } from './types.js';
+
+export interface GateContext {
+  readonly consoleErrors?: readonly string[];
+  /** Default true: any console error fails the gate. False reports them as warnings. */
+  readonly failOnConsoleError?: boolean;
+  readonly capture?: CaptureSettings;
+}
+
+function geometryFindings(metrics: AssetMetrics, geometry: StyleCardGeometry): GateFinding[] {
+  const shape = metrics.shape;
+  const bounds = metrics.worldBounds;
+  if (shape === null || bounds === null) return [];
+  const findings: GateFinding[] = [];
+  if (geometry.groundContact === true) {
+    const tol = shape.groundToleranceFraction * bounds.maxExtent;
+    if (Math.abs(shape.groundOffset) > tol) {
+      const floating = shape.groundOffset > 0;
+      findings.push({
+        id: floating ? 'GROUND_FLOATING' : 'GROUND_SINKING',
+        severity: 'fail',
+        message: `Lowest point min.y=${shape.groundOffset.toFixed(4)} ${floating ? 'floats above' : 'sinks below'} y=0 (tolerance ±${tol.toFixed(4)})`,
+        actual: shape.groundOffset,
+        limit: tol,
+      });
+    }
+  }
+  if (
+    geometry.groundFootprintMin !== undefined &&
+    (shape.groundFootprintRatio === null || shape.groundFootprintRatio < geometry.groundFootprintMin)
+  ) {
+    findings.push({
+      id: 'GROUND_FOOTPRINT_SMALL',
+      severity: 'fail',
+      message: `Ground footprint ${shape.groundFootprintRatio?.toFixed(3) ?? 'n/a'} of the x/z box is below ${geometry.groundFootprintMin}; the asset may balance on a point or edge`,
+      actual: shape.groundFootprintRatio ?? 0,
+      limit: geometry.groundFootprintMin,
+    });
+  }
+  if (geometry.mirrorSymmetryMin !== undefined && shape.mirror.matchRatio < geometry.mirrorSymmetryMin) {
+    findings.push({
+      id: 'MIRROR_SYMMETRY_LOW',
+      severity: 'fail',
+      message: `Only ${(shape.mirror.matchRatio * 100).toFixed(1)}% of vertices mirror across ${shape.mirror.planeAxis}=${shape.mirror.planeCoord.toFixed(4)} within ${shape.mirror.toleranceFraction} of max extent (minimum ${(geometry.mirrorSymmetryMin * 100).toFixed(1)}%)`,
+      actual: shape.mirror.matchRatio,
+      limit: geometry.mirrorSymmetryMin,
+    });
+  }
+  const ranges = [
+    ['lengthToWidth', 'ASPECT_LENGTH_TO_WIDTH', shape.lengthToWidth, geometry.lengthToWidth],
+    ['heightToLength', 'ASPECT_HEIGHT_TO_LENGTH', shape.heightToLength, geometry.heightToLength],
+  ] as const;
+  for (const [name, id, actual, range] of ranges) {
+    if (range === undefined) continue;
+    if (actual === null || actual < range[0] || actual > range[1]) {
+      findings.push({
+        id,
+        severity: 'fail',
+        message: `${name} ${actual?.toFixed(3) ?? 'n/a'} is outside [${range[0]}, ${range[1]}] (length ${shape.length.toFixed(3)} on ${shape.lengthAxis}, width ${shape.width.toFixed(3)} on ${shape.widthAxis}, height ${shape.height.toFixed(3)} on ${shape.heightAxis})`,
+        actual: actual ?? 'n/a',
+        limit: `[${range[0]}, ${range[1]}]`,
+      });
+    }
+  }
+  return findings;
+}
 
 export function evaluateAssetGates(
   metrics: AssetMetrics,
   card: StyleCard | null,
   views?: readonly ViewMetrics[],
+  context: GateContext = {},
 ): { readonly ok: boolean; readonly unsupportedGate: boolean; readonly findings: readonly GateFinding[] } {
   const findings: GateFinding[] = [];
   let unsupportedGate = false;
+
+  const consoleErrors = context.consoleErrors ?? [];
+  if (consoleErrors.length > 0) {
+    const fail = context.failOnConsoleError ?? true;
+    findings.push({
+      id: 'CONSOLE_ERROR',
+      severity: fail ? 'fail' : 'warn',
+      message: `Browser logged ${consoleErrors.length} console error(s); first: ${consoleErrors[0]}`,
+      actual: consoleErrors.length,
+      limit: 0,
+    });
+  }
 
   if (metrics.visibleMeshCount === 0 || metrics.trianglesByOccurrence === 0 || metrics.worldBounds === null) {
     findings.push({
@@ -151,6 +229,14 @@ export function evaluateAssetGates(
         });
       }
 
+      if (metrics.palette.shaderMeshes > 0) {
+        findings.push({
+          id: 'PALETTE_UNASSESSED_SHADER',
+          severity: 'info',
+          message: `Palette check skipped on ${metrics.palette.shaderMeshes} mesh(es) drawn by a ShaderMaterial without a color; inspect contact sheet`,
+        });
+      }
+
       if (metrics.palette.texturedMeshes > 0) {
         if (card.requirePaletteOnTextured === true) {
           unsupportedGate = true;
@@ -202,7 +288,12 @@ export function evaluateAssetGates(
     }
   }
 
+  if (card?.geometry !== undefined) {
+    findings.push(...geometryFindings(metrics, card.geometry));
+  }
+
   if (views !== undefined) {
+    const croppedIn = (context.capture?.zoom ?? 1) > 1;
     for (const view of views) {
       if (view.coverageRatio < 0.01) {
         findings.push({
@@ -216,8 +307,10 @@ export function evaluateAssetGates(
       if (view.edgeClipped) {
         findings.push({
           id: 'VIEW_EDGE_CLIPPED',
-          severity: 'fail',
-          message: `View '${view.id}' subject touches tile edge (clipped)`,
+          severity: croppedIn ? 'info' : 'fail',
+          message: croppedIn
+            ? `View '${view.id}' subject touches tile edge (expected with --zoom ${context.capture?.zoom})`
+            : `View '${view.id}' subject touches tile edge (clipped)`,
           actual: true,
           limit: false,
         });
@@ -232,10 +325,12 @@ export function evaluateAssetGates(
         });
       }
       if (view.beautyUniqueColors < 2) {
+        // Zoomed far enough in, one flat face can legitimately fill the whole tile.
+        const faceFillsTile = croppedIn && view.coverageRatio === 1;
         findings.push({
           id: 'VIEW_BEAUTY_FLAT',
-          severity: 'fail',
-          message: `View '${view.id}' beauty tile has only ${view.beautyUniqueColors} quantized colors`,
+          severity: faceFillsTile ? 'info' : 'fail',
+          message: `View '${view.id}' beauty tile has only ${view.beautyUniqueColors} quantized colors${faceFillsTile ? ' (subject fills the zoomed tile)' : ''}`,
           actual: view.beautyUniqueColors,
           limit: 2,
         });

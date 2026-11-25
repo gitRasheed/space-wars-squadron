@@ -1,76 +1,49 @@
 ---
 name: agent-3d
-description: Inspect 3D assets (.glb or Three.js factory modules) with deterministic mesh/style-lock gates, 9-view labeled contact sheets, and a blind visual critic rubric.
+description: Check 3D assets (.glb or Three.js factory modules) with deterministic mesh, palette and shape gates, render labeled 9-view contact sheets (single asset or a whole directory), probe headless WebGPU, and run a blind visual critic.
 ---
 
 # agent-3d
 
-Headless 3D verification and visual iteration for coding agents (Three.js + Playwright Chromium WebGL).
+Headless 3D verification for coding agents: Three.js in Playwright Chromium over SwiftShader WebGL. [README.md](README.md) has every flag, the style card reference and exit codes. This file covers how to use it while iterating on an asset.
 
-## Run from a checkout
+## Setup
 
-Use Node.js 20 or later. From `tools/agent-3d/`, install the locked dependencies and the Chromium version Playwright expects.
-
-```bash
-npm ci
-npx playwright install chromium
-npm run build
-node dist/cli.js check path/to/model.glb --card style-card.json --out report.json
-node dist/cli.js turntable path/to/factory.ts --card style-card.json --out out/turntable
-```
-
-To run the CLI from another directory, pack the checkout once with `npm pack`, then point npx at the local tarball.
+From the package directory, with Node.js 20 or later:
 
 ```bash
-npx --package=/absolute/path/to/agent-3d-0.1.0.tgz -- agent-3d check ./model.glb
+npm ci && npx playwright install chromium && npm run build
 ```
 
-Both commands accept `--timeout <ms>` (default `30000`) for browser execution, including factory loading. Exit code `0` means the asset passed, `1` means a gate failed, and `2` means invalid input, a timeout, a renderer error, or an unsupported required gate.
+## Loop
 
-`check` measures geometry and authored colors. For untextured materials it adds emissive color times intensity to the linear base color after vertex and instance tinting, then clamps to the sRGB gamut for the palette comparison. Maps that supply base color or emission require visual review. The byte and primitive-mode budgets apply only to GLB files. Factory reports list skipped budgets.
+1. **Gate the asset.** `node dist/cli.js turntable <asset> --card card.json --out out/<asset>`. Exit 0 passes, 1 is a gate failure (read `findings` in the JSON), 2 is bad input or a renderer problem (read stderr).
+2. **Gate the whole set** after a shared change such as a material, palette or lighting tweak: `node dist/cli.js batch <dir> --card card.json --out out/batch`. Read the table on stderr; open `out/batch/<name>/report.json` for any FAIL or ERROR row.
+3. **Look closer** when the critic or a finding points at a detail: `--tile-size 840x630 --zoom 1.4 --save-views` writes full-size single views such as `persp-three-quarter.png`. Use `--lighting cel` to see the asset under stylized game-style lighting, and `--lighting dramatic` to check that forms still read with deep shadows.
+4. **Run the blind critic** on `contact-sheet.png` (below).
+5. Fix **one issue class per iteration**, re-run with the same card, and re-check with a fresh critic context.
 
-`turntable` also writes a nine-view contact sheet. A uniformly colored tile fails the beauty gate. The winding gate flags a view when backface culling hides more than half of the nearest surface area drawn with `FrontSide` materials. An open, one-sided panel can trigger this gate when seen from behind. Intentionally double-sided or back-sided materials are exempt.
+Things that commonly trip agents:
 
-## Minimal `style-card.json`
+- `CONSOLE_ERROR` usually means a shader failed to compile or a factory logged an error. The finding quotes the first message and `consoleErrors` has the rest. Fix the cause; use `--no-fail-on-console-error` only for a known, harmless third-party message.
+- `PALETTE_DELTA_E_EXCEEDED` names the mesh, the sampled color and the nearest role. `metrics.palette.colors` lists every sampled color, so check whether the color is a mistake or the card is missing a role. Textured surfaces and colorless `ShaderMaterial`s are not scored; review them on the sheet.
+- `VIEW_EDGE_CLIPPED` at zoom 1 means the bounds include something far from the body, often a stray or hidden-by-material mesh.
+- `INVERTED_WINDING` means triangle order is reversed; flip the index order or the scale sign rather than switching the material to `DoubleSide`.
+- Shape values (`metrics.shape`) are always reported. Only gate on them (card `geometry`) after confirming every asset in the set meets the rule; a deliberately asymmetric design is not a defect.
 
-```json
-{
-  "id": "lowpoly-starships",
-  "frontAxis": "-Z",
-  "topUpAxis": "-Z",
-  "pivot": "center",
-  "pivotToleranceFraction": 0.1,
-  "palette": {
-    "hull": "#dfd9cc",
-    "accent": "#e88332",
-    "ink": "#070712"
-  },
-  "paletteDeltaE76Max": 8,
-  "requirePaletteOnTextured": false,
-  "separationMinDeltaE76": 12,
-  "separationRoles": [["hull", "accent"]],
-  "budgets": {
-    "trisMax": 2000,
-    "materialsMax": 12,
-    "texturesMax": 4,
-    "bytesMax": 200000,
-    "degenerateTrianglesMax": 0,
-    "requireTriangleLists": true
-  }
-}
-```
+## Factory contract
 
-## Factory Module Contract
+A browser-compatible `.ts`, `.mts`, `.js` or `.mjs` module exports `buildAsset(THREE)` (or a default function) returning `THREE.Object3D` or a promise of one. It may import project code; the CLI bundles everything against one shared copy of `three`.
 
-A browser-compatible `.ts` / `.mjs` / `.js` adapter exports `buildAsset(THREE)` (or default export) returning `THREE.Object3D | Promise<THREE.Object3D>`. The CLI bundles it against one shared copy of `three`, awaits readiness, measures world-transformed bounds before camera centering, and renders all 9 views from the same root.
+## WebGPU smoke job
 
-## Blind Visual Critic Workflow
+`node dist/cli.js gpu-probe --out out/gpu` answers whether WebGPU actually renders on this machine. Exit 0 means it does; exit 3 means three.js silently fell back to WebGL, so a WebGPU-only bug would go unnoticed. Keep the turntable on WebGL as the pixel gate and run the probe separately.
 
-Mechanical gates (`report.json`) decide budgets, bounds, degeneracy, and framing; a **blind visual critic** judges silhouette, proportions, symmetry, and readability.
+## Blind visual critic
 
-**Strict rule:** Give the critic **only** `contact-sheet.png` and the short design brief. Never include builder source code, commit messages, or prior scores.
+Mechanical gates decide budgets, bounds, palette, degeneracy and framing. A blind visual critic judges silhouette, proportions, symmetry and readability.
 
-### Blind Critic Prompt
+Give the critic **only** `contact-sheet.png` (or saved views) and a short design brief. Never include builder source code, commit messages or earlier scores.
 
 ```text
 You are a visual critic for a game-ready 3D asset. You are looking at a labeled 9-view contact sheet:
@@ -86,5 +59,3 @@ Do not invent views not on the sheet. Score each axis 1–5 and cite at least on
 Target: every axis >= 4. If any axis is < 4, list at most 3 concrete fixes (most severe first), naming the exact view ID and magnitude.
 Finish with one line: PASS, PARTIAL, or FAIL.
 ```
-
-Apply at most **one issue class per iteration**, re-run `turntable` with the same card, and re-check with a fresh critic context.
