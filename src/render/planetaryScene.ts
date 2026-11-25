@@ -13,6 +13,7 @@ import {
 } from '../sim/planetaryLayout';
 import type { GroundTargetKind, GroundTargetState, PlanetaryState, Vec3 } from '../sim/types';
 import { celMat } from './celMaterial';
+import { disposeObject3D } from './dispose';
 import { addStyledPart, glowMat } from './models';
 import { BIOME_CARDS, RIM_PALETTE, SCENE_PALETTE, SUNSET_PALETTE } from './palette';
 import { createShieldBubble } from './vfx';
@@ -464,19 +465,9 @@ export function createPlanetaryScene(): PlanetaryScene {
   }
 
   function dispose(): void {
-    const geometries = new Set<THREE.BufferGeometry>();
-    const materials = new Set<THREE.Material>();
-    for (const node of [root, sky]) {
-      node.traverse((obj) => {
-        if (obj instanceof THREE.Mesh || obj instanceof THREE.Line) {
-          geometries.add(obj.geometry as THREE.BufferGeometry);
-          const mat = obj.material as THREE.Material | THREE.Material[];
-          for (const m of Array.isArray(mat) ? mat : [mat]) materials.add(m);
-        }
-      });
-    }
-    for (const g of geometries) g.dispose();
-    for (const m of materials) m.dispose();
+    root.removeFromParent();
+    sky.removeFromParent();
+    disposeObject3D([root, sky]);
   }
 
   return { root, sky, sync, dispose };

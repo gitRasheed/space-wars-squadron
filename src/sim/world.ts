@@ -12,6 +12,8 @@ import {
   remainingPlanetaryHostiles,
   spawnAirWave,
   stepGroundBattle,
+  TERRAIN_SOLIDS,
+  WINGMATE_ID,
 } from './planetary';
 import { GROUND_TARGET_PLACEMENTS, PLANETARY_TUNING, PLAYER_START, segmentTerrainEntry, WINGMATE_START } from './planetaryLayout';
 import { SHIP_STATS } from './ships';
@@ -479,7 +481,7 @@ export function stepWorld(
   const preEvents: SimEvent[] = [...flightStep.events];
   let terrainWarning = false;
   if (planetary !== null) {
-    const terrain = applyTerrainToPlayer(player);
+    const terrain = applyTerrainToPlayer(world.player.position, player, planetary.groundTargets);
     terrainWarning = terrain.warning;
     preEvents.push(...terrain.events);
     const flak = burstFlak(tick, projectiles, terrain.player, dt);
@@ -507,7 +509,12 @@ export function stepWorld(
     dt,
     ...(planetary === null
       ? {}
-      : { groundTargets: planetary.groundTargets, terrainEntry: segmentTerrainEntry, groundSpeaker: GROUND_SPEAKER }),
+      : {
+          groundTargets: planetary.groundTargets,
+          terrainEntry: segmentTerrainEntry,
+          groundSpeaker: GROUND_SPEAKER,
+          wingmateObstacles: TERRAIN_SOLIDS,
+        }),
   });
 
   const battle =
@@ -522,6 +529,7 @@ export function stepWorld(
           player: combatStep.player,
           wingmate: combatStep.wingmate,
           enemies: combatStep.enemies,
+          previousPositions: new Map([[WINGMATE_ID, world.wingmate.position], ...world.enemies.map((e) => [e.id, e.position] as const)]),
           outpost: combatStep.friendlyCarrier,
           radio: combatStep.radio,
           dt,

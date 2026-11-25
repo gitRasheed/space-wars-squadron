@@ -37,6 +37,7 @@ import { BIOME_CARDS, SCENE_PALETTE } from './palette';
 import { createPlanetaryScene, type PlanetaryScene } from './planetaryScene';
 import { CAMERA_CLIP, createStylizedPostPass } from './postProcess';
 import { createHullTextureSet } from './textures';
+import { disposeObject3D } from './dispose';
 import { buildTrenchLevel, buildTrenchSky, type TrenchRig } from './trenchModels';
 import {
   createBlastShellBatch,
@@ -207,33 +208,6 @@ function pushTrailPoint(trail: TrailLine, point: Vec3): void {
 
 function clearTrail(trail: TrailLine): void {
   trail.line.geometry.setDrawRange(0, 0);
-}
-
-function disposeObject3D(root: THREE.Object3D): void {
-  const geometries = new Set<THREE.BufferGeometry>();
-  const materials = new Set<THREE.Material>();
-
-  root.traverse((node) => {
-    if (
-      node instanceof THREE.Mesh ||
-      node instanceof THREE.Line ||
-      node instanceof THREE.LineSegments ||
-      node instanceof THREE.Points
-    ) {
-      geometries.add(node.geometry as THREE.BufferGeometry);
-      const mat = node.material as THREE.Material | THREE.Material[];
-      for (const item of Array.isArray(mat) ? mat : [mat]) {
-        materials.add(item);
-      }
-    }
-  });
-
-  for (const geo of geometries) {
-    geo.dispose();
-  }
-  for (const mat of materials) {
-    mat.dispose();
-  }
 }
 
 export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
@@ -492,7 +466,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     for (const [id, mesh] of asteroidMeshes) {
       if (!activeIds.has(id)) {
         scene.remove(mesh);
-        disposeObject3D(mesh);
+        disposeObject3D([mesh]);
         asteroidMeshes.delete(id);
       }
     }
@@ -542,7 +516,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     for (const [id, visual] of enemyVisuals) {
       if (!activeIds.has(id)) {
         scene.remove(visual.root);
-        disposeObject3D(visual.root);
+        disposeObject3D([visual.root]);
         disposeTrail(visual.trail);
         enemyVisuals.delete(id);
       }
@@ -628,7 +602,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     for (const [id, visual] of missileVisuals) {
       if (!activeMissiles.has(id)) {
         scene.remove(visual.root);
-        disposeObject3D(visual.root);
+        disposeObject3D([visual.root]);
         disposeTrail(visual.trail);
         missileVisuals.delete(id);
       }
@@ -980,13 +954,12 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   }
 
   function destroy(): void {
+    // The planetary scene owns its subtree and detaches it, so the scene sweep below never frees it twice.
     planetaryScene?.dispose();
     sparks.mesh.dispose();
-    disposeObject3D(scene);
-    destroyedSubMat.dispose();
-    for (const mat of initialSubMaterials.values()) {
-      mat.dispose();
-    }
+    const detached = [destroyedSubMat, ...initialSubMaterials.values()];
+    if (trenchRig !== null) detached.push(trenchRig.coreLiveMaterial, trenchRig.coreDeadMaterial);
+    disposeObject3D([scene], detached);
     dotTexture.dispose();
     textures.dispose();
     postPass.destroy();

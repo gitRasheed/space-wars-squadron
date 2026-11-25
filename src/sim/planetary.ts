@@ -1,6 +1,7 @@
+import { ARENA_SKIN, arenaBox, arenaSphere, sweepArena } from './arena';
 import { COMBAT_TUNING } from './combat';
 import { damagePlayer } from './flight';
-import { add, clamp, computeLeadPoint, cross, distance, dot, len, nextRandom, normalize, quatLookAt, scale, sub, vec3 } from './math';
+import { add, clamp, computeLeadPoint, cross, distance, dot, len, lenSq, lerpVec3, nextRandom, normalize, quatLookAt, scale, sub, vec3 } from './math';
 import {
   AIR_WAVE,
   CONVOY_MAX_ADVANCE,
@@ -10,10 +11,12 @@ import {
   PLANETARY_TUNING,
   segmentTerrainEntry,
   TERRAIN_BOXES,
+  TERRAIN_EXTENT,
   terrainHeightAt,
 } from './planetaryLayout';
 import { SHIP_STATS } from './ships';
 import type {
+  ArenaSolid,
   CapitalShipState,
   EnemyShipState,
   ExplosionState,
@@ -28,6 +31,7 @@ import type {
 } from './types';
 
 export const GROUND_SPEAKER = 'GRIT ACTUAL';
+export const WINGMATE_ID = 'wingmate';
 export const OUTPOST_LOST_REASON = 'FORWARD OUTPOST OVERRUN';
 const UP: Vec3 = { x: 0, y: 1, z: 0 };
 
@@ -98,13 +102,35 @@ export interface TerrainClearance {
   readonly warning: boolean;
 }
 
-/** Pushes a point out of the floor and terraces along the shallowest axis and bounces its velocity off that face. */
+/** The floor and every terrace as arena solids, so craft moves can be swept like level geometry. */
+export const TERRAIN_SOLIDS: readonly ArenaSolid[] = [
+  arenaBox(
+    'floor',
+    'rock',
+    vec3(0, -500, (TERRAIN_EXTENT.minZ + TERRAIN_EXTENT.maxZ) * 0.5),
+    vec3(TERRAIN_EXTENT.maxX, 500, (TERRAIN_EXTENT.maxZ - TERRAIN_EXTENT.minZ) * 0.5),
+  ),
+  ...TERRAIN_BOXES.map((b) => arenaBox(b.id, 'rock', b.center, b.halfExtents)),
+];
+
+/** Live ground targets are solid to the player; wrecks are not. */
+export function groundTargetSolids(targets: readonly GroundTargetState[]): readonly ArenaSolid[] {
+  return targets.filter((t) => t.hull > 0).map((t) => arenaSphere(t.id, 'pylon', t.position, t.hitRadius));
+}
+
+/**
+ * Sweeps the move from → to against the floor, the terraces and any extra solids, stopping at the
+ * first padded surface, then pushes the result out of anything it still sits in and bounces its
+ * velocity off each face it met.
+ */
 export function resolveTerrainClearance(
-  position: Vec3,
+  from: Vec3,
+  to: Vec3,
   velocity: Vec3,
   margin: number = PLANETARY_TUNING.terrainClearance,
+  extraSolids: readonly ArenaSolid[] = [],
 ): TerrainClearance {
-  let pos = position;
+  let pos = to;
   let vel = velocity;
   let impactSpeed = 0;
 
@@ -119,6 +145,13 @@ export function resolveTerrainClearance(
       vel = add(vel, scale(normal, PLANETARY_TUNING.terrainMinBounceSpeed - outward));
     }
   };
+
+  const solids = extraSolids.length === 0 ? TERRAIN_SOLIDS : [...TERRAIN_SOLIDS, ...extraSolids];
+  const hit = from === to ? null : sweepArena(from, to, solids, margin);
+  if (hit !== null && hit.t > 0) {
+    pos = add(lerpVec3(from, to, hit.t), scale(hit.normal, ARENA_SKIN));
+    bounce(hit.normal);
+  }
 
   if (pos.y < margin) {
     pos = { ...pos, y: margin };
@@ -145,7 +178,16 @@ export function resolveTerrainClearance(
       normal = { x: 0, y: 0, z: local.z >= 0 ? 1 : -1 };
       depth = penZ;
     }
-    pos = add(pos, scale(normal, depth + 0.05));
+    pos = add(pos, scale(normal, depth + ARENA_SKIN));
+    bounce(normal);
+  }
+  for (const solid of extraSolids) {
+    if (solid.kind !== 'sphere') continue;
+    const offset = sub(pos, solid.center);
+    const reach = solid.radius + margin;
+    if (lenSq(offset) >= reach * reach) continue;
+    const normal = lenSq(offset) > 1e-9 ? normalize(offset) : UP;
+    pos = add(solid.center, scale(normal, reach + ARENA_SKIN));
     bounce(normal);
   }
 
@@ -157,12 +199,22 @@ export function resolveTerrainClearance(
   return { position: pos, velocity: vel, impactSpeed, warning };
 }
 
-export function applyTerrainToPlayer(player: PlayerShipState): {
+export function applyTerrainToPlayer(
+  previousPosition: Vec3,
+  player: PlayerShipState,
+  groundTargets: readonly GroundTargetState[],
+): {
   readonly player: PlayerShipState;
   readonly warning: boolean;
   readonly events: readonly SimEvent[];
 } {
-  const clearance = resolveTerrainClearance(player.position, player.velocity);
+  const clearance = resolveTerrainClearance(
+    previousPosition,
+    player.position,
+    player.velocity,
+    PLANETARY_TUNING.terrainClearance,
+    groundTargetSolids(groundTargets),
+  );
   const moved: PlayerShipState = { ...player, position: clearance.position, velocity: clearance.velocity };
   if (clearance.impactSpeed <= PLANETARY_TUNING.terrainDamageThreshold) {
     return { player: moved, warning: clearance.warning, events: [] };
@@ -314,9 +366,9 @@ function stepGroundTarget(
   }
 }
 
-// Same push-out as the player with a wider margin, so an NPC slides along a cliff instead of popping onto the ledge.
-function keepAboveGround<T extends { readonly position: Vec3; readonly velocity: Vec3 }>(ship: T): T {
-  const clearance = resolveTerrainClearance(ship.position, ship.velocity, PLANETARY_TUNING.npcMinAltitude);
+// Same sweep as the player with a wider margin, so an NPC slides along a cliff instead of popping onto the ledge.
+function keepAboveGround<T extends { readonly position: Vec3; readonly velocity: Vec3 }>(ship: T, previousPosition: Vec3): T {
+  const clearance = resolveTerrainClearance(previousPosition, ship.position, ship.velocity, PLANETARY_TUNING.npcMinAltitude);
   if (clearance.position === ship.position) return ship;
   return { ...ship, position: clearance.position, velocity: clearance.velocity };
 }
@@ -330,6 +382,8 @@ export interface GroundBattleInput {
   readonly player: PlayerShipState;
   readonly wingmate: WingmateState;
   readonly enemies: readonly EnemyShipState[];
+  /** Where each craft started this tick, so its move can be swept against the terrain. */
+  readonly previousPositions: ReadonlyMap<string, Vec3>;
   readonly outpost: CapitalShipState;
   readonly radio: RadioMessage | null;
   readonly dt: number;
@@ -358,7 +412,7 @@ export function stepGroundBattle(ctx: GroundBattleInput): GroundBattleOutput {
   const advanceGoal = (CONVOY_MAX_ADVANCE * destroyed) / groundTargets.length;
   const convoyAdvance = Math.min(advanceGoal, ctx.planetary.convoyAdvance + 14 * ctx.dt);
 
-  let enemies = ctx.enemies.map(keepAboveGround);
+  let enemies = ctx.enemies.map((e) => keepAboveGround(e, ctx.previousPositions.get(e.id) ?? e.position));
   let radio = ctx.radio;
   let stage = ctx.planetary.stage;
   if (stage.kind === 'ground_attack' && destroyed >= PLANETARY_TUNING.airWaveThreshold) {
@@ -376,7 +430,7 @@ export function stepGroundBattle(ctx: GroundBattleInput): GroundBattleOutput {
 
   return {
     planetary: { stage, groundTargets, groundTargetsDestroyed: destroyed, convoyAdvance, terrainWarning: ctx.terrainWarning },
-    wingmate: keepAboveGround(ctx.wingmate),
+    wingmate: keepAboveGround(ctx.wingmate, ctx.previousPositions.get(WINGMATE_ID) ?? ctx.wingmate.position),
     enemies,
     spawned,
     radio,

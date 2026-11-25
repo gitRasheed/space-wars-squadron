@@ -168,6 +168,8 @@ export interface CombatStepInput {
   readonly terrainEntry?: TerrainEntry;
   /** Who calls out ground kills on the radio. */
   readonly groundSpeaker?: string;
+  /** Extra geometry the wingmate steers around, such as canyon terrain outside the arena. */
+  readonly wingmateObstacles?: readonly ArenaSolid[];
 }
 
 export interface CombatStepOutput {
@@ -574,6 +576,7 @@ function stepNpcAgents(
   hostileFrigate: CapitalShipState | null,
   reactors: readonly ReactorState[],
   arena: readonly ArenaSolid[],
+  wingmateObstacles: readonly ArenaSolid[],
   radioInput: RadioMessage | null,
   dt: number,
 ): {
@@ -589,7 +592,7 @@ function stepNpcAgents(
   const spawned: ProjectileState[] = [];
   const events: SimEvent[] = [];
 
-  const wingmateStep = stepWingmate(tick, wingmateInput, player, enemiesInput, hostileFrigate, reactors, arena, dt);
+  const wingmateStep = stepWingmate(tick, wingmateInput, player, enemiesInput, hostileFrigate, reactors, arena, wingmateObstacles, dt);
   if (wingmateStep.projectile !== null) {
     spawned.push(wingmateStep.projectile);
   }
@@ -1249,6 +1252,7 @@ export function stepCombat(ctx: CombatStepInput): CombatStepOutput {
     ctx.hostileFrigate,
     ctx.reactors,
     ctx.arena,
+    ctx.wingmateObstacles ?? [],
     decayedRadio,
     ctx.dt,
   );
@@ -1437,6 +1441,7 @@ function stepWingmate(
   hostileFrigate: CapitalShipState | null,
   reactors: readonly ReactorState[],
   arena: readonly ArenaSolid[],
+  obstacles: readonly ArenaSolid[],
   dt: number,
 ): {
   readonly wingmate: WingmateState;
@@ -1471,7 +1476,7 @@ function stepWingmate(
     forwardOf(wingmate.orientation),
     desiredDir,
     Math.max(COMBAT_TUNING.avoidMinLookahead, speed * COMBAT_TUNING.avoidLookaheadSeconds),
-    arena,
+    obstacles.length === 0 ? arena : arena.length === 0 ? obstacles : [...arena, ...obstacles],
     WINGMATE_HULL_PAD + 4,
   );
   const targetQuat = quatLookAt(steerDir);

@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { buildSolidGeometry, buildTrenchLevel } from '../src/render/trenchModels';
-import { boxCorners, isInsideArena, moveThroughArena, sweepArena } from '../src/sim/arena';
+import { arenaBox, boxCorners, isInsideArena, moveThroughArena, sweepArena } from '../src/sim/arena';
 import { COMBAT_TUNING, stepCombat } from '../src/sim/combat';
 import { FLIGHT_TUNING, stepPlayerFlight } from '../src/sim/flight';
-import { len, nextRandom, quatLookAt, vec3 } from '../src/sim/math';
+import { add, len, nextRandom, quatLookAt, scale, vec3 } from '../src/sim/math';
 import { SHIP_STATS } from '../src/sim/ships';
 import {
   TRENCH_ARENA,
@@ -180,6 +180,19 @@ describe('trench collision', () => {
     expect(scraped).toBe(true);
     expect(len(player.velocity)).toBeGreaterThan(90);
     expect(player.energy.shieldCharge).toBe(base.player.energy.shieldCharge);
+  });
+
+  it('sees a point inside a padded box corner, past the unpadded bounding sphere plus the pad', () => {
+    const cube = [arenaBox('cube', 'wall', vec3(0, 0, 0), vec3(1, 1, 1))];
+    expect(isInsideArena(vec3(6.9, 6.9, 6.9), cube, 6)).toBe(true);
+  });
+
+  it('holds the last clear position where the floor, wall-l-4 and monolith-2 meet', () => {
+    // One recorded tick into the junction: pushing out of one padded solid used to land 5.96 m from another.
+    const from = vec3(-71.95, -47.457372190577665, 18.458751796453274);
+    const velocity = vec3(-17.240257237005977, -16.83410641607493, -83.8641135120991);
+    const move = moveThroughArena(from, add(from, scale(velocity, FIXED_DT)), velocity, TRENCH_ARENA, PAD, FLIGHT_TUNING.wallRestitution, FLIGHT_TUNING.wallMinSeparation);
+    expect(isInsideArena(move.position, TRENCH_ARENA, PAD)).toBe(false);
   });
 
   it('stops a sweep that would jump clean over a 6 m rib in one step', () => {

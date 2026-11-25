@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { add, len, nextRandom, normalize, quatLookAt, scale, sub, vec3 } from '../src/sim/math';
+import { add, distance, IDENTITY_QUAT, len, nextRandom, normalize, quatLookAt, scale, segmentBoxEntry, sub, vec3 } from '../src/sim/math';
 import { resolveTerrainClearance } from '../src/sim/planetary';
 import {
   AIR_WAVE,
@@ -95,7 +95,7 @@ describe('planetary terrain layout', () => {
   });
 
   it('bounces a diving fighter off the floor and a cliff, never leaving it inside rock', () => {
-    const floor = resolveTerrainClearance(vec3(0, 1, 0), vec3(0, -60, -60));
+    const floor = resolveTerrainClearance(vec3(0, 1, 0), vec3(0, 1, 0), vec3(0, -60, -60));
     expect(floor.position.y).toBeGreaterThanOrEqual(PLANETARY_TUNING.terrainClearance);
     expect(floor.velocity.y).toBeGreaterThan(0);
     expect(floor.impactSpeed).toBeCloseTo(60, 6);
@@ -103,10 +103,56 @@ describe('planetary terrain layout', () => {
     const edge = TERRAIN_BOXES.find((b) => b.id === 'wall-l0-t0');
     if (edge === undefined) throw new Error('missing wall');
     const face = edge.center.x + edge.halfExtents.x;
-    const cliff = resolveTerrainClearance(vec3(face - 1, 20, edge.center.z), vec3(-90, 0, 0));
+    const cliff = resolveTerrainClearance(vec3(face - 1, 20, edge.center.z), vec3(face - 1, 20, edge.center.z), vec3(-90, 0, 0));
     expect(cliff.position.x).toBeGreaterThan(face);
     expect(cliff.velocity.x).toBeGreaterThan(0);
     expect(cliff.warning).toBe(true);
+  });
+
+  it('sweeps a fast step that would cut the padded corner of butte-a', () => {
+    const butte = TERRAIN_BOXES.find((b) => b.id === 'butte-a-t0');
+    if (butte === undefined) throw new Error('missing butte');
+    const margin = PLANETARY_TUNING.terrainClearance;
+    const padded = add(butte.halfExtents, vec3(margin, margin, margin));
+    // One 152.7 m/s tick whose ends both sit outside the padded box while its middle cuts the corner.
+    const from = vec3(-90.6, 20, 297.8);
+    const to = vec3(-92.4, 20, 299.6);
+    expect(segmentBoxEntry(from, to, butte.center, IDENTITY_QUAT, padded)).not.toBeNull();
+    const swept = resolveTerrainClearance(from, to, vec3(-108, 0, 108));
+    const shrunk = add(padded, vec3(-0.01, -0.01, -0.01));
+    expect(segmentBoxEntry(from, swept.position, butte.center, IDENTITY_QUAT, shrunk)).toBeNull();
+  });
+
+  it('keeps the player out of a live relay instead of flying through it', () => {
+    const relay = planetaryOf(planetaryWorld()).groundTargets.find((t) => t.id === 'relay-1');
+    if (relay === undefined) throw new Error('missing relay');
+    let world = planetaryWorld();
+    const start = add(relay.position, vec3(0, 0, 60));
+    world = { ...world, player: { ...world.player, position: start, velocity: vec3(0, 0, -110), orientation: quatLookAt(vec3(0, 0, -1)) } };
+    let closest = Infinity;
+    for (let tick = 0; tick < 90; tick += 1) {
+      world = stepWorld(world, NEUTRAL_INPUT, FIXED_DT);
+      closest = Math.min(closest, distance(world.player.position, relay.position));
+    }
+    expect(closest).toBeGreaterThanOrEqual(relay.hitRadius + PLANETARY_TUNING.terrainClearance - 0.01);
+  });
+
+  it('never pins the wingmate against butte-a while it tries to rejoin a player on the far side', () => {
+    let world = planetaryWorld();
+    const hold = { position: vec3(-120, 40, 150), velocity: vec3(0, 0, -1), orientation: quatLookAt(vec3(0, 0, -1)) };
+    world = { ...world, wingmate: { ...world.wingmate, position: vec3(-150, 48, 345), velocity: vec3(0, 0, -60), orientation: quatLookAt(vec3(0, 0, -1)) } };
+    let windowStart = world.wingmate.position;
+    let slowestWindow = Infinity;
+    for (let tick = 1; tick <= 600; tick += 1) {
+      world = stepWorld({ ...world, player: { ...world.player, ...hold } }, NEUTRAL_INPUT, FIXED_DT);
+      expect(insideAnyTerrace(world.wingmate.position)).toBe(false);
+      if (tick % 120 === 0) {
+        slowestWindow = Math.min(slowestWindow, distance(world.wingmate.position, windowStart));
+        windowStart = world.wingmate.position;
+      }
+    }
+    // Pressed into the face, it used to hold within a metre of one spot for the whole ten seconds.
+    expect(slowestWindow).toBeGreaterThan(10);
   });
 
   it('scrapes the player for damage when they fly into the canyon floor', () => {

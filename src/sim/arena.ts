@@ -23,7 +23,12 @@ export function arenaSphere(id: string, role: ArenaRole, center: Vec3, radius: n
   return { kind: 'sphere', id, role, center, radius, bound: radius, reactorId };
 }
 
-/** Cheap reject: the segment never comes within `bound + pad` of the solid's centre. */
+/** A padded box grows by `pad` on every axis, so its corners sit `pad·√3` past the unpadded bound. */
+function paddedReach(pad: number): number {
+  return pad * Math.sqrt(3);
+}
+
+/** Cheap reject: the segment never comes within the padded solid's bounding sphere. */
 function segmentMissesBound(a: Vec3, b: Vec3, solid: ArenaSolid, pad: number): boolean {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
@@ -36,7 +41,7 @@ function segmentMissesBound(a: Vec3, b: Vec3, solid: ArenaSolid, pad: number): b
   const ex = mx - dx * t;
   const ey = my - dy * t;
   const ez = mz - dz * t;
-  const r = solid.bound + pad;
+  const r = solid.bound + (solid.kind === 'box' ? paddedReach(pad) : pad);
   return ex * ex + ey * ey + ez * ez > r * r;
 }
 
@@ -82,8 +87,9 @@ function indexOf(solids: readonly ArenaSolid[]): ArenaIndex {
 function candidates(a: Vec3, b: Vec3, solids: readonly ArenaSolid[], pad: number, visit: (solid: ArenaSolid) => void): void {
   const index = indexOf(solids);
   for (const solid of index.spanning) visit(solid);
-  const lo = Math.max(0, Math.floor((Math.min(a.z, b.z) - pad - index.minZ) / BUCKET_SIZE));
-  const hi = Math.min(index.buckets.length - 1, Math.floor((Math.max(a.z, b.z) + pad - index.minZ) / BUCKET_SIZE));
+  const reach = paddedReach(pad);
+  const lo = Math.max(0, Math.floor((Math.min(a.z, b.z) - reach - index.minZ) / BUCKET_SIZE));
+  const hi = Math.min(index.buckets.length - 1, Math.floor((Math.max(a.z, b.z) + reach - index.minZ) / BUCKET_SIZE));
   if (lo === hi) {
     for (const solid of index.buckets[lo] ?? []) visit(solid);
     return;
@@ -219,6 +225,7 @@ export function pushOutOfArena(point: Vec3, solids: readonly ArenaSolid[], pad: 
 }
 
 export const ARENA_SKIN = 0.05;
+const WORLD_UP: Vec3 = { x: 0, y: 1, z: 0 };
 
 export interface ArenaMove {
   readonly position: Vec3;
@@ -267,7 +274,10 @@ export function moveThroughArena(
     const rest = scale(remaining, 1 - hit.t);
     remaining = sub(rest, scale(n, Math.min(0, dot(rest, n))));
   }
-  return { position: pushOutOfArena(position, solids, pad), velocity: vel, impactSpeed, contactPoint };
+  const resolved = pushOutOfArena(position, solids, pad);
+  // Where two padded solids overlap, pushing out of one can land inside the other; stay put instead.
+  const settled = isInsideArena(resolved, solids, pad) && !isInsideArena(from, solids, pad) ? from : resolved;
+  return { position: settled, velocity: vel, impactSpeed, contactPoint };
 }
 
 /**
@@ -290,6 +300,11 @@ export function steerClearOfArena(
     const n = hit.normal;
     const urgency = 1 - hit.t;
     steered = sub(steered, scale(n, Math.min(0, dot(steered, n))));
+    // Head-on, nothing is left along the surface, so climb it rather than bounce straight back.
+    if (lenSq(sub(steered, scale(n, dot(steered, n)))) < 0.09) {
+      const climb = sub(WORLD_UP, scale(n, dot(WORLD_UP, n)));
+      if (lenSq(climb) > 1e-6) steered = add(steered, scale(normalize(climb), 0.8));
+    }
     steered = add(steered, scale(n, 0.4 + urgency * 2.4));
   }
   return normalize(steered);
