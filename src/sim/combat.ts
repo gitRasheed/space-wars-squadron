@@ -1,4 +1,6 @@
-import { absorbShieldDamage, ENERGY_RULES, spendWeaponCharge } from './energy';
+import { ENERGY_RULES, flushWeaponHeat, spendWeaponCharge } from './energy';
+import { damagePlayer, FLIGHT_TUNING } from './flight';
+import { absorbIntoShield, regenShield, SHIP_STATS } from './ships';
 import {
   add,
   clamp,
@@ -15,6 +17,9 @@ import {
   rightOf,
   rotateVec3,
   scale,
+  segmentBoxEntry,
+  segmentClosestApproach,
+  segmentSphereEntry,
   slerpQuat,
   sub,
   toLocalPoint,
@@ -34,6 +39,7 @@ import type {
   RadioMessage,
   SimEvent,
   SubsystemState,
+  SupplyDrop,
   Vec3,
   WingmateState,
 } from './types';
@@ -66,21 +72,48 @@ export const COMBAT_TUNING = {
   missileDamage: 85,
   missileTtl: 5.2,
   missileCooldown: 0.55,
-  missileRearmSeconds: 4.5,
+  missileRearmSeconds: 12,
   missileTurnRate: 4.9,
   lockConeCos: 0.88,
   lockMaxRange: 1100,
   lockAcquireSeconds: 0.8,
+  autoFocusConeCos: 0.92,
+  /** Angular gap (rad) inside which distance may break a tie between two centred contacts. */
+  autoFocusTieRadians: 0.0105,
+  autoFocusHysteresisRadians: 0.0105,
+  pinConeCos: 0.5,
+  pinMaxRange: 1400,
   enemyBoltSpeed: 390,
   enemyBoltDamage: 14,
   enemyCarrierDamage: 24,
-  enemyHitRadius: 9.5,
-  playerHitRadius: 7.5,
-  enemyShieldRegenDelay: 4.5,
-  enemyShieldRegenRate: 6,
   enemyMinApproachDistance: 155,
   enemyBreakAwaySeconds: 2.6,
   enemyApproachSeconds: 7.2,
+  openingGraceSeconds: 4.5,
+  attackTokens: 2,
+  enemyAimBaseError: 0.006,
+  enemyAimSpeedError: 0.03,
+  enemyAimCrossingError: 0.15,
+  enemyAimTurnError: 0.012,
+  enemyAimOverdriveError: 0.045,
+  subsystemHitTolerance: 1.5,
+  asteroidHitTolerance: 2,
+  critBaseChance: 0.14,
+  critPrecisionBonus: 0.16,
+  critPityStep: 0.03,
+  critMaxChance: 0.55,
+  critMultiplier: 1.75,
+  dropBaseChance: 0.35,
+  dropPityStep: 0.2,
+  shieldSurge: 25,
+  nearMissRadius: 16,
+  nearMissMinSpeed: 80,
+  nearMissMinTurnRate: 0.6,
+  nearMissCooldown: 1.5,
+  nearMissHeatVent: 12,
+  nearMissShieldRestore: 6,
+  buzzEnemyDistance: 24,
+  buzzClearance: 12,
 } as const;
 
 export interface TargetContact {
@@ -167,6 +200,12 @@ export function findTargetContact(
   return contacts.find((c) => c.id === targetId) ?? null;
 }
 
+function angleOffNose(playerPos: Vec3, playerForward: Vec3, target: Vec3): { readonly angle: number; readonly dist: number } {
+  const toTarget = sub(target, playerPos);
+  const dist = Math.max(len(toTarget), 1);
+  return { angle: Math.acos(clamp(dot(playerForward, scale(toTarget, 1 / dist)), -1, 1)), dist };
+}
+
 export function selectNextTarget(
   currentId: string | null,
   playerPos: Vec3,
@@ -183,32 +222,28 @@ export function selectNextTarget(
     return contacts[nextIndex]?.id ?? null;
   }
 
-  // Center-of-view auto-focus: whichever hostile sits closest to your forward crosshair
-  // inside the ~23 deg forward cone becomes the active target for lead pip and missile lock-on.
-  const fovConeCos = 0.92;
-  const maxAutoFocusDist = COMBAT_TUNING.lockMaxRange;
-  let bestInViewId: string | null = null;
-  let bestInViewScore = -Infinity;
+  // Centre-of-view auto-focus: the contact nearest the crosshair wins. Distance only breaks
+  // near-ties, so a closer off-axis contact never steals focus from a centred one.
+  const maxAngle = Math.acos(COMBAT_TUNING.autoFocusConeCos);
+  const inView: { readonly id: string; readonly angle: number; readonly dist: number }[] = [];
   for (const contact of contacts) {
-    const toTarget = sub(contact.position, playerPos);
-    const dist = Math.max(len(toTarget), 1);
-    if (dist > maxAutoFocusDist) {
-      continue;
-    }
-    const alignment = dot(playerForward, scale(toTarget, 1 / dist));
-    if (alignment < fovConeCos) {
-      continue;
-    }
-    // Small hysteresis keeps lock steady when two hostiles cross close together.
-    const hysteresis = contact.id === currentId ? 0.015 : 0;
-    const score = alignment + hysteresis - dist / 12000;
-    if (score > bestInViewScore) {
-      bestInViewScore = score;
-      bestInViewId = contact.id;
+    const view = angleOffNose(playerPos, playerForward, contact.position);
+    if (view.dist <= COMBAT_TUNING.lockMaxRange && view.angle <= maxAngle) {
+      const hysteresis = contact.id === currentId ? COMBAT_TUNING.autoFocusHysteresisRadians : 0;
+      inView.push({ id: contact.id, angle: view.angle - hysteresis, dist: view.dist });
     }
   }
-  if (bestInViewId !== null) {
-    return bestInViewId;
+  if (inView.length > 0) {
+    const bestAngle = Math.min(...inView.map((c) => c.angle));
+    let best: (typeof inView)[number] | null = null;
+    for (const candidate of inView) {
+      if (candidate.angle <= bestAngle + COMBAT_TUNING.autoFocusTieRadians && (best === null || candidate.dist < best.dist)) {
+        best = candidate;
+      }
+    }
+    if (best !== null) {
+      return best.id;
+    }
   }
 
   if (currentIndex >= 0) {
@@ -218,16 +253,60 @@ export function selectNextTarget(
   let bestId = contacts[0]?.id ?? null;
   let bestScore = -Infinity;
   for (const contact of contacts) {
-    const toTarget = sub(contact.position, playerPos);
-    const dist = Math.max(len(toTarget), 1);
-    const alignment = dot(playerForward, scale(toTarget, 1 / dist));
-    const score = alignment * 2 - dist / 1400;
+    const view = angleOffNose(playerPos, playerForward, contact.position);
+    const score = Math.cos(view.angle) * 2 - view.dist / 1400;
     if (score > bestScore) {
       bestScore = score;
       bestId = contact.id;
     }
   }
   return bestId;
+}
+
+export interface TargetSelection {
+  readonly targetId: string | null;
+  readonly pinned: boolean;
+}
+
+function insidePinCone(playerPos: Vec3, playerForward: Vec3, contact: TargetContact): boolean {
+  const view = angleOffNose(playerPos, playerForward, contact.position);
+  return view.dist <= COMBAT_TUNING.pinMaxRange && Math.cos(view.angle) >= COMBAT_TUNING.pinConeCos;
+}
+
+/**
+ * `T` cycles through contacts in the forward pin cone and pins the pick; the pin holds until that
+ * contact dies or leaves the cone, or `T` is pressed on the only candidate. Unpinned, auto-focus runs.
+ */
+export function resolveTargetSelection(
+  current: TargetSelection,
+  playerPos: Vec3,
+  playerForward: Vec3,
+  contacts: readonly TargetContact[],
+  cycleRequested: boolean,
+): TargetSelection {
+  if (cycleRequested) {
+    const candidates = contacts.filter((c) => insidePinCone(playerPos, playerForward, c));
+    if (candidates.length === 0) {
+      return { targetId: selectNextTarget(current.targetId, playerPos, playerForward, contacts, true), pinned: false };
+    }
+    const index = candidates.findIndex((c) => c.id === current.targetId);
+    if (current.pinned && candidates.length === 1 && index === 0) {
+      return { targetId: current.targetId, pinned: false };
+    }
+    const next = candidates[(index + 1) % candidates.length] ?? candidates[0];
+    return { targetId: next?.id ?? null, pinned: true };
+  }
+
+  if (current.pinned) {
+    const pinned = contacts.find((c) => c.id === current.targetId);
+    if (pinned !== undefined && insidePinCone(playerPos, playerForward, pinned)) {
+      return current;
+    }
+  }
+  return {
+    targetId: selectNextTarget(current.targetId, playerPos, playerForward, contacts, false),
+    pinned: false,
+  };
 }
 
 export function stepLockState(
@@ -297,14 +376,14 @@ function stepPlayerWeapons(
   const spawned: ProjectileState[] = [];
   const playerForward = forwardOf(player.orientation);
   const contacts = listHostileContacts(enemies, hostileFrigate);
-  const selectedTargetId = selectNextTarget(
-    player.selectedTargetId,
+  const selection = resolveTargetSelection(
+    { targetId: player.selectedTargetId, pinned: player.targetPinned },
     player.position,
     playerForward,
     contacts,
     input.cycleTarget,
   );
-  const selectedContact = findTargetContact(selectedTargetId, enemies, hostileFrigate);
+  const selectedContact = findTargetContact(selection.targetId, enemies, hostileFrigate);
 
   let missilesReady = player.missilesReady;
   let missileRearmTimer = player.missileRearmTimer;
@@ -375,8 +454,11 @@ function stepPlayerWeapons(
     }
   }
 
-  if (input.fireMissile && missileCooldown <= 0 && missilesReady > 0) {
-    const lockedId = lockState.kind === 'locked' ? lockState.targetId : null;
+  // A held trigger only launches on a completed lock; a fresh press launches immediately.
+  const lockedId = lockState.kind === 'locked' ? lockState.targetId : null;
+  const freshMissilePress = input.fireMissile && !player.missileTriggerHeld;
+  const missileTriggered = freshMissilePress || (input.fireMissile && lockedId !== null);
+  if (missileTriggered && missileCooldown <= 0 && missilesReady > 0) {
     missilesReady -= 1;
     missileCooldown = COMBAT_TUNING.missileCooldown;
     lockState = { kind: 'none' };
@@ -409,7 +491,9 @@ function stepPlayerWeapons(
       missileCooldown,
       missilesReady,
       missileRearmTimer,
-      selectedTargetId,
+      missileTriggerHeld: input.fireMissile,
+      selectedTargetId: selection.targetId,
+      targetPinned: selection.pinned,
       lockState,
       recoilKick,
       recoilLeft,
@@ -419,6 +503,15 @@ function stepPlayerWeapons(
     spawned,
     events,
   };
+}
+
+/** Nearest raiders on an attack run hold the tokens; the rest manoeuvre without shooting at the player. */
+function assignAttackTokens(enemies: readonly EnemyShipState[], player: PlayerShipState): ReadonlySet<string> {
+  const attackers = enemies
+    .filter((e) => e.kind === 'raider' && e.maneuver.kind === 'approach')
+    .map((e) => ({ id: e.id, dist: distance(e.position, player.position) }))
+    .sort((a, b) => a.dist - b.dist || (a.id < b.id ? -1 : 1));
+  return new Set(attackers.slice(0, COMBAT_TUNING.attackTokens).map((e) => e.id));
 }
 
 function stepNpcAgents(
@@ -456,14 +549,19 @@ function stepNpcAgents(
     };
   }
 
+  const weaponsFree = tick * dt >= COMBAT_TUNING.openingGraceSeconds;
+  const tokens = assignAttackTokens(enemiesInput, player);
   const enemies: EnemyShipState[] = [];
   for (const enemy of enemiesInput) {
-    const enemyStep = stepEnemyAi(tick, nextRng, enemy, player, friendlyCarrier, dt);
+    const enemyStep = stepEnemyAi(tick, nextRng, enemy, player, friendlyCarrier, weaponsFree, tokens.has(enemy.id), dt);
     nextRng = enemyStep.rngState;
     enemies.push(enemyStep.enemy);
     if (enemyStep.projectile !== null) {
       spawned.push(enemyStep.projectile);
       events.push({ kind: 'cannon_fired', faction: 'hostile' });
+      if (enemyStep.atPlayer) {
+        events.push({ kind: 'incoming_fire', position: enemyStep.enemy.position });
+      }
     }
   }
 
@@ -477,8 +575,144 @@ function stepNpcAgents(
   };
 }
 
+export function critChance(precision: number, pity: number): number {
+  const precisionBonus = COMBAT_TUNING.critPrecisionBonus * clamp((precision - 0.5) / 0.5, 0, 1);
+  return Math.min(
+    COMBAT_TUNING.critMaxChance,
+    COMBAT_TUNING.critBaseChance + precisionBonus + pity * COMBAT_TUNING.critPityStep,
+  );
+}
+
+export function dropChance(pity: number): number {
+  return Math.min(1, COMBAT_TUNING.dropBaseChance + pity * COMBAT_TUNING.dropPityStep);
+}
+
+const DROP_LABELS: Readonly<Record<SupplyDrop, string>> = {
+  heat_flush: 'HEAT FLUSH, cannons cold',
+  shield_surge: 'SHIELD SURGE',
+  missile_resupply: 'MISSILE RESUPPLY',
+};
+
+function usefulDrops(player: PlayerShipState): readonly SupplyDrop[] {
+  const drops: SupplyDrop[] = [];
+  if (player.energy.weaponState === 'overheated' || player.energy.weaponCharge < 100) drops.push('heat_flush');
+  if (player.energy.shieldCharge < SHIP_STATS.player.shields) drops.push('shield_surge');
+  if (player.missilesReady < player.maxMissiles) drops.push('missile_resupply');
+  return drops.length > 0 ? drops : ['shield_surge'];
+}
+
+function applySupplyDrop(player: PlayerShipState, drop: SupplyDrop): PlayerShipState {
+  switch (drop) {
+    case 'heat_flush':
+      return { ...player, energy: flushWeaponHeat(player.energy) };
+    case 'shield_surge':
+      return {
+        ...player,
+        energy: {
+          ...player.energy,
+          shieldCharge: Math.min(SHIP_STATS.player.shields, player.energy.shieldCharge + COMBAT_TUNING.shieldSurge),
+        },
+      };
+    case 'missile_resupply':
+      return { ...player, missilesReady: Math.min(player.maxMissiles, player.missilesReady + 1) };
+  }
+}
+
+function nearMissReward(
+  player: PlayerShipState,
+  source: 'bolt' | 'buzz',
+): { readonly player: PlayerShipState; readonly event: SimEvent } {
+  const energy = player.energy;
+  const vent = energy.weaponState === 'ready' && energy.weaponCharge < 100;
+  const rewarded: PlayerShipState = {
+    ...player,
+    nearMissCooldown: COMBAT_TUNING.nearMissCooldown,
+    energy: vent
+      ? { ...energy, weaponCharge: Math.min(100, energy.weaponCharge + COMBAT_TUNING.nearMissHeatVent) }
+      : {
+          ...energy,
+          shieldCharge: Math.min(SHIP_STATS.player.shields, energy.shieldCharge + COMBAT_TUNING.nearMissShieldRestore),
+        },
+  };
+  return { player: rewarded, event: { kind: 'near_miss', source, reward: vent ? 'heat_vent' : 'shield' } };
+}
+
+/** Near misses pay out only while flying fast or hard; a straight, slow (AFK) pilot earns nothing. */
+function flyingDaringly(player: PlayerShipState): boolean {
+  return (
+    player.nearMissCooldown <= 0 &&
+    (len(player.velocity) >= COMBAT_TUNING.nearMissMinSpeed ||
+      len(player.angularVelocity) >= COMBAT_TUNING.nearMissMinTurnRate)
+  );
+}
+
+function isBuzzing(
+  player: PlayerShipState,
+  enemies: readonly EnemyShipState[],
+  asteroids: readonly AsteroidState[],
+  capitalShips: readonly CapitalShipState[],
+): boolean {
+  if (player.hitFlash >= 0.99 || len(player.velocity) < COMBAT_TUNING.nearMissMinSpeed) {
+    return false;
+  }
+  const pos = player.position;
+  return (
+    enemies.some((e) => distance(e.position, pos) <= COMBAT_TUNING.buzzEnemyDistance) ||
+    asteroids.some(
+      (a) => distance(a.position, pos) <= a.radius + FLIGHT_TUNING.asteroidClearanceMargin + COMBAT_TUNING.buzzClearance,
+    ) ||
+    capitalShips.some((s) => isInsideCapitalBox(pos, s, FLIGHT_TUNING.carrierClearanceMargin + COMBAT_TUNING.buzzClearance))
+  );
+}
+
+type FriendlyHit =
+  | { readonly kind: 'hull'; readonly t: number }
+  | { readonly kind: 'enemy'; readonly t: number; readonly id: string; readonly precision: number }
+  | { readonly kind: 'subsystem'; readonly t: number; readonly index: number; readonly precision: number }
+  | { readonly kind: 'asteroid'; readonly t: number; readonly id: string };
+
+function precisionOf(a: Vec3, b: Vec3, center: Vec3, radius: number): number {
+  return clamp(1 - segmentClosestApproach(a, b, center).distance / radius, 0, 1);
+}
+
+/** Earliest entry along the swept segment wins, so the frigate hull shields cores behind it. */
+function findFriendlyHit(
+  a: Vec3,
+  b: Vec3,
+  enemies: ReadonlyMap<string, EnemyShipState>,
+  frigate: CapitalShipState,
+  subsystems: readonly SubsystemState[],
+  asteroids: ReadonlyMap<string, AsteroidState>,
+): FriendlyHit | null {
+  let best: FriendlyHit | null = null;
+  const consider = (hit: FriendlyHit): void => {
+    if (best === null || hit.t < best.t) best = hit;
+  };
+
+  const hullT = segmentBoxEntry(a, b, frigate.position, frigate.orientation, frigate.halfExtents);
+  if (hullT !== null) consider({ kind: 'hull', t: hullT });
+  subsystems.forEach((subsys, index) => {
+    if (subsys.hull <= 0) return;
+    const center = subsystemWorldPosition(frigate, subsys);
+    const radius = subsys.radius + COMBAT_TUNING.subsystemHitTolerance;
+    const t = segmentSphereEntry(a, b, center, radius);
+    if (t !== null) consider({ kind: 'subsystem', t, index, precision: precisionOf(a, b, center, radius) });
+  });
+  for (const [id, enemy] of enemies) {
+    const radius = SHIP_STATS.enemies[enemy.kind].hitRadius;
+    const t = segmentSphereEntry(a, b, enemy.position, radius);
+    if (t !== null) consider({ kind: 'enemy', t, id, precision: precisionOf(a, b, enemy.position, radius) });
+  }
+  for (const [id, rock] of asteroids) {
+    const t = segmentSphereEntry(a, b, rock.position, rock.radius + COMBAT_TUNING.asteroidHitTolerance);
+    if (t !== null) consider({ kind: 'asteroid', t, id });
+  }
+  return best;
+}
+
 function stepProjectilesAndHits(
   tick: number,
+  rngState: number,
   playerInput: PlayerShipState,
   wingmateCallsign: string,
   enemiesInput: readonly EnemyShipState[],
@@ -500,9 +734,19 @@ function stepProjectilesAndHits(
   readonly radio: RadioMessage | null;
   readonly enemiesDestroyedDelta: number;
   readonly subsystemsDestroyedDelta: number;
+  readonly rngState: number;
   readonly events: readonly SimEvent[];
 } {
-  let player = playerInput;
+  let rng = rngState;
+  const roll = (): number => {
+    const r = nextRandom(rng);
+    rng = r.nextState;
+    return r.value;
+  };
+  let player: PlayerShipState = {
+    ...playerInput,
+    nearMissCooldown: Math.max(0, playerInput.nearMissCooldown - dt),
+  };
   let friendlyCarrier = friendlyCarrierInput;
   let radio = radioInput;
   const events: SimEvent[] = [];
@@ -523,6 +767,19 @@ function stepProjectilesAndHits(
 
   let enemiesDestroyedDelta = 0;
   let subsystemsDestroyedDelta = 0;
+
+  const rollCannonDamage = (proj: ProjectileState, precision: number, position: Vec3): number => {
+    if (proj.owner !== 'player' || proj.kind !== 'bolt') {
+      return proj.damage;
+    }
+    if (roll() < critChance(precision, player.critPity)) {
+      player = { ...player, critPity: 0 };
+      events.push({ kind: 'crit_hit', position });
+      return proj.damage * COMBAT_TUNING.critMultiplier;
+    }
+    player = { ...player, critPity: player.critPity + 1 };
+    return proj.damage;
+  };
 
   for (const proj of projectilesInput) {
     const ttl = proj.ttl - dt;
@@ -547,20 +804,31 @@ function stepProjectilesAndHits(
     let hit = false;
 
     if (proj.faction === 'friendly') {
-      for (const [id, enemy] of enemyMap) {
-        if (distance(nextPos, enemy.position) <= COMBAT_TUNING.enemyHitRadius) {
-          hit = true;
-          const hadShields = enemy.shields > 0;
-          const shieldAbsorbed = Math.min(enemy.shields, proj.damage);
-          const hullDmg = Math.max(0, proj.damage - shieldAbsorbed);
-          const nextHull = enemy.hull - hullDmg;
-          const nextShields = enemy.shields - shieldAbsorbed;
-          const shieldBrokeNow = hadShields && nextShields <= 0;
+      const found = findFriendlyHit(proj.position, nextPos, enemyMap, hostileFrigateInput, subsystems, asteroidMap);
+      hit = found !== null;
+      const impact = found === null ? nextPos : lerpVec3(proj.position, nextPos, found.t);
 
-          if (shieldBrokeNow) {
+      if (found?.kind === 'hull') {
+        nextExplosions.push({
+          id: `hullhit-${tick}-${proj.id}`,
+          position: impact,
+          radius: 6,
+          elapsed: 0,
+          duration: 0.25,
+          tint: 'crimson',
+        });
+      } else if (found?.kind === 'enemy') {
+        const enemy = enemyMap.get(found.id);
+        if (enemy !== undefined) {
+          const damage = rollCannonDamage(proj, found.precision, impact);
+          const hadShields = enemy.shields > 0;
+          const absorbed = absorbIntoShield(enemy.shields, damage);
+          const nextHull = enemy.hull - absorbed.hullDamage;
+
+          if (absorbed.broke) {
             events.push({ kind: 'shield_broken', position: enemy.position });
             nextExplosions.push({
-              id: `shdbrk-${tick}-${id}`,
+              id: `shdbrk-${tick}-${enemy.id}`,
               position: enemy.position,
               radius: 20,
               elapsed: 0,
@@ -570,18 +838,28 @@ function stepProjectilesAndHits(
           }
 
           if (nextHull <= 0) {
-            enemyMap.delete(id);
+            enemyMap.delete(enemy.id);
             enemiesDestroyedDelta += 1;
             if (proj.owner === 'player') {
               events.push({ kind: 'hit_confirmed', isKill: true, shieldHit: false });
-              radio = {
-                speaker: wingmateCallsign,
-                text: `Splash ${enemy.callsign}! Good kill, lead.`,
-                remainingSeconds: 2.8,
-              };
+              let radioText = `Splash ${enemy.callsign}! Good kill, lead.`;
+              if (roll() < dropChance(player.dropPity)) {
+                const options = usefulDrops(player);
+                const drop = options[Math.min(options.length - 1, Math.floor(roll() * options.length))] ?? 'shield_surge';
+                const wasOverheated = player.energy.weaponState === 'overheated';
+                player = { ...applySupplyDrop(player, drop), dropPity: 0 };
+                events.push({ kind: 'supply_drop', drop });
+                if (wasOverheated && player.energy.weaponState === 'ready') {
+                  events.push({ kind: 'weapon_ready' });
+                }
+                radioText = `Splash ${enemy.callsign}! Supply drop: ${DROP_LABELS[drop]}.`;
+              } else {
+                player = { ...player, dropPity: player.dropPity + 1 };
+              }
+              radio = { speaker: wingmateCallsign, text: radioText, remainingSeconds: 2.8 };
             }
             nextExplosions.push({
-              id: `exp-${tick}-${id}`,
+              id: `exp-${tick}-${enemy.id}`,
               position: enemy.position,
               radius: enemy.kind === 'striker' ? 30 : 22,
               elapsed: 0,
@@ -589,20 +867,20 @@ function stepProjectilesAndHits(
               tint: 'amber',
             });
           } else {
-            enemyMap.set(id, {
+            enemyMap.set(enemy.id, {
               ...enemy,
               hull: nextHull,
-              shields: nextShields,
-              shieldRegenDelay: COMBAT_TUNING.enemyShieldRegenDelay,
+              shields: absorbed.shield,
+              shieldRegenDelay: SHIP_STATS.enemies[enemy.kind].shieldRegenDelay,
               shieldHitFlash: hadShields ? 1 : enemy.shieldHitFlash,
             });
             if (proj.owner === 'player') {
-              events.push({ kind: 'hit_confirmed', isKill: false, shieldHit: hadShields && !shieldBrokeNow });
+              events.push({ kind: 'hit_confirmed', isKill: false, shieldHit: hadShields && !absorbed.broke });
             }
-            if (!shieldBrokeNow) {
+            if (!absorbed.broke) {
               nextExplosions.push({
                 id: `hit-${tick}-${proj.id}`,
-                position: nextPos,
+                position: impact,
                 radius: hadShields ? 8.5 : 6,
                 elapsed: 0,
                 duration: 0.28,
@@ -610,113 +888,112 @@ function stepProjectilesAndHits(
               });
             }
           }
-          break;
         }
-      }
-
-      if (!hit) {
-        for (let i = 0; i < subsystems.length; i += 1) {
-          const subsys = subsystems[i];
-          if (subsys === undefined || subsys.hull <= 0) {
-            continue;
-          }
+      } else if (found?.kind === 'subsystem') {
+        const subsys = subsystems[found.index];
+        if (subsys !== undefined) {
           const worldPos = subsystemWorldPosition(hostileFrigateInput, subsys);
-          if (distance(nextPos, worldPos) <= subsys.radius + 9) {
-            hit = true;
-            const nextHull = Math.max(0, subsys.hull - proj.damage);
-            subsystems[i] = { ...subsys, hull: nextHull };
-            const destroyed = nextHull <= 0;
-            if (proj.owner === 'player') {
-              events.push({ kind: 'hit_confirmed', isKill: destroyed });
-            }
-            if (destroyed) {
-              subsystemsDestroyedDelta += 1;
-              events.push({ kind: 'subsystem_destroyed', label: subsys.label });
-              nextExplosions.push({
-                id: `sub-${tick}-${subsys.id}`,
-                position: worldPos,
-                radius: 44,
-                elapsed: 0,
-                duration: 1.35,
-                tint: 'crimson',
-              });
-              radio = {
-                speaker: 'HEARTHSTONE',
-                text: `Frigate ${subsys.label} neutralized!`,
-                remainingSeconds: 3.6,
-              };
-            } else {
-              nextExplosions.push({
-                id: `subhit-${tick}-${proj.id}`,
-                position: nextPos,
-                radius: 7.5,
-                elapsed: 0,
-                duration: 0.3,
-                tint: 'crimson',
-              });
-            }
-            break;
+          const damage = rollCannonDamage(proj, found.precision, impact);
+          const nextHull = Math.max(0, subsys.hull - damage);
+          subsystems[found.index] = { ...subsys, hull: nextHull };
+          const destroyed = nextHull <= 0;
+          if (proj.owner === 'player') {
+            events.push({ kind: 'hit_confirmed', isKill: destroyed });
+          }
+          if (destroyed) {
+            subsystemsDestroyedDelta += 1;
+            events.push({ kind: 'subsystem_destroyed', label: subsys.label });
+            nextExplosions.push({
+              id: `sub-${tick}-${subsys.id}`,
+              position: worldPos,
+              radius: 44,
+              elapsed: 0,
+              duration: 1.35,
+              tint: 'crimson',
+            });
+            radio = {
+              speaker: 'HEARTHSTONE',
+              text: `Frigate ${subsys.label} neutralized!`,
+              remainingSeconds: 3.6,
+            };
+          } else {
+            nextExplosions.push({
+              id: `subhit-${tick}-${proj.id}`,
+              position: impact,
+              radius: 7.5,
+              elapsed: 0,
+              duration: 0.3,
+              tint: 'crimson',
+            });
+          }
+        }
+      } else if (found?.kind === 'asteroid') {
+        const ast = asteroidMap.get(found.id);
+        if (ast !== undefined) {
+          const nextHull = ast.hull - proj.damage;
+          if (proj.owner === 'player') {
+            events.push({ kind: 'hit_confirmed', isKill: false });
+          }
+          if (nextHull <= 0) {
+            asteroidMap.delete(ast.id);
+            nextExplosions.push({
+              id: `ast-${tick}-${ast.id}`,
+              position: ast.position,
+              radius: ast.radius * 1.15,
+              elapsed: 0,
+              duration: 1.1,
+              tint: 'amber',
+            });
+          } else {
+            asteroidMap.set(ast.id, { ...ast, hull: nextHull });
+            nextExplosions.push({
+              id: `asthit-${tick}-${proj.id}`,
+              position: impact,
+              radius: 6,
+              elapsed: 0,
+              duration: 0.25,
+              tint: 'amber',
+            });
           }
         }
       }
-
-      if (!hit) {
-        for (const [id, ast] of asteroidMap) {
-          if (distance(nextPos, ast.position) <= ast.radius + 4) {
-            hit = true;
-            const nextHull = ast.hull - proj.damage;
-            if (nextHull <= 0) {
-              asteroidMap.delete(id);
-              if (proj.owner === 'player') {
-                events.push({ kind: 'hit_confirmed', isKill: true });
-              }
-              nextExplosions.push({
-                id: `ast-${tick}-${id}`,
-                position: ast.position,
-                radius: ast.radius * 1.15,
-                elapsed: 0,
-                duration: 1.1,
-                tint: 'amber',
-              });
-            } else {
-              asteroidMap.set(id, { ...ast, hull: nextHull });
-              nextExplosions.push({
-                id: `asthit-${tick}-${proj.id}`,
-                position: nextPos,
-                radius: 6,
-                elapsed: 0,
-                duration: 0.25,
-                tint: 'amber',
-              });
-            }
-            break;
-          }
+    } else {
+      const playerT = segmentSphereEntry(proj.position, nextPos, player.position, SHIP_STATS.player.hitRadius);
+      const carrierPad = { x: 4, y: 4, z: 4 };
+      const carrierT = segmentBoxEntry(
+        proj.position,
+        nextPos,
+        friendlyCarrier.position,
+        friendlyCarrier.orientation,
+        add(friendlyCarrier.halfExtents, carrierPad),
+      );
+      if (playerT !== null && (carrierT === null || playerT <= carrierT)) {
+        hit = true;
+        player = damagePlayer(player, proj.damage);
+        events.push({ kind: 'player_damaged' });
+      } else if (carrierT !== null) {
+        hit = true;
+        friendlyCarrier = {
+          ...friendlyCarrier,
+          hull: Math.max(0, friendlyCarrier.hull - proj.damage),
+        };
+        nextExplosions.push({
+          id: `carhit-${tick}-${proj.id}`,
+          position: lerpVec3(proj.position, nextPos, carrierT),
+          radius: 10,
+          elapsed: 0,
+          duration: 0.36,
+          tint: 'amber',
+        });
+      } else if (proj.kind === 'bolt' && flyingDaringly(player)) {
+        // The closest point falls strictly inside one segment per pass, so each bolt pays out once.
+        const pass = segmentClosestApproach(proj.position, nextPos, player.position);
+        if (pass.t > 0 && pass.t < 1 && pass.distance <= COMBAT_TUNING.nearMissRadius) {
+          const reward = nearMissReward(player, 'bolt');
+          player = reward.player;
+          events.push(reward.event);
         }
       }
-    } else if (distance(nextPos, player.position) <= COMBAT_TUNING.playerHitRadius) {
-      hit = true;
-      const absorbed = absorbShieldDamage(player.energy, proj.damage);
-      player = {
-        ...player,
-        energy: absorbed.energy,
-        hull: Math.max(0, player.hull - absorbed.hullDamage),
-        hitFlash: 1,
-      };
-      events.push({ kind: 'player_damaged' });
-    } else if (isInsideCapitalBox(nextPos, friendlyCarrier, 4)) {
-      hit = true;
-      friendlyCarrier = {
-        ...friendlyCarrier,
-        hull: Math.max(0, friendlyCarrier.hull - proj.damage),
-      };
-      nextExplosions.push({
-        id: `carhit-${tick}-${proj.id}`,
-        position: nextPos,
-        radius: 10,
-        elapsed: 0,
-        duration: 0.36,
-        tint: 'amber',
-      });
     }
 
     if (!hit) {
@@ -729,17 +1006,30 @@ function stepProjectilesAndHits(
     }
   }
 
+  const enemies = Array.from(enemyMap.values());
+  const asteroids = Array.from(asteroidMap.values());
+  const hostileFrigate = { ...hostileFrigateInput, subsystems };
+  if (
+    player.nearMissCooldown <= 0 &&
+    isBuzzing(player, enemies, asteroids, [friendlyCarrier, hostileFrigate])
+  ) {
+    const reward = nearMissReward(player, 'buzz');
+    player = reward.player;
+    events.push(reward.event);
+  }
+
   return {
     player,
-    enemies: Array.from(enemyMap.values()),
+    enemies,
     friendlyCarrier,
-    hostileFrigate: { ...hostileFrigateInput, subsystems },
-    asteroids: Array.from(asteroidMap.values()),
+    hostileFrigate,
+    asteroids,
     projectiles: survivingProjectiles,
     explosions: nextExplosions,
     radio,
     enemiesDestroyedDelta,
     subsystemsDestroyedDelta,
+    rngState: rng,
     events,
   };
 }
@@ -773,6 +1063,7 @@ export function stepCombat(ctx: CombatStepInput): CombatStepOutput {
 
   const hitStep = stepProjectilesAndHits(
     ctx.tick,
+    agentStep.rngState,
     weaponStep.player,
     agentStep.wingmate.callsign,
     agentStep.enemies,
@@ -801,6 +1092,7 @@ export function stepCombat(ctx: CombatStepInput): CombatStepOutput {
     player = {
       ...player,
       selectedTargetId: nextSelectedId,
+      targetPinned: false,
       lockState: { kind: 'none' },
     };
   }
@@ -825,7 +1117,7 @@ export function stepCombat(ctx: CombatStepInput): CombatStepOutput {
     radio: hitStep.radio,
     enemiesDestroyedDelta: hitStep.enemiesDestroyedDelta,
     subsystemsDestroyedDelta: hitStep.subsystemsDestroyedDelta,
-    rngState: agentStep.rngState,
+    rngState: hitStep.rngState,
     events: [...weaponStep.events, ...agentStep.events, ...hitStep.events],
   };
 }
@@ -1021,21 +1313,61 @@ function stepWingmate(
   };
 }
 
+/**
+ * Enemy gunnery error (rad). Straight, slow flight is easy to hit; speed, crossing the shooter's
+ * line of sight, hard turns and Overdrive each widen the spread.
+ */
+export function enemyAimError(player: PlayerShipState, shooterPos: Vec3): number {
+  const toPlayer = sub(player.position, shooterPos);
+  const dist = Math.max(len(toPlayer), 1);
+  const los = scale(toPlayer, 1 / dist);
+  const crossingRate = len(sub(player.velocity, scale(los, dot(player.velocity, los)))) / dist;
+  const speedFactor = clamp(
+    (len(player.velocity) - 60) / (FLIGHT_TUNING.overdriveSpeed - 60),
+    0,
+    1,
+  );
+  return (
+    COMBAT_TUNING.enemyAimBaseError +
+    COMBAT_TUNING.enemyAimSpeedError * speedFactor +
+    COMBAT_TUNING.enemyAimCrossingError * crossingRate +
+    COMBAT_TUNING.enemyAimTurnError * len(player.angularVelocity) +
+    (player.energy.overdrive ? COMBAT_TUNING.enemyAimOverdriveError : 0)
+  );
+}
+
+function deflect(direction: Vec3, angle: number, spin: number): Vec3 {
+  const reference = Math.abs(direction.y) < 0.9 ? { x: 0, y: 1, z: 0 } : { x: 1, y: 0, z: 0 };
+  const u = normalize(cross(direction, reference));
+  const v = cross(direction, u);
+  const offset = add(scale(u, Math.cos(spin)), scale(v, Math.sin(spin)));
+  return normalize(add(direction, scale(offset, Math.tan(angle))));
+}
+
 function stepEnemyAi(
   tick: number,
   rngState: number,
   enemy: EnemyShipState,
   player: PlayerShipState,
   friendlyCarrier: CapitalShipState,
+  weaponsFree: boolean,
+  holdsAttackToken: boolean,
   dt: number,
-): { readonly enemy: EnemyShipState; readonly projectile: ProjectileState | null; readonly rngState: number } {
+): {
+  readonly enemy: EnemyShipState;
+  readonly projectile: ProjectileState | null;
+  readonly atPlayer: boolean;
+  readonly rngState: number;
+} {
   let nextRng = rngState;
-  const shieldRegenDelay = Math.max(0, enemy.shieldRegenDelay - dt);
+  const roll = (): number => {
+    const r = nextRandom(nextRng);
+    nextRng = r.nextState;
+    return r.value;
+  };
+  const stats = SHIP_STATS.enemies[enemy.kind];
+  const regen = regenShield(enemy.shields, enemy.maxShields, enemy.shieldRegenDelay, stats.shieldRegenPerSecond, dt);
   const shieldHitFlash = Math.max(0, enemy.shieldHitFlash - dt * 3.8);
-  const shields =
-    shieldRegenDelay <= 0 && enemy.shields < enemy.maxShields
-      ? clamp(enemy.shields + COMBAT_TUNING.enemyShieldRegenRate * dt, 0, enemy.maxShields)
-      : enemy.shields;
 
   const toPlayer = sub(player.position, enemy.position);
   const distToPlayer = len(toPlayer);
@@ -1044,41 +1376,41 @@ function stepEnemyAi(
   const distToCarrier = len(toCarrier);
   const dirToCarrier = distToCarrier > 1 ? scale(toCarrier, 1 / distToCarrier) : forwardOf(enemy.orientation);
 
-  const enemyBehindPlayer = dot(forwardOf(player.orientation), dirToPlayer) < -0.25;
+  // Behind the player, the line from enemy to player points along the player's nose.
+  const onPlayerTail = enemy.kind === 'raider' && dot(forwardOf(player.orientation), dirToPlayer) > 0.25;
 
   let maneuver: EnemyManeuver = enemy.maneuver;
   let goalDir: Vec3;
 
   if (maneuver.kind === 'approach') {
-    const remainingSeconds = maneuver.remainingSeconds - dt;
+    const remainingSeconds = Math.max(0, maneuver.remainingSeconds - dt);
     const tooClose =
       enemy.kind === 'striker'
         ? distToCarrier < 210
         : distToPlayer < COMBAT_TUNING.enemyMinApproachDistance;
-    // Stay on the player's tail if already behind them; break away on overshoot or timer expiry.
-    const shouldBreak = tooClose || (remainingSeconds <= 0 && !enemyBehindPlayer);
+    // Hold a tail position; otherwise break away on overshoot or when the attack run times out.
+    const shouldBreak = tooClose || (remainingSeconds <= 0 && !onPlayerTail);
     if (shouldBreak) {
-      const r = nextRandom(nextRng);
-      nextRng = r.nextState;
-      const sideSign = r.value >= 0.5 ? 1 : -1;
+      const r = roll();
+      const sideSign = r >= 0.5 ? 1 : -1;
       const refDir = enemy.kind === 'striker' ? dirToCarrier : dirToPlayer;
       const away = scale(refDir, -1);
       const lateral = normalize(cross(away, { x: 0, y: 1, z: 0 }));
       const escapeDir = normalize(
         add(add(scale(away, 0.65), scale(lateral, sideSign * 0.76)), {
           x: 0,
-          y: (r.value - 0.5) * 0.6,
+          y: (r - 0.5) * 0.6,
           z: 0,
         }),
       );
       maneuver = {
         kind: 'break_away',
         escapeDir,
-        remainingSeconds: COMBAT_TUNING.enemyBreakAwaySeconds + r.value * 0.9,
+        remainingSeconds: COMBAT_TUNING.enemyBreakAwaySeconds + r * 0.9,
       };
       goalDir = escapeDir;
     } else {
-      maneuver = { kind: 'approach', remainingSeconds: Math.max(remainingSeconds, 0.4) };
+      maneuver = { kind: 'approach', remainingSeconds };
       const time = tick / 60 + enemy.phaseOffset;
       const evasiveJink = enemy.shieldHitFlash > 0.35 ? 1.8 : 1.0;
       const anchor =
@@ -1117,29 +1449,22 @@ function stepEnemyAi(
   }
 
   const targetQuat = quatLookAt(goalDir);
-  const turnSpeed = enemy.kind === 'raider' ? 2.15 : 1.35;
-  const orientation = slerpQuat(enemy.orientation, targetQuat, clamp(dt * turnSpeed, 0, 1));
-  const cruiseSpeed =
-    maneuver.kind === 'break_away'
-      ? enemy.kind === 'raider'
-        ? 98
-        : 76
-      : enemy.kind === 'raider'
-        ? 86
-        : 66;
+  const orientation = slerpQuat(enemy.orientation, targetQuat, clamp(dt * stats.turnRate, 0, 1));
+  const cruiseSpeed = maneuver.kind === 'break_away' ? stats.breakAwaySpeed : stats.approachSpeed;
   const velocity = lerpVec3(enemy.velocity, scale(forwardOf(orientation), cruiseSpeed), clamp(dt * 2.8, 0, 1));
   const position = add(enemy.position, scale(velocity, dt));
 
   let fireCooldown = Math.max(0, enemy.fireCooldown - dt);
   let projectile: ProjectileState | null = null;
+  let atPlayer = false;
+  const nose = forwardOf(orientation);
 
-  if (maneuver.kind === 'approach' && fireCooldown <= 0) {
-    if (enemy.kind === 'striker' && distToCarrier > 180 && distToCarrier < 620) {
-      if (dot(forwardOf(orientation), dirToCarrier) > 0.88) {
-        const roll = nextRandom(nextRng);
-        nextRng = roll.nextState;
-        fireCooldown = 1.05 + roll.value * 0.55;
-        const spread = (roll.value - 0.5) * 0.03;
+  if (weaponsFree && maneuver.kind === 'approach' && fireCooldown <= 0) {
+    if (enemy.kind === 'striker') {
+      if (distToCarrier > stats.fireRangeMin && distToCarrier < stats.fireRangeMax && dot(nose, dirToCarrier) > 0.88) {
+        const r = roll();
+        fireCooldown = 1.05 + r * 0.55;
+        const spread = (r - 0.5) * 0.03;
         const shotDir = normalize(add(dirToCarrier, { x: spread, y: -spread * 0.5, z: 0 }));
         projectile = {
           id: `eb-${tick}-${enemy.id}`,
@@ -1153,7 +1478,12 @@ function stepEnemyAi(
           ttl: 1.9,
         };
       }
-    } else if (distToPlayer > 130 && distToPlayer < 560 && dot(forwardOf(orientation), dirToPlayer) > 0.88) {
+    } else if (
+      holdsAttackToken &&
+      distToPlayer > stats.fireRangeMin &&
+      distToPlayer < stats.fireRangeMax &&
+      dot(nose, dirToPlayer) > 0.88
+    ) {
       const lead = computeLeadPoint(
         position,
         velocity,
@@ -1162,12 +1492,11 @@ function stepEnemyAi(
         COMBAT_TUNING.enemyBoltSpeed,
         1.7,
       );
-      const roll = nextRandom(nextRng);
-      nextRng = roll.nextState;
-      fireCooldown = 0.85 + roll.value * 0.55;
+      fireCooldown = 0.85 + roll() * 0.55;
       const aimDir = lead !== null ? normalize(sub(lead, position)) : dirToPlayer;
-      const spread = (roll.value - 0.5) * 0.032;
-      const shotDir = normalize(add(aimDir, { x: spread, y: -spread * 0.5, z: 0 }));
+      const errorAngle = enemyAimError(player, position) * Math.sqrt(roll());
+      const shotDir = deflect(aimDir, errorAngle, roll() * Math.PI * 2);
+      atPlayer = true;
       projectile = {
         id: `eb-${tick}-${enemy.id}`,
         kind: 'bolt',
@@ -1189,12 +1518,13 @@ function stepEnemyAi(
       velocity,
       orientation,
       maneuver,
-      shields,
-      shieldRegenDelay,
+      shields: regen.shield,
+      shieldRegenDelay: regen.regenDelay,
       shieldHitFlash,
       fireCooldown,
     },
     projectile,
+    atPlayer,
     rngState: nextRng,
   };
 }

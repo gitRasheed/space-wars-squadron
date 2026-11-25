@@ -212,7 +212,18 @@ async function run() {
       'sortie restart',
       overdriveSnap.tick,
     );
+    const lockSnap = await waitForTelemetry(
+      page,
+      (snap) => snap.lockState === 'locked' && snap.lockTargetId !== null,
+      'missile lock on the centred raider',
+    );
     await page.keyboard.press('KeyE');
+    const homingSnap = await waitForTelemetry(
+      page,
+      (snap, lockedId) => snap.playerMissileTargets.includes(lockedId),
+      'locked missile homing on the locked target',
+      lockSnap.lockTargetId,
+    );
     await page.keyboard.down('KeyJ');
     const finalSnap = await waitForTelemetry(
       page,
@@ -244,6 +255,8 @@ async function run() {
         combatSnap,
         overheatSnap,
         overdriveSnap,
+        lockSnap,
+        homingSnap,
         finalSnap,
       },
     };

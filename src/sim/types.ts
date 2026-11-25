@@ -92,7 +92,16 @@ export interface PlayerShipState {
   readonly maxMissiles: number;
   readonly missileRearmTimer: number;
   readonly selectedTargetId: string | null;
+  /** Set by a manual `T` pick; auto-focus leaves a pinned target alone. */
+  readonly targetPinned: boolean;
   readonly lockState: LockState;
+  /** Previous tick's missile trigger level, so the sim can tell a fresh press from a hold. */
+  readonly missileTriggerHeld: boolean;
+  /** Cannon hits since the last critical; raises the next crit chance. */
+  readonly critPity: number;
+  /** Kills since the last supply drop; raises the next drop chance. */
+  readonly dropPity: number;
+  readonly nearMissCooldown: number;
   readonly proximityWarning: boolean;
   readonly hitFlash: number;
   readonly recoilKick: number;
@@ -185,6 +194,8 @@ export interface RadioMessage {
   readonly remainingSeconds: number;
 }
 
+export type SupplyDrop = 'heat_flush' | 'shield_surge' | 'missile_resupply';
+
 export type SimEvent =
   | { readonly kind: 'cannon_fired'; readonly faction: 'friendly' | 'hostile'; readonly barrel?: BarrelSide }
   | { readonly kind: 'missile_fired' }
@@ -194,7 +205,12 @@ export type SimEvent =
   | { readonly kind: 'weapon_overheated' }
   | { readonly kind: 'player_damaged' }
   | { readonly kind: 'overdrive_engaged' }
-  | { readonly kind: 'subsystem_destroyed'; readonly label: string };
+  | { readonly kind: 'subsystem_destroyed'; readonly label: string }
+  | { readonly kind: 'crit_hit'; readonly position: Vec3 }
+  | { readonly kind: 'near_miss'; readonly source: 'bolt' | 'buzz'; readonly reward: 'heat_vent' | 'shield' }
+  | { readonly kind: 'supply_drop'; readonly drop: SupplyDrop }
+  | { readonly kind: 'weapon_ready' }
+  | { readonly kind: 'incoming_fire'; readonly position: Vec3 };
 
 export interface WorldState {
   readonly tick: number;

@@ -5,6 +5,8 @@ import { applyDeadzone } from './combine';
 export interface InputChannel {
   readonly sample: () => FlightInput;
   readonly isPointerLocked: () => boolean;
+  /** Releases pointer lock for a pause, remembering it so the resume click re-locks. */
+  readonly releasePointerForPause: () => void;
   readonly destroy: () => void;
 }
 
@@ -266,6 +268,13 @@ export function createInputChannel(
     return input;
   }
 
+  function releasePointerForPause(): void {
+    if (document.pointerLockElement === canvas) {
+      lockedBeforePause = true;
+      document.exitPointerLock();
+    }
+  }
+
   function destroy(): void {
     window.removeEventListener('keydown', onKeyDown);
     window.removeEventListener('keyup', onKeyUp);
@@ -282,6 +291,7 @@ export function createInputChannel(
   return {
     sample,
     isPointerLocked: () => steering.kind === 'pointer_locked',
+    releasePointerForPause,
     destroy,
   };
 }

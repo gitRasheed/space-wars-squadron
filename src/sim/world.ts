@@ -2,17 +2,21 @@ import { stepCombat } from './combat';
 import { createInitialEnergy } from './energy';
 import { stepPlayerFlight } from './flight';
 import { IDENTITY_QUAT, quatLookAt, vec3 } from './math';
+import { SHIP_STATS } from './ships';
 import type {
   AsteroidState,
   CapitalShipState,
+  EnemyKind,
   EnemyShipState,
   FlightInput,
   PlayerShipState,
+  SimEvent,
   SortieConfig,
   SortiePhase,
   WingmateState,
   WorldState,
 } from './types';
+import { FIXED_DT } from './types';
 
 function createFriendlyCarrier(): CapitalShipState {
   return {
@@ -33,14 +37,15 @@ export const FRIGATE_SUBSYSTEM_LAYOUT = {
     id: 'sub-shield-dome',
     label: 'SHIELD DOME',
     localOffset: vec3(0, 31, -30),
-    radius: 16,
+    // Visible dome mesh radius; sim adds a small hit tolerance.
+    radius: 12.5,
     maxHull: 180,
   },
   clampCore: {
     id: 'sub-clamp-core',
     label: 'TOW CLAMP',
     localOffset: vec3(0, -28, 62),
-    radius: 16,
+    radius: 13.5,
     maxHull: 180,
   },
 } as const;
@@ -91,6 +96,11 @@ function createRingAsteroids(): readonly AsteroidState[] {
   ];
 }
 
+function enemyDurability(kind: EnemyKind): Pick<EnemyShipState, 'hull' | 'maxHull' | 'shields' | 'maxShields'> {
+  const stats = SHIP_STATS.enemies[kind];
+  return { hull: stats.hull, maxHull: stats.hull, shields: stats.shields, maxShields: stats.shields };
+}
+
 function createInitialEnemies(): readonly EnemyShipState[] {
   return [
     {
@@ -101,10 +111,7 @@ function createInitialEnemies(): readonly EnemyShipState[] {
       velocity: vec3(-18, -2, 68),
       orientation: quatLookAt(vec3(-0.25, -0.05, 0.96)),
       maneuver: { kind: 'approach', remainingSeconds: 6.0 },
-      hull: 75,
-      maxHull: 75,
-      shields: 70,
-      maxShields: 70,
+      ...enemyDurability('raider'),
       shieldRegenDelay: 0,
       shieldHitFlash: 0,
       fireCooldown: 1.1,
@@ -118,10 +125,7 @@ function createInitialEnemies(): readonly EnemyShipState[] {
       velocity: vec3(24, -6, 62),
       orientation: quatLookAt(vec3(0.35, -0.1, 0.93)),
       maneuver: { kind: 'approach', remainingSeconds: 6.5 },
-      hull: 75,
-      maxHull: 75,
-      shields: 70,
-      maxShields: 70,
+      ...enemyDurability('raider'),
       shieldRegenDelay: 0,
       shieldHitFlash: 0,
       fireCooldown: 1.4,
@@ -135,10 +139,7 @@ function createInitialEnemies(): readonly EnemyShipState[] {
       velocity: vec3(-32, 8, 56),
       orientation: quatLookAt(vec3(-0.48, 0.14, 0.86)),
       maneuver: { kind: 'approach', remainingSeconds: 7.0 },
-      hull: 75,
-      maxHull: 75,
-      shields: 70,
-      maxShields: 70,
+      ...enemyDurability('raider'),
       shieldRegenDelay: 0,
       shieldHitFlash: 0,
       fireCooldown: 1.7,
@@ -152,10 +153,7 @@ function createInitialEnemies(): readonly EnemyShipState[] {
       velocity: vec3(-22, -6, 54),
       orientation: quatLookAt(vec3(-0.35, -0.08, 0.93)),
       maneuver: { kind: 'approach', remainingSeconds: 7.5 },
-      hull: 100,
-      maxHull: 100,
-      shields: 90,
-      maxShields: 90,
+      ...enemyDurability('striker'),
       shieldRegenDelay: 0,
       shieldHitFlash: 0,
       fireCooldown: 1.5,
@@ -171,8 +169,8 @@ function createInitialPlayer(): PlayerShipState {
     orientation: IDENTITY_QUAT,
     angularVelocity: vec3(0, 0, 0),
     throttle: 0.6,
-    hull: 80,
-    maxHull: 80,
+    hull: SHIP_STATS.player.hull,
+    maxHull: SHIP_STATS.player.hull,
     energy: createInitialEnergy(),
     primaryCooldown: 0,
     missileCooldown: 0,
@@ -180,7 +178,12 @@ function createInitialPlayer(): PlayerShipState {
     maxMissiles: 4,
     missileRearmTimer: 0,
     selectedTargetId: 'raider-1',
+    targetPinned: false,
     lockState: { kind: 'none' },
+    missileTriggerHeld: false,
+    critPity: 0,
+    dropPity: 0,
+    nearMissCooldown: 0,
     proximityWarning: false,
     hitFlash: 0,
     recoilKick: 0,
@@ -379,4 +382,26 @@ export function stepWorld(
     subsystemsDestroyed,
     events: [...flightStep.events, ...combatStep.events],
   };
+}
+
+/**
+ * Advances `steps` fixed ticks and collects every tick's events, so a frame that runs several
+ * ticks hands its renderer and HUD all of them rather than only the last tick's.
+ */
+export function stepFrame(
+  world: WorldState,
+  steps: number,
+  sampleInput: () => FlightInput,
+  onTick: (before: WorldState, after: WorldState, input: FlightInput) => void,
+): { readonly world: WorldState; readonly frameEvents: readonly SimEvent[] } {
+  let current = world;
+  const frameEvents: SimEvent[] = [];
+  for (let i = 0; i < steps; i += 1) {
+    const input = sampleInput();
+    const next = stepWorld(current, input, FIXED_DT);
+    onTick(current, next, input);
+    frameEvents.push(...next.events);
+    current = next;
+  }
+  return { world: current, frameEvents };
 }

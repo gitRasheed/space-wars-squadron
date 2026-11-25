@@ -280,3 +280,68 @@ export function nextRandom(state: number): { readonly nextState: number; readonl
   const value = ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
   return { nextState, value };
 }
+
+/** Fraction along a→b where the segment first enters the sphere, or null if it never does. */
+export function segmentSphereEntry(a: Vec3, b: Vec3, center: Vec3, radius: number): number | null {
+  const m = sub(a, center);
+  const c = dot(m, m) - radius * radius;
+  if (c <= 0) {
+    return 0;
+  }
+  const d = sub(b, a);
+  const dd = dot(d, d);
+  const md = dot(m, d);
+  if (dd < 1e-12 || md >= 0) {
+    return null;
+  }
+  const disc = md * md - dd * c;
+  if (disc < 0) {
+    return null;
+  }
+  const t = (-md - Math.sqrt(disc)) / dd;
+  return t <= 1 ? t : null;
+}
+
+export function segmentClosestApproach(
+  a: Vec3,
+  b: Vec3,
+  point: Vec3,
+): { readonly t: number; readonly distance: number } {
+  const d = sub(b, a);
+  const dd = dot(d, d);
+  const t = dd < 1e-12 ? 0 : clamp(dot(sub(point, a), d) / dd, 0, 1);
+  return { t, distance: distance(add(a, scale(d, t)), point) };
+}
+
+/** Slab test against an oriented box; returns the entry fraction along a→b, or null. */
+export function segmentBoxEntry(
+  a: Vec3,
+  b: Vec3,
+  origin: Vec3,
+  orientation: Quat,
+  halfExtents: Vec3,
+): number | null {
+  const la = toLocalPoint(origin, orientation, a);
+  const lb = toLocalPoint(origin, orientation, b);
+  let tMin = 0;
+  let tMax = 1;
+  for (const axis of ['x', 'y', 'z'] as const) {
+    const start = la[axis];
+    const delta = lb[axis] - start;
+    const half = halfExtents[axis];
+    if (Math.abs(delta) < 1e-12) {
+      if (Math.abs(start) > half) {
+        return null;
+      }
+      continue;
+    }
+    const t1 = (-half - start) / delta;
+    const t2 = (half - start) / delta;
+    tMin = Math.max(tMin, Math.min(t1, t2));
+    tMax = Math.min(tMax, Math.max(t1, t2));
+    if (tMin > tMax) {
+      return null;
+    }
+  }
+  return tMin;
+}

@@ -1,17 +1,33 @@
 import { describe, expect, it } from 'vitest';
-import { COMBAT_TUNING, isInsideCapitalBox, selectNextTarget } from '../src/sim/combat';
+import {
+  COMBAT_TUNING,
+  critChance,
+  enemyAimError,
+  isInsideCapitalBox,
+  resolveTargetSelection,
+  selectNextTarget,
+  stepCombat,
+  subsystemWorldPosition,
+  type TargetContact,
+} from '../src/sim/combat';
 import { createInitialEnergy, ENERGY_RULES, spendWeaponCharge, stepEnergy } from '../src/sim/energy';
 import { FLIGHT_TUNING, resolveObstacleClearance } from '../src/sim/flight';
-import { dot, len, nextRandom, normalize, quatFromAxisAngle, vec3 } from '../src/sim/math';
+import { add, dot, len, nextRandom, normalize, quatFromAxisAngle, quatLookAt, rotateVec3, scale, sub, vec3 } from '../src/sim/math';
+import { SHIP_STATS } from '../src/sim/ships';
 import {
   DEFAULT_SORTIE_SEED,
   FIXED_DT,
   NEUTRAL_INPUT,
   type CapitalShipState,
+  type EnemyShipState,
+  type FlightInput,
+  type ProjectileState,
   type SortieConfig,
+  type Vec3,
   type WorldState,
 } from '../src/sim/types';
-import { createInitialWorld, DEFAULT_SORTIE_CONFIG, stepWorld } from '../src/sim/world';
+import { createInitialWorld, DEFAULT_SORTIE_CONFIG, stepFrame, stepWorld } from '../src/sim/world';
+import { afkPilot, cannonPilot, flySortie } from './support/pilots';
 
 describe('throttle overdrive and weapon overheat kernel', () => {
   it('stops throttle at 100% high-watermark while holding W, enters 120% Overdrive on second W press draining shields, and drops cleanly on S or 0 shields', () => {
@@ -80,12 +96,15 @@ describe('throttle overdrive and weapon overheat kernel', () => {
     expect(energy.weaponState).toBe('overheated');
     expect(spendWeaponCharge(energy, ENERGY_RULES.primaryShotCost)).toBeNull();
 
-    // Once cooled back to 100%, cannons unlock cleanly.
-    for (let i = 0; i < 200; i += 1) {
-      energy = stepEnergy(energy, false, false, FIXED_DT).energy;
-      if (energy.weaponState === 'ready') break;
+    // Once cooled back to 100%, cannons unlock cleanly and announce it.
+    let readyEvents = 0;
+    for (let i = 0; i < 400 && energy.weaponState !== 'ready'; i += 1) {
+      const step = stepEnergy(energy, false, false, FIXED_DT);
+      energy = step.energy;
+      readyEvents += step.events.filter((e) => e.kind === 'weapon_ready').length;
     }
     expect(energy.weaponState).toBe('ready');
+    expect(readyEvents).toBe(1);
     expect(energy.weaponCharge).toBe(100);
     expect(spendWeaponCharge(energy, ENERGY_RULES.primaryShotCost)).not.toBeNull();
   });
@@ -219,7 +238,12 @@ describe('sortie simulation contracts and enemy shield entities', () => {
     expect(world.player.missilesReady).toBe(3);
     expect(world.player.lockState.kind).toBe('none');
 
-    for (let i = 0; i < 290; i += 1) {
+    const rearmTicks = Math.ceil(COMBAT_TUNING.missileRearmSeconds / FIXED_DT);
+    for (let i = 0; i < rearmTicks - 2; i += 1) {
+      world = stepWorld(world, NEUTRAL_INPUT, FIXED_DT);
+    }
+    expect(world.player.missilesReady).toBe(3);
+    for (let i = 0; i < 4; i += 1) {
       world = stepWorld(world, NEUTRAL_INPUT, FIXED_DT);
     }
     expect(world.player.missilesReady).toBe(4);
@@ -253,6 +277,7 @@ describe('sortie simulation contracts and enemy shield entities', () => {
     );
     expect(next.asteroids.some((a) => a.id === targetRock.id)).toBe(false);
     expect(next.explosions.length).toBeGreaterThan(0);
+    expect(next.events.some((e) => e.kind === 'hit_confirmed' && e.isKill)).toBe(false);
   });
 
   it('transitions to victory when all raiders and subsystems are cleared, and retries cleanly', () => {
@@ -371,30 +396,6 @@ describe('sortie simulation contracts and enemy shield entities', () => {
     expect(len(vel)).toBeLessThan(1);
   });
 
-  it('balance gate: an AFK pilot takes real damage or loses Hearthstone instead of sitting immune', () => {
-    let world = createInitialWorld(DEFAULT_SORTIE_SEED, true);
-    let minPlayerShield = 100;
-    let minPlayerHull = world.player.hull;
-    let minCarrierHull = world.friendlyCarrier.hull;
-
-    for (let tick = 0; tick < 60 * 90; tick += 1) {
-      world = stepWorld(world, { ...NEUTRAL_INPUT, throttleDelta: -1 }, FIXED_DT);
-      minPlayerShield = Math.min(minPlayerShield, world.player.energy.shieldCharge);
-      minPlayerHull = Math.min(minPlayerHull, world.player.hull);
-      minCarrierHull = Math.min(minCarrierHull, world.friendlyCarrier.hull);
-      if (world.phase.kind !== 'active') break;
-    }
-
-    // Real stakes: either the AFK pilot/carrier was destroyed, or took serious shield/hull damage.
-    const tookSeriousDamage =
-      world.phase.kind === 'failed' ||
-      minPlayerShield < 50 ||
-      minPlayerHull < world.player.maxHull ||
-      minCarrierHull < world.friendlyCarrier.maxHull - 100;
-    expect(tookSeriousDamage).toBe(true);
-    expect(world.phase.kind).not.toBe('victory');
-  });
-
   it('survives 60 seconds of randomized combat flight with finite state and valid invariants', () => {
     let world = createInitialWorld(DEFAULT_SORTIE_SEED, true);
     let seed = 0xdeadbeef;
@@ -430,6 +431,8 @@ describe('sortie simulation contracts and enemy shield entities', () => {
       expect(world.player.energy.shieldCharge).toBeLessThanOrEqual(100);
       if (world.player.energy.overdrive) {
         expect(world.player.energy.shieldCharge).toBeGreaterThan(0);
+      } else {
+        expect(world.player.throttle).toBeLessThanOrEqual(FLIGHT_TUNING.maxCruiseThrottle);
       }
       expect(world.player.missilesReady).toBeGreaterThanOrEqual(0);
       expect(world.player.missilesReady).toBeLessThanOrEqual(world.player.maxMissiles);
@@ -442,5 +445,338 @@ describe('sortie simulation contracts and enemy shield entities', () => {
         world = stepWorld(world, { ...NEUTRAL_INPUT, restartSortie: true }, FIXED_DT);
       }
     }
+  });
+});
+
+const BALANCE_SEEDS = [DEFAULT_SORTIE_SEED, 1, 2, 3, 4, 5];
+
+function playerBolt(id: string, position: Vec3, velocity: Vec3): ProjectileState {
+  return {
+    id,
+    kind: 'bolt',
+    faction: 'friendly',
+    owner: 'player',
+    position,
+    velocity,
+    targetId: null,
+    damage: COMBAT_TUNING.boltDamage,
+    ttl: 1,
+  };
+}
+
+function hostileBolt(position: Vec3, velocity: Vec3): ProjectileState {
+  return { ...playerBolt('eb', position, velocity), faction: 'hostile', owner: 'hostile', damage: COMBAT_TUNING.enemyBoltDamage };
+}
+
+function parkedRaider(position: Vec3, overrides: Partial<EnemyShipState> = {}): EnemyShipState {
+  const raider = DEFAULT_SORTIE_CONFIG.enemies[0];
+  if (raider === undefined) throw new Error('default sortie has no raider');
+  return { ...raider, position, velocity: vec3(0, 0, 0), fireCooldown: 99, ...overrides };
+}
+
+/** One combat tick with the flight step skipped, so the player stays exactly where the test put them. */
+function combatTick(world: WorldState, tick = 1, input: FlightInput = NEUTRAL_INPUT): ReturnType<typeof stepCombat> {
+  return stepCombat({
+    tick,
+    rngState: world.rngState,
+    player: world.player,
+    wingmate: world.wingmate,
+    enemies: world.enemies,
+    friendlyCarrier: world.friendlyCarrier,
+    hostileFrigate: world.hostileFrigate,
+    asteroids: world.asteroids,
+    projectiles: world.projectiles,
+    explosions: [],
+    radio: null,
+    input,
+    dt: FIXED_DT,
+  });
+}
+
+function emptyArena(seed = DEFAULT_SORTIE_SEED): WorldState {
+  return { ...createInitialWorld(seed, true), enemies: [], asteroids: [] };
+}
+
+describe('precision hitboxes and frigate hull occlusion', () => {
+  const center = vec3(0, 0, -300);
+
+  it('misses a raider with a bolt that only grazes its solar vanes, 7 m from the core', () => {
+    const world = { ...emptyArena(), enemies: [parkedRaider(center)], projectiles: [playerBolt('b', add(center, vec3(7, 0, 8)), vec3(0, 0, -560))] };
+    const after = combatTick(world);
+    expect(SHIP_STATS.enemies.raider.hitRadius).toBeLessThan(7);
+    expect(after.events.some((e) => e.kind === 'hit_confirmed')).toBe(false);
+  });
+
+  it('hits with a fast bolt whose tick-to-tick step would jump clean over the hitbox', () => {
+    const world = { ...emptyArena(), enemies: [parkedRaider(center)], projectiles: [playerBolt('b', add(center, vec3(0, 0, 10)), vec3(0, 0, -1400))] };
+    const after = combatTick(world);
+    expect(after.events.some((e) => e.kind === 'hit_confirmed')).toBe(true);
+  });
+
+  it('stops a bolt fired up from under the frigate at the hull instead of the dorsal shield dome', () => {
+    const base = emptyArena();
+    const frigate = base.hostileFrigate;
+    const dome = frigate.subsystems[0];
+    if (dome === undefined) throw new Error('frigate has no dome');
+    const domePos = subsystemWorldPosition(frigate, dome);
+    const up = rotateVec3(frigate.orientation, vec3(0, 1, 0));
+
+    const fromBelow = combatTick({ ...base, projectiles: [playerBolt('b', sub(domePos, scale(up, 60)), scale(up, 560))] });
+    expect(fromBelow.hostileFrigate.subsystems[0]?.hull).toBe(dome.maxHull);
+    expect(fromBelow.projectiles).toHaveLength(0);
+
+    const fromAbove = combatTick({ ...base, projectiles: [playerBolt('b', add(domePos, scale(up, 22)), scale(up, -560))] });
+    expect(fromAbove.hostileFrigate.subsystems[0]?.hull).toBeLessThan(dome.maxHull);
+  });
+});
+
+describe('variable-ratio reinforcement', () => {
+  it('scales crit chance from a 14% base with dead-centre precision and a capped pity ramp', () => {
+    expect(critChance(0, 0)).toBeCloseTo(0.14, 6);
+    expect(critChance(1, 0)).toBeCloseTo(0.3, 6);
+    expect(critChance(0, 3)).toBeGreaterThan(critChance(0, 0));
+    expect(critChance(1, 100)).toBe(COMBAT_TUNING.critMaxChance);
+  });
+
+  it('lands dead-centre crits at about the advertised rate for 1.75x shield damage', () => {
+    const target = vec3(0, 0, -300);
+    let crits = 0;
+    const trials = 400;
+    for (let seed = 1; seed <= trials; seed += 1) {
+      const world = {
+        ...emptyArena(seed),
+        enemies: [parkedRaider(target)],
+        projectiles: [playerBolt('b', add(target, vec3(0, 0, 4)), vec3(0, 0, -560))],
+      };
+      const after = combatTick(world);
+      const shieldLoss = SHIP_STATS.enemies.raider.shields - (after.enemies[0]?.shields ?? 0);
+      if (after.events.some((e) => e.kind === 'crit_hit')) {
+        crits += 1;
+        expect(shieldLoss).toBeCloseTo(COMBAT_TUNING.boltDamage * COMBAT_TUNING.critMultiplier, 6);
+      } else {
+        expect(shieldLoss).toBeCloseTo(COMBAT_TUNING.boltDamage, 6);
+      }
+    }
+    expect(crits / trials).toBeGreaterThan(0.22);
+    expect(crits / trials).toBeLessThan(0.38);
+  });
+
+  it('turns a kill into a supply drop once pity is maxed, flushing an overheated gun with a radio callout', () => {
+    const base = emptyArena();
+    const target = vec3(0, 0, -300);
+    const world: WorldState = {
+      ...base,
+      player: {
+        ...base.player,
+        dropPity: 4,
+        energy: { ...base.player.energy, weaponState: 'overheated', weaponCharge: 30 },
+      },
+      enemies: [parkedRaider(target, { hull: 1, shields: 0 })],
+      projectiles: [playerBolt('b', add(target, vec3(0, 0, 4)), vec3(0, 0, -560))],
+    };
+    const after = combatTick(world);
+    expect(after.events).toContainEqual({ kind: 'supply_drop', drop: 'heat_flush' });
+    expect(after.events).toContainEqual({ kind: 'weapon_ready' });
+    expect(after.player.energy).toMatchObject({ weaponState: 'ready', weaponCharge: 100 });
+    expect(after.player.dropPity).toBe(0);
+    expect(after.radio?.text).toContain('Supply drop');
+  });
+
+  it('pays a near miss for a bolt that skims a fast-moving player, but not a slow, straight one', () => {
+    const base = emptyArena();
+    const pass = hostileBolt(add(base.player.position, vec3(10, 0, -3)), vec3(0, 0, 390));
+    const fast: WorldState = {
+      ...base,
+      player: { ...base.player, velocity: vec3(0, 0, -100), energy: { ...base.player.energy, weaponCharge: 50 } },
+      projectiles: [pass],
+    };
+    const rewarded = combatTick(fast);
+    expect(rewarded.events).toContainEqual({ kind: 'near_miss', source: 'bolt', reward: 'heat_vent' });
+    expect(rewarded.player.energy.weaponCharge).toBeCloseTo(50 + COMBAT_TUNING.nearMissHeatVent, 6);
+
+    const slow = combatTick({ ...fast, player: { ...fast.player, velocity: vec3(0, 0, -40) } });
+    expect(slow.events.some((e) => e.kind === 'near_miss')).toBe(false);
+  });
+
+  it('pays a near miss for buzzing an asteroid at speed', () => {
+    const base = emptyArena();
+    const world: WorldState = {
+      ...base,
+      player: { ...base.player, velocity: vec3(0, 0, -100) },
+      asteroids: [{ id: 'rock', position: add(base.player.position, vec3(30, 0, 0)), radius: 10, rotation: vec3(0, 0, 0), hull: 50, tint: 'ice' }],
+    };
+    expect(combatTick(world).events).toContainEqual({ kind: 'near_miss', source: 'buzz', reward: 'shield' });
+  });
+});
+
+describe('enemy fire model', () => {
+  function raidersFacingPlayer(world: WorldState): readonly EnemyShipState[] {
+    return [-60, 0, 60].map((x, i) =>
+      parkedRaider(add(world.player.position, vec3(x, 0, -300)), {
+        id: `raider-${i}`,
+        orientation: quatLookAt(normalize(vec3(-x, 0, 300))),
+        fireCooldown: 0,
+        maneuver: { kind: 'approach', remainingSeconds: 5 },
+      }),
+    );
+  }
+
+  it('holds fire through the opening grace window', () => {
+    const base = emptyArena();
+    const after = combatTick({ ...base, enemies: raidersFacingPlayer(base) }, 1);
+    expect(after.events.some((e) => e.kind === 'incoming_fire')).toBe(false);
+  });
+
+  it('lets at most two raiders shoot at the player at once, each announcing incoming fire', () => {
+    const base = emptyArena();
+    const graceTicks = Math.ceil(COMBAT_TUNING.openingGraceSeconds / FIXED_DT);
+    const after = combatTick({ ...base, enemies: raidersFacingPlayer(base) }, graceTicks + 1);
+    expect(after.events.filter((e) => e.kind === 'incoming_fire')).toHaveLength(COMBAT_TUNING.attackTokens);
+  });
+
+  it('aims tight at a slow, straight target and wide at an Overdrive pilot crossing the line of fire', () => {
+    const base = emptyArena().player;
+    const shooter = add(base.position, vec3(0, 0, 300));
+    const slowStraight = { ...base, velocity: vec3(0, 0, -50) };
+    const overdriveCrossing = {
+      ...base,
+      velocity: vec3(FLIGHT_TUNING.overdriveSpeed, 0, 0),
+      angularVelocity: vec3(0, 1.5, 0),
+      energy: { ...base.energy, overdrive: true },
+    };
+    expect(enemyAimError(slowStraight, shooter)).toBeLessThan(0.01);
+    expect(enemyAimError(overdriveCrossing, shooter)).toBeGreaterThan(8 * enemyAimError(slowStraight, shooter));
+  });
+
+  it('lets the raider attack-run timer reach zero and break away unless it sits on the player tail', () => {
+    const base = emptyArena();
+    const run = { kind: 'approach', remainingSeconds: 0.01 } as const;
+    const ahead = combatTick({ ...base, enemies: [parkedRaider(add(base.player.position, vec3(0, 0, -400)), { maneuver: run })] });
+    expect(ahead.enemies[0]?.maneuver.kind).toBe('break_away');
+
+    const onTail = combatTick({ ...base, enemies: [parkedRaider(add(base.player.position, vec3(0, 0, 400)), { maneuver: run })] });
+    expect(onTail.enemies[0]?.maneuver).toEqual({ kind: 'approach', remainingSeconds: 0 });
+  });
+
+  it('drops Overdrive throttle back to 100% in the same tick a bolt empties the shields', () => {
+    const base = emptyArena();
+    const world: WorldState = {
+      ...base,
+      player: { ...base.player, throttle: FLIGHT_TUNING.overdriveThrottle, energy: { ...base.player.energy, overdrive: true, shieldCharge: 5 } },
+      projectiles: [hostileBolt(add(base.player.position, vec3(0, 0, -4)), vec3(0, 0, 390))],
+    };
+    const after = combatTick(world);
+    expect(after.player.energy.overdrive).toBe(false);
+    expect(after.player.throttle).toBe(FLIGHT_TUNING.maxCruiseThrottle);
+  });
+});
+
+describe('missile trigger and manual target pin', () => {
+  it('fires one unguided missile for a held RMB with nothing to lock, never a stream', () => {
+    const base = emptyArena();
+    let world: WorldState = {
+      ...base,
+      hostileFrigate: { ...base.hostileFrigate, subsystems: base.hostileFrigate.subsystems.map((s) => ({ ...s, hull: 0 })) },
+      enemies: [parkedRaider(vec3(0, 0, 2000))],
+    };
+    let launches = 0;
+    for (let i = 0; i < 300; i += 1) {
+      world = stepWorld(world, { ...NEUTRAL_INPUT, fireMissile: true }, FIXED_DT);
+      launches += world.events.filter((e) => e.kind === 'missile_fired').length;
+    }
+    expect(launches).toBe(1);
+  });
+
+  it('holds RMB through the lock and launches the next missile only once the lock completes', () => {
+    const base = emptyArena();
+    let world: WorldState = { ...base, enemies: [parkedRaider(add(base.player.position, vec3(0, 0, -500)))] };
+    const launchTicks: number[] = [];
+    for (let i = 0; i < 120 && launchTicks.length < 2; i += 1) {
+      world = stepWorld(world, { ...NEUTRAL_INPUT, fireMissile: true }, FIXED_DT);
+      if (world.events.some((e) => e.kind === 'missile_fired')) launchTicks.push(world.tick);
+    }
+    const guided = world.projectiles.filter((p) => p.kind === 'missile' && p.targetId !== null);
+    expect(launchTicks).toHaveLength(2);
+    expect((launchTicks[1] ?? 0) - (launchTicks[0] ?? 0)).toBeGreaterThanOrEqual(Math.round(COMBAT_TUNING.lockAcquireSeconds / FIXED_DT));
+    expect(guided).toHaveLength(1);
+  });
+
+  const nose = vec3(0, 0, -1);
+  const origin = vec3(0, 0, 0);
+  const contact = (id: string, position: Vec3): TargetContact => ({ id, label: id, position, velocity: vec3(0, 0, 0), kind: 'enemy' });
+  const deadAheadFar = contact('far', vec3(0, 0, -900));
+  const offAxisNear = contact('near', vec3(40, 0, -300));
+
+  it('never lets a closer off-axis contact steal auto-focus from a dead-centre one', () => {
+    const slightlyOff = contact('close', vec3(8, 0, -150));
+    expect(selectNextTarget(null, origin, nose, [slightlyOff, deadAheadFar], false)).toBe('far');
+  });
+
+  it('pins the T pick against auto-focus until it leaves the forward cone', () => {
+    const contacts = [deadAheadFar, offAxisNear];
+    const auto = resolveTargetSelection({ targetId: null, pinned: false }, origin, nose, contacts, false);
+    expect(auto).toEqual({ targetId: 'far', pinned: false });
+
+    const picked = resolveTargetSelection(auto, origin, nose, contacts, true);
+    expect(picked).toEqual({ targetId: 'near', pinned: true });
+    expect(resolveTargetSelection(picked, origin, nose, contacts, false)).toEqual(picked);
+
+    const turnedAway = resolveTargetSelection(picked, origin, vec3(-1, 0, 0), contacts, false);
+    expect(turnedAway.pinned).toBe(false);
+  });
+
+  it('releases the pin when T is pressed on the only contact in the cone', () => {
+    const pinned = { targetId: 'far', pinned: true };
+    expect(resolveTargetSelection(pinned, origin, nose, [deadAheadFar], true)).toEqual({ targetId: 'far', pinned: false });
+  });
+});
+
+describe('frame event delivery', () => {
+  it('hands the renderer every event from a multi-tick frame, not just the last tick', () => {
+    const base = emptyArena();
+    const target = vec3(0, 0, -600);
+    const world: WorldState = {
+      ...base,
+      enemies: [parkedRaider(target)],
+      projectiles: [playerBolt('b', add(target, vec3(0, 0, 4)), vec3(0, 0, -560))],
+    };
+    const frame = stepFrame(world, 3, () => NEUTRAL_INPUT, () => undefined);
+    expect(frame.world.tick).toBe(3);
+    expect(frame.world.events.some((e) => e.kind === 'hit_confirmed')).toBe(false);
+    expect(frame.frameEvents.some((e) => e.kind === 'hit_confirmed')).toBe(true);
+  });
+});
+
+describe('two-sided balance harness', () => {
+  it.each(BALANCE_SEEDS)('kills an AFK pilot within 20-65 s (seed %i)', (seed) => {
+    const outcome = flySortie(seed, afkPilot, 90);
+    expect(outcome.result).toBe('failed');
+    expect(outcome.reason).toBe('FIGHTER DESTROYED');
+    expect(outcome.seconds).toBeGreaterThanOrEqual(20);
+    expect(outcome.seconds).toBeLessThanOrEqual(65);
+  });
+
+  it.each(BALANCE_SEEDS)('lets a competent cannon-only pilot with a 2.5 deg fire cone win (seed %i)', (seed) => {
+    const outcome = flySortie(seed, cannonPilot(2.5), 180);
+    expect(outcome.result).toBe('victory');
+  });
+
+  it('rewards disciplined bursts with more sustained cannon fire than riding the overheat lockout', () => {
+    const shotsOver30s = (burstFloor: number, burstResume: number): number => {
+      let world = emptyArena();
+      let holdFire = false;
+      let shots = 0;
+      for (let i = 0; i < 30 * 60; i += 1) {
+        const charge = world.player.energy.weaponCharge;
+        if (charge < burstFloor) holdFire = true;
+        else if (charge >= burstResume) holdFire = false;
+        world = stepWorld(world, { ...NEUTRAL_INPUT, firePrimary: !holdFire }, FIXED_DT);
+        shots += world.events.filter((e) => e.kind === 'cannon_fired' && e.faction === 'friendly').length;
+      }
+      return shots;
+    };
+    const disciplined = shotsOver30s(25, 60);
+    const overheating = shotsOver30s(-1, -1);
+    expect(disciplined).toBeGreaterThan(overheating * 1.2);
   });
 });

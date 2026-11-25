@@ -148,7 +148,7 @@ export function stepPlayerFlight(
   const cancelOverdrive = player.energy.overdrive && input.throttleDelta < 0;
 
   const energyStep = stepEnergy(player.energy, enterOverdrive, cancelOverdrive, dt);
-  let energy = energyStep.energy;
+  const energy = energyStep.energy;
   const events: SimEvent[] = [...energyStep.events];
 
   let throttle: number;
@@ -220,36 +220,38 @@ export function stepPlayerFlight(
     }
   }
 
-  let hull = player.hull;
-  let hitFlash = Math.max(0, player.hitFlash - dt * 2.5);
-  if (clearance.impactSpeed > 22) {
-    const collisionDmg = (clearance.impactSpeed - 20) * FLIGHT_TUNING.collisionDamagePerSpeed;
-    const absorbed = absorbShieldDamage(energy, collisionDmg);
-    energy = absorbed.energy;
-    hull = Math.max(0, hull - absorbed.hullDamage);
-    hitFlash = 1;
-    if (!energy.overdrive && throttle > FLIGHT_TUNING.maxCruiseThrottle) {
-      throttle = FLIGHT_TUNING.maxCruiseThrottle;
-    }
-    events.push({ kind: 'player_damaged' });
+  const flown: PlayerShipState = {
+    ...player,
+    position: arenaPosition,
+    velocity: arenaVelocity,
+    orientation,
+    angularVelocity,
+    throttle,
+    energy,
+    proximityWarning: clearance.warning,
+    hitFlash: Math.max(0, player.hitFlash - dt * 2.5),
+    recoilKick: Math.max(0, player.recoilKick - dt * 6.5),
+    recoilLeft: Math.max(0, player.recoilLeft - dt * 7.5),
+    recoilRight: Math.max(0, player.recoilRight - dt * 7.5),
+  };
+  if (clearance.impactSpeed <= 22) {
+    return { player: flown, events };
   }
+  events.push({ kind: 'player_damaged' });
+  const collisionDamage = (clearance.impactSpeed - 20) * FLIGHT_TUNING.collisionDamagePerSpeed;
+  return { player: damagePlayer(flown, collisionDamage), events };
+}
 
+/** Every source of player damage goes through here, so a shield-depleting hit drops Overdrive throttle in the same tick. */
+export function damagePlayer(player: PlayerShipState, damage: number): PlayerShipState {
+  const absorbed = absorbShieldDamage(player.energy, damage);
   return {
-    player: {
-      ...player,
-      position: arenaPosition,
-      velocity: arenaVelocity,
-      orientation,
-      angularVelocity,
-      throttle,
-      hull,
-      energy,
-      proximityWarning: clearance.warning,
-      hitFlash,
-      recoilKick: Math.max(0, player.recoilKick - dt * 6.5),
-      recoilLeft: Math.max(0, player.recoilLeft - dt * 7.5),
-      recoilRight: Math.max(0, player.recoilRight - dt * 7.5),
-    },
-    events,
+    ...player,
+    energy: absorbed.energy,
+    hull: Math.max(0, player.hull - absorbed.hullDamage),
+    hitFlash: 1,
+    throttle: absorbed.energy.overdrive
+      ? player.throttle
+      : Math.min(player.throttle, FLIGHT_TUNING.maxCruiseThrottle),
   };
 }

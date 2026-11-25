@@ -6,12 +6,12 @@ import { FIXED_DT, NEUTRAL_INPUT, type EnergyState, type LockState } from '../sr
 import { createInitialWorld } from '../src/sim/world';
 
 function ticksUntil(step: (tick: number) => boolean): number {
-  for (let tick = 1; tick <= 1000; tick += 1) {
+  for (let tick = 1; tick <= 2000; tick += 1) {
     if (step(tick)) {
       return tick;
     }
   }
-  throw new Error('Simulation boundary was not reached in 1000 ticks');
+  throw new Error('Simulation boundary was not reached in 2000 ticks');
 }
 
 describe('formal TLA+ timing agreement at 60 Hz', () => {
@@ -45,7 +45,8 @@ describe('formal TLA+ timing agreement at 60 Hz', () => {
       const result = stepCombat({
         tick,
         rngState: world.rngState,
-        player,
+        // Release the trigger between frames so every frame is a fresh press.
+        player: { ...player, missileTriggerHeld: false },
         wingmate: world.wingmate,
         enemies: [],
         friendlyCarrier: world.friendlyCarrier,
@@ -75,11 +76,11 @@ describe('formal TLA+ timing agreement at 60 Hz', () => {
 
     const rack = player.maxMissiles;
     expect(shieldDelayTicks).toBe(211);
-    expect(overheatTicks).toBe(215);
+    expect(overheatTicks).toBe(400);
     expect(acquireTicks).toBe(48);
     expect((shotTicks[1] ?? 0) - (shotTicks[0] ?? 0)).toBe(9);
     expect((missileTicks[1] ?? 0) - (missileTicks[0] ?? 0)).toBe(34);
-    expect((missileTicks[rack] ?? 0) - (missileTicks[0] ?? 0)).toBe(271);
-    expect((missileTicks[rack + 1] ?? 0) - (missileTicks[rack] ?? 0)).toBe(270);
+    expect((missileTicks[rack] ?? 0) - (missileTicks[0] ?? 0)).toBe(720);
+    expect((missileTicks[rack + 1] ?? 0) - (missileTicks[rack] ?? 0)).toBe(720);
   });
 });

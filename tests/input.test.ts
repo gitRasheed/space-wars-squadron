@@ -168,4 +168,53 @@ describe('input deadzone and channel merging', () => {
       Object.defineProperty(globalThis, 'document', { value: originalDocument, configurable: true });
     }
   });
+  it('remembers pointer lock when P pauses locked flight, so the resume click waits for the re-lock', () => {
+    const fakeWindow = createListenerTarget();
+    const fakeDocument: ReturnType<typeof createListenerTarget> & {
+      hidden: boolean;
+      pointerLockElement: unknown;
+      exitPointerLock: () => void;
+    } = Object.assign(createListenerTarget(), {
+      hidden: false,
+      pointerLockElement: null,
+      exitPointerLock: () => {
+        fakeDocument.pointerLockElement = null;
+        fakeDocument.emit('pointerlockchange', {});
+      },
+    });
+    const fakeCanvas = Object.assign(createListenerTarget(), {
+      requestPointerLock: () => undefined,
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 1280, height: 720 }),
+    });
+
+    const originalWindow = globalThis.window;
+    const originalDocument = globalThis.document;
+    Object.defineProperty(globalThis, 'window', { value: fakeWindow, configurable: true });
+    Object.defineProperty(globalThis, 'document', { value: fakeDocument, configurable: true });
+
+    let overlayOpen = false;
+    try {
+      const channel = createInputChannel(fakeCanvas as unknown as HTMLCanvasElement, () => overlayOpen);
+      fakeDocument.pointerLockElement = fakeCanvas;
+      fakeDocument.emit('pointerlockchange', {});
+      channel.sample();
+
+      fakeWindow.emit('keydown', { code: 'KeyP', repeat: false, preventDefault: () => undefined });
+      expect(channel.sample().togglePause).toBe(true);
+      overlayOpen = true;
+      channel.releasePointerForPause();
+      expect(fakeDocument.pointerLockElement).toBeNull();
+
+      fakeCanvas.emit('mousedown', { button: 0 });
+      expect(channel.sample().launchBriefing).toBe(false);
+      fakeDocument.pointerLockElement = fakeCanvas;
+      fakeDocument.emit('pointerlockchange', {});
+      expect(channel.sample().launchBriefing).toBe(true);
+
+      channel.destroy();
+    } finally {
+      Object.defineProperty(globalThis, 'window', { value: originalWindow, configurable: true });
+      Object.defineProperty(globalThis, 'document', { value: originalDocument, configurable: true });
+    }
+  });
 });

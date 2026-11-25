@@ -2,7 +2,7 @@
 
 ## 1. Scope, Exclusions, and Dropped Candidates
 
-- **Date:** 2026-11-23
+- **Date:** 2026-11-23 (pass 3 on 2026-11-25, see section 6)
 - **Scope:** `src/main.ts`, `src/input/keyboardMouse.ts`, `src/sim/types.ts`, `src/sim/energy.ts`, `src/sim/combat.ts`, `src/sim/world.ts`, `src/audio/synthAudio.ts`, `src/render/sceneRenderer.ts`
 - **Dropped candidates (admission gate):**
   - `cameraMode` (`cockpit | chase`): single independent UI toggle with one writer in `src/sim/world.ts:154-158`.
@@ -15,8 +15,9 @@
 |---|---|---|---|---|---|---|
 | 1 | Sortie Lifecycle & Launch/Restart | Sum (`SortiePhase`) + dual write sites | Traced | Medium (Common) | `src/main.ts:59-82`, `src/input/keyboardMouse.ts:62-63`, `src/sim/world.ts:153-184` | 3 |
 | 2 | Input Steering & Focus / Pointer Lock | Implicit 2-flag product (`pointerLocked` × `cursorActive` × held keys) | Traced | Medium (Common) | `src/input/keyboardMouse.ts:14-40,102-129,154-164` | 2 |
-| 3 | Boost / AOA-Drift Energy Lifecycle | Sum (`BoostMode`) × Product (`PowerMode`, charges) | No traced hazard in scope | Low (Edge) | `src/sim/energy.ts:39-125` | — |
-| 4 | Target Selection & Missile Lock | Sum (`LockState`) × `selectedTargetId` × `missilesReady` | Traced | Low (Common) | `src/sim/combat.ts:127-160,394-403` | 1 |
+| 3 | Throttle Overdrive & Weapon Heat | `overdrive` × `WeaponState` (`ready`/`overheated`) × charges | Traced (pass 3) | Medium (Common) | `src/sim/energy.ts`, `src/sim/flight.ts` | 1 |
+| 4 | Target Selection, Pin & Missile Lock | Sum (`LockState`) × `selectedTargetId` × `targetPinned` × `missileTriggerHeld` × `missilesReady` | Traced (pass 3) | Medium (Common) | `src/sim/combat.ts` (`resolveTargetSelection`, `stepPlayerWeapons`) | 1 |
+| 6 | Enemy Maneuver | Sum (`EnemyManeuver`: `approach`/`break_away`) | Traced (pass 3) | Medium (Common) | `src/sim/combat.ts` (`stepEnemyAi`) | 1 |
 | 5 | Web Audio Engine Lifecycle | Implicit (`muted` × `ctx` × `document.hidden`) | Traced | Low (Edge) | `src/audio/synthAudio.ts:13-57,125-138` | 0 |
 
 ## 3. Detailed Sections (`Traced` Only)
@@ -76,3 +77,13 @@
 1. **Machine 1 (Sortie Lifecycle & Launch/Restart)** — **Fixed & Pinned:** Split `launchBriefing` vs. `restartSortie` (`src/sim/types.ts`, `src/sim/world.ts`), removed the direct `world = stepWorld(...)` side-writer in `src/main.ts`, gated launch click in `src/input/keyboardMouse.ts`, and pinned regression coverage in `tests/sim.test.ts`.
 2. **Machine 2 (Input Steering & Focus / Pointer Lock)** — **Fixed:** Collapsed `pointerLocked` × `cursorActive` into `SteeringMode` tagged union (`idle | cursor | pointer_locked`), reset to `idle` on pointer-lock release, and clear held inputs on `document.visibilitychange`.
 3. **Machine 4 & 5 (Target Re-Selection & Audio Tab-Hide)** — **Fixed:** Immediate target re-selection on kill in `src/sim/combat.ts` and `document.visibilitychange` audio suspend in `src/audio/synthAudio.ts`.
+
+## 6. Pass 3 (2026-11-25): Heat, Lock, Pin, Maneuver and Pause Fixes
+
+- **Machine 3, inverted overheat.** Lockout cooling (28/s) was faster than normal recharge (18/s), so overheating out-shot disciplined bursts. Now recharge is 24/s and lockout 15/s (`ENERGY_RULES`), `weapon_ready` fires when the lockout ends, and `formal/EnergyAndLock.tla` asserts `OverheatCooldown < WeaponRecharge` and ties `OverheatTicks` to it. A heat-flush supply drop is the only other way out of the lockout, modelled as `HeatFlush`. `OverheatMutant.tla` (firing while overheated) must fail `OverheatCannotFire`, and `run-formal-check.mjs` pulls the trigger on a half-cooled overheated gun, so deleting the TS guard fails `verify:formal`.
+- **Machine 3, Overdrive throttle leak.** A hostile bolt that emptied the shields cleared `overdrive` in combat, after flight had already set throttle to 1.2, leaving `overdrive=false` with `throttle=1.2` for a tick. Every damage source now goes through `damagePlayer` (`src/sim/flight.ts`), which clamps throttle in the same tick. The fuzz test asserts `!overdrive ⇒ throttle ≤ 1`.
+- **Machine 4, missile hold.** `fireMissile` mixed a queued press with the held RMB level, so a held button dumped unguided missiles every cooldown. The sim now keeps `missileTriggerHeld` and launches on a fresh press, or on a held trigger only once the lock completes.
+- **Machine 4, target pin.** `T` now pins its pick (`targetPinned`). Auto-focus skips a pinned target until it dies, leaves the 60° / 1400 m pin cone, or `T` is pressed on the only candidate. Auto-focus ranks by angle off the nose, and distance only breaks ties inside 0.6°, so a near off-axis contact cannot steal focus from a dead-centre one.
+- **Machine 6, raider attack run.** The approach timer was clamped at 0.4 s, so the timed break-away never fired, and the tail check had its sign reversed. The timer now reaches 0, and a raider holds the run only while it is actually behind the player.
+- **Machine 2, pause ordering.** On `P` during locked flight, `main.ts` released pointer lock after the sim paused, so `pointerlockchange` saw the overlay open and never recorded `lockedBeforePause`; the resume click then resumed into cursor steering. `InputChannel.releasePointerForPause()` records the lock before releasing it.
+

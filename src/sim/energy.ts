@@ -1,13 +1,13 @@
 import { clamp } from './math';
+import { absorbIntoShield, regenShield, SHIP_STATS } from './ships';
 import type { EnergyState, SimEvent, WeaponState } from './types';
 
 export const ENERGY_RULES = {
   minOverdriveShield: 15,
   overdriveShieldDrainPerSecond: 24,
-  shieldRechargePerSecond: 10,
-  shieldRegenDelaySeconds: 3.5,
-  weaponRechargePerSecond: 18,
-  overheatCooldownPerSecond: 28,
+  weaponRechargePerSecond: 24,
+  // Slower than normal recharge, so bursting inside the heat budget out-shoots riding the lockout.
+  overheatCooldownPerSecond: 15,
   primaryShotCost: 9.5,
 } as const;
 
@@ -21,7 +21,7 @@ export function createInitialEnergy(): EnergyState {
     overdrive: false,
     weaponState: 'ready',
     weaponCharge: 100,
-    shieldCharge: 100,
+    shieldCharge: SHIP_STATS.player.shields,
     shieldRegenDelay: 0,
   };
 }
@@ -35,23 +35,31 @@ export function stepEnergy(
   const events: SimEvent[] = [];
 
   let overdrive = current.overdrive;
-  let shieldCharge = current.shieldCharge;
-  const shieldRegenDelay = Math.max(0, current.shieldRegenDelay - dt);
-
   if (cancelOverdrive) {
     overdrive = false;
-  } else if (!overdrive && enterOverdrive && shieldCharge >= ENERGY_RULES.minOverdriveShield) {
+  } else if (!overdrive && enterOverdrive && current.shieldCharge >= ENERGY_RULES.minOverdriveShield) {
     overdrive = true;
     events.push({ kind: 'overdrive_engaged' });
   }
 
+  let shieldCharge: number;
+  let shieldRegenDelay: number;
   if (overdrive) {
-    shieldCharge = clamp(shieldCharge - ENERGY_RULES.overdriveShieldDrainPerSecond * dt, 0, 100);
+    shieldRegenDelay = Math.max(0, current.shieldRegenDelay - dt);
+    shieldCharge = clamp(current.shieldCharge - ENERGY_RULES.overdriveShieldDrainPerSecond * dt, 0, 100);
     if (shieldCharge <= 0) {
       overdrive = false;
     }
-  } else if (shieldRegenDelay <= 0) {
-    shieldCharge = clamp(shieldCharge + ENERGY_RULES.shieldRechargePerSecond * dt, 0, 100);
+  } else {
+    const regen = regenShield(
+      current.shieldCharge,
+      SHIP_STATS.player.shields,
+      current.shieldRegenDelay,
+      SHIP_STATS.player.shieldRegenPerSecond,
+      dt,
+    );
+    shieldCharge = regen.shield;
+    shieldRegenDelay = regen.regenDelay;
   }
 
   let weaponState: WeaponState = current.weaponState;
@@ -62,6 +70,7 @@ export function stepEnergy(
   const weaponCharge = clamp(current.weaponCharge + rechargeRate * dt, 0, 100);
   if (weaponState === 'overheated' && weaponCharge >= 100) {
     weaponState = 'ready';
+    events.push({ kind: 'weapon_ready' });
   }
 
   return {
@@ -107,15 +116,18 @@ export function absorbShieldDamage(
   energy: EnergyState,
   damage: number,
 ): { readonly energy: EnergyState; readonly hullDamage: number } {
-  const absorbed = Math.min(energy.shieldCharge, damage);
-  const nextShield = clamp(energy.shieldCharge - absorbed, 0, 100);
+  const absorbed = absorbIntoShield(energy.shieldCharge, damage);
   return {
     energy: {
       ...energy,
-      shieldCharge: nextShield,
-      shieldRegenDelay: ENERGY_RULES.shieldRegenDelaySeconds,
-      overdrive: nextShield <= 0 ? false : energy.overdrive,
+      shieldCharge: absorbed.shield,
+      shieldRegenDelay: SHIP_STATS.player.shieldRegenDelay,
+      overdrive: absorbed.shield <= 0 ? false : energy.overdrive,
     },
-    hullDamage: Math.max(0, damage - absorbed),
+    hullDamage: absorbed.hullDamage,
   };
+}
+
+export function flushWeaponHeat(energy: EnergyState): EnergyState {
+  return { ...energy, weaponState: 'ready', weaponCharge: 100 };
 }

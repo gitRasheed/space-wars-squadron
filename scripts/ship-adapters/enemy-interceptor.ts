@@ -3,5 +3,5 @@ import { createHullTextureSet } from '../../src/render/textures';
 
 export function buildAsset() {
   const textures = createHullTextureSet();
-  return buildEnemyMesh('interceptor', textures);
+  return buildEnemyMesh('striker', textures);
 }
