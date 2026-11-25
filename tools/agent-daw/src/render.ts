@@ -1,12 +1,15 @@
-import { SAMPLE_RATE, addInto, clamp, dbToGain, hashString, makeRng, midiToHz, panGains, stereo, svfG, svfStep, type Stereo } from './dsp.js';
+import { SAMPLE_RATE, addInto, clamp, dbToGain, gainToDb, hashString, makeRng, midiToHz, panGains, stereo, svfG, svfStep, type Stereo } from './dsp.js';
 import { applyFx, type FxContext } from './fx.js';
 import { INSTRUMENT_MODELS } from './instruments/index.js';
+import { integratedLufs } from './loudness.js';
 import { masterBus, masterStem, type MasterStats } from './master.js';
 import { expandTrackNotes, loopFrames, type AutomationLane, type Layer, type Project, type Track } from './project.js';
 
 export interface RenderOptions {
   // Only tracks on these layers are rendered; default is every layer.
   readonly layers?: readonly Layer[];
+  // Only these track ids are rendered, muted or not; default is every unmuted track.
+  readonly trackIds?: readonly string[];
   // Extra seconds after the last bar for one-shots, so tails are not cut.
   readonly tailS?: number;
 }
@@ -17,7 +20,32 @@ export interface RenderResult {
   readonly frames: number;
   readonly loop: boolean;
   readonly master: MasterStats;
-  readonly tracks: readonly { readonly id: string; readonly notes: number; readonly peak: number }[];
+  readonly tracks: readonly TrackStats[];
+  readonly warnings: readonly string[];
+}
+
+// Measured on the track as it enters the master bus, before compression and loudness normalisation.
+export interface TrackStats {
+  readonly id: string;
+  readonly notes: number;
+  readonly peak: number;
+  readonly lufs: number | null;
+  readonly rmsDbfs: number | null;
+}
+
+// A track this far under the loudest one is probably inaudible in the mix.
+export const TRACK_BALANCE_DB = 16;
+
+export function trackBalance(tracks: readonly TrackStats[]): string[] {
+  const level = (t: TrackStats): number | null => t.lufs ?? t.rmsDbfs;
+  const heard = tracks.filter((t) => t.notes > 0 && level(t) !== null);
+  const loudest = heard.reduce<TrackStats | undefined>((a, t) => (a === undefined || (level(t) ?? -Infinity) > (level(a) ?? -Infinity) ? t : a), undefined);
+  if (loudest === undefined) return [];
+  const top = level(loudest) ?? 0;
+  const unit = (t: TrackStats): string => (t.lufs !== null ? 'LU' : 'dB RMS');
+  return heard
+    .filter((t) => top - (level(t) ?? 0) > TRACK_BALANCE_DB)
+    .map((t) => `trackBalance: ${t.id} sits ${(top - (level(t) ?? 0)).toFixed(1)} ${unit(t)} below ${loudest.id}; raise its gainDb or check it is meant to be that quiet`);
 }
 
 export function secondsPerBeat(p: Project): number {
@@ -142,27 +170,36 @@ export function renderProject(p: Project, opts: RenderOptions = {}): RenderResul
   const frames = projectFrames(p, opts.tailS ?? 3);
   const mix = stereo(frames);
   const stems: Partial<Record<Layer, Stereo>> = {};
-  const stats: { id: string; notes: number; peak: number }[] = [];
+  const stats: TrackStats[] = [];
+  if (opts.trackIds !== undefined) {
+    const unknown = opts.trackIds.filter((id) => !p.tracks.some((t) => t.id === id));
+    if (unknown.length > 0) throw new Error(`unknown track ${unknown.join(', ')}; tracks are ${p.tracks.map((t) => t.id).join(', ')}`);
+  }
   for (const t of p.tracks) {
-    if (t.mute || (opts.layers !== undefined && !opts.layers.includes(t.layer))) continue;
+    const picked = opts.trackIds === undefined ? !t.mute : opts.trackIds.includes(t.id);
+    if (!picked || (opts.layers !== undefined && !opts.layers.includes(t.layer))) continue;
     const { audio, notes } = renderTrack(p, t, opts.tailS ?? 3);
     const stem = (stems[t.layer] ??= stereo(frames));
     let peak = 0;
+    let energy = 0;
     for (let i = 0; i < frames; i += 1) {
       mix.left[i] += audio.left[i];
       mix.right[i] += audio.right[i];
       stem.left[i] += audio.left[i];
       stem.right[i] += audio.right[i];
       peak = Math.max(peak, Math.abs(audio.left[i]), Math.abs(audio.right[i]));
+      energy += audio.left[i] * audio.left[i] + audio.right[i] * audio.right[i];
     }
-    stats.push({ id: t.id, notes, peak: Number(peak.toFixed(4)) });
+    const lufs = integratedLufs([audio.left, audio.right], p.sampleRate);
+    const rmsDb = gainToDb(Math.sqrt(energy / Math.max(1, 2 * frames)));
+    stats.push({ id: t.id, notes, peak: Number(peak.toFixed(4)), lufs: lufs === null ? null : Number(lufs.toFixed(2)), rmsDbfs: Number.isFinite(rmsDb) ? Number(rmsDb.toFixed(2)) : null });
   }
   const mastered = masterBus(mix, p.master, p.loop, p.sampleRate);
   // Stems get the same DC filter and the bus compressor's gain curve and make-up taken from the full mix,
   // so they sum exactly to the pre-limiter master; only the last fraction of a dB of limiting is missing.
   for (const [layer, stem] of Object.entries(stems) as [Layer, Stereo][]) stems[layer] = masterStem(stem, mastered.gainCurve, p.master.hpfHz, p.loop, p.sampleRate);
   const out = p.loop ? mastered.out : trimTail(mastered.out, frames - Math.round((opts.tailS ?? 3) * p.sampleRate), p.sampleRate);
-  return { mix: out, stems, frames: out.left.length, loop: p.loop, master: mastered.stats, tracks: stats };
+  return { mix: out, stems, frames: out.left.length, loop: p.loop, master: mastered.stats, tracks: stats, warnings: trackBalance(stats) };
 }
 
 // One-shots end where the audio decays below -80 dBFS, with a short fade.

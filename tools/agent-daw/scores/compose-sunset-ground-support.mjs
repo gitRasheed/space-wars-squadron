@@ -1,5 +1,5 @@
 // Level 3, Planetary Sunset close air support: a G-Dorian anthem. Run from tools/agent-daw: node scores/compose-sunset-ground-support.mjs
-import { clip, eq, line, loopProject, note, reverb, shift, steadyPiano, writeProject } from './lib.mjs';
+import { clip, eq, line, loopProject, note, reverb, shift, writeProject } from './lib.mjs';
 
 const SECTIONS = [
   { id: 'dusk', startBar: 0, bars: 4, layer: 'base' },
@@ -27,7 +27,7 @@ const SONG = 'D5:1.5:n E5:.5 F5:1 G5:1  A5:2:l G5:1:n E5:1  F5:1.5 E5:.5 D5:1 Bb
 function pianoLead() {
   const dusk = line(0, `${SONG}  C5:2.5:l A4:.5:n C5:1`, { vel: 78 });
   return {
-    id: 'piano-lead', name: 'Concert grand (melody)', role: 'lead', layer: 'base', gainDb: -2, pan: 0.05,
+    id: 'piano-lead', name: 'Concert grand (melody)', role: 'lead', layer: 'base', gainDb: -3, pan: 0.05,
     instrument: { type: 'piano', params: { pedal: true, brightness: 0.55 } },
     fx: [reverb('plate', 0.3, { decay: 0.8, predelayMs: 14, damping: 0.3 })],
     clips: [clip('dusk', dusk)],
@@ -251,7 +251,7 @@ function pad() {
   };
 }
 
-writeProject(await steadyPiano(loopProject({
+writeProject(loopProject({
   id: 'sunset-ground-support',
   title: 'Planetary Sunset Ground Support (Level 3 anthem)',
   tonic: 'G',
@@ -259,4 +259,4 @@ writeProject(await steadyPiano(loopProject({
   sections: SECTIONS,
   tracks: [pianoLead(), piano(), acoustic(), electricLead(), electricRhythm(), violins(), trumpets(), horns(), violas(), cellos(), basses(), drums(), timpani(), pad()],
 
-})));
+}));

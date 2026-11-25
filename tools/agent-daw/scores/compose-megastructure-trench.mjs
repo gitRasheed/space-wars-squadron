@@ -1,5 +1,5 @@
 // Level 2, Megastructure Trench Run: a rock-orchestral assault in E minor. Run from tools/agent-daw: node scores/compose-megastructure-trench.mjs
-import { clip, eq, line, loopProject, midi, note, reverb, steadyPiano, writeProject } from './lib.mjs';
+import { clip, eq, line, loopProject, midi, note, reverb, writeProject } from './lib.mjs';
 
 const SECTIONS = [
   { id: 'entry', startBar: 0, bars: 4, layer: 'base' },
@@ -254,7 +254,7 @@ function riser() {
   };
 }
 
-writeProject(await steadyPiano(loopProject({
+writeProject(loopProject({
   id: 'megastructure-trench',
   title: 'Megastructure Trench Run (Level 2 assault)',
   tonic: 'E',
@@ -262,4 +262,4 @@ writeProject(await steadyPiano(loopProject({
   sections: SECTIONS,
   tracks: [guitar(), bass(), drums(), hornCall(), violins(), trumpets(), hornCounter(), violas(), cellos(), piano(), pad(), riser()],
 
-})));
+}));

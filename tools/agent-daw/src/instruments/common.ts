@@ -1,4 +1,4 @@
-import { SAMPLE_RATE, clamp, polyBlep, type Rng, type Stereo } from '../dsp.js';
+import { SAMPLE_RATE, biquad, clamp, polyBlep, type Biquad, type Rng, type Stereo } from '../dsp.js';
 import type { Articulation, ParamValue } from '../project.js';
 
 export type { ParamValue };
@@ -83,6 +83,12 @@ export function asrEnvelope(frames: number, attackS: number, soundS: number, rel
     env[i] = level;
   }
   return env;
+}
+
+// Section `brightness` param: 0 keeps the voicing; 1 opens the filter by half and adds a 6 dB presence shelf.
+export function presence(params: Params): { readonly cutoff: number; readonly shelf: () => Biquad[] } {
+  const b = clamp(num(params, 'brightness', 0), -1, 2);
+  return { cutoff: 1 + 0.5 * b, shelf: () => (b === 0 ? [] : [biquad('highshelf', 1500, 0.7, 6 * b)]) };
 }
 
 export function tailFrames(soundS: number, releaseS: number): number {

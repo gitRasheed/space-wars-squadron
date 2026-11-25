@@ -14,19 +14,21 @@ export interface RenderFilesOptions {
   readonly stemsDir?: string;
   readonly repeats?: number;
   readonly layers?: readonly Layer[];
+  readonly trackIds?: readonly string[];
 }
 
 export function renderToFiles(p: Project, o: RenderFilesOptions): Record<string, unknown> {
   const t0 = performance.now();
-  const r = renderProject(p, o.layers !== undefined ? { layers: o.layers } : {});
+  const r = renderProject(p, { ...(o.layers !== undefined ? { layers: o.layers } : {}), ...(o.trackIds !== undefined ? { trackIds: o.trackIds } : {}) });
   const bitDepth = o.bitDepth ?? 24;
   writeWav(o.out, { sampleRate: p.sampleRate, channels: [r.mix.left, r.mix.right] }, bitDepth);
   const written: string[] = [o.out];
+  let repeatedOut: string | null = null;
   if ((o.repeats ?? 1) > 1 && p.loop) {
     const looped = tile(r.mix, o.repeats ?? 1);
-    const file = o.out.replace(/\.wav$/i, `_x${o.repeats ?? 1}.wav`);
-    writeWav(file, { sampleRate: p.sampleRate, channels: [looped.left, looped.right] }, bitDepth);
-    written.push(file);
+    repeatedOut = repeatsPath(o.out, o.repeats ?? 1);
+    writeWav(repeatedOut, { sampleRate: p.sampleRate, channels: [looped.left, looped.right] }, bitDepth);
+    written.push(repeatedOut);
   }
   if (o.stemsDir !== undefined) {
     fs.mkdirSync(o.stemsDir, { recursive: true });
@@ -37,14 +39,22 @@ export function renderToFiles(p: Project, o: RenderFilesOptions): Record<string,
     }
   }
   return {
+    out: o.out,
+    repeatedOut,
     files: written,
     frames: r.frames,
     durationS: Number((r.frames / p.sampleRate).toFixed(4)),
     loop: r.loop,
     master: r.master,
     tracks: r.tracks,
+    warnings: r.warnings,
     renderMs: Math.round(performance.now() - t0),
   };
+}
+
+// `--repeats N --out X.wav` writes X.wav once through and X_xN.wav tiled N times.
+export function repeatsPath(out: string, repeats: number): string {
+  return /\.wav$/i.test(out) ? out.replace(/\.wav$/i, `_x${repeats}.wav`) : `${out}_x${repeats}.wav`;
 }
 
 export function gateFile(file: string, p: Project | null, o: { readonly category?: Category; readonly pngDir?: string; readonly loop?: boolean; readonly bpm?: number; readonly beatsPerBar?: number } = {}): GateReport {

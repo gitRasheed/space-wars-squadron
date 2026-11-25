@@ -59,8 +59,9 @@ function render(ev: NoteEvent, params: Params): Stereo {
       const cents = strings === 1 ? 0 : (s - (strings - 1) / 2) * 0.9 + (ev.rng() - 0.5) * 0.4;
       const w = (2 * Math.PI * fn * Math.pow(2, cents / 1200)) / sr;
       const k2 = 2 * Math.cos(w);
-      let y1 = Math.sin(-w + ev.rng() * 0.2);
-      let y2 = Math.sin(-2 * w + ev.rng() * 0.2);
+      // One zero-phase sine for both samples; independent phases scaled the partial by up to 1/sin(w).
+      let y1 = Math.sin(-w);
+      let y2 = Math.sin(-2 * w);
       let ePrompt = (amps[k] * level * 0.72) / strings;
       let eLong = (amps[k] * level * 0.28) / strings;
       let damper = 1;

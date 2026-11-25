@@ -1,5 +1,5 @@
 // Level 1, Saturn Dusk Orbit: a heroic D-minor overture. Run from tools/agent-daw: node scores/compose-saturn-orbit.mjs
-import { clip, eq, line, loopProject, note, reverb, shift, steadyPiano, writeProject } from './lib.mjs';
+import { clip, eq, line, loopProject, note, reverb, shift, writeProject } from './lib.mjs';
 
 const SECTIONS = [
   { id: 'fanfare', startBar: 0, bars: 4, layer: 'base' },
@@ -231,7 +231,7 @@ function pad() {
   };
 }
 
-writeProject(await steadyPiano(loopProject({
+writeProject(loopProject({
   id: 'saturn-orbit',
   title: 'Saturn Dusk Orbit (Level 1 overture)',
   tonic: 'D',
@@ -241,4 +241,4 @@ writeProject(await steadyPiano(loopProject({
   compressor: { thresholdDb: -20, ratio: 2.5, attackMs: 25, releaseMs: 250 },
   tracks: [horns(), trumpets(), violins(), violas(), cellos(), basses(), piano(), guitar(), timpani(), percussion(), pad()],
 
-})));
+}));

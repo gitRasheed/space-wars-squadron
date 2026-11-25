@@ -21,12 +21,20 @@ Project
   import-notes <score.notes.json> <project.json>
 
 Sound
-  render <project.json> --out <file.wav> [--bit-depth 24] [--stems-dir dir] [--repeats 2] [--layers base,combat]
+  render <project.json> --out <file.wav> [--bit-depth 24] [--stems-dir dir] [--repeats 2] [--layers base,combat] [--tracks id1,id2]
+         --repeats N   loops only: --out X.wav keeps one pass and X_xN.wav beside it holds N; both paths
+                       are printed as "out" and "repeatedOut"
+         --tracks ids  render only these tracks, muted or not (alias --solo); the master still
+                       normalises the result to the target LUFS
+         The report lists each track's peak, LUFS and RMS dBFS before the master bus, and warns
+         (trackBalance) when a track sits over 16 LU below the loudest.
   critique <project.json> [--min 0.85]
   gate <file.wav> [--project p.json] [--category music|sfx|ui|ambience] [--png-dir dir] [--loop] [--bpm 120]
   analyse <file.wav | project.json>
   edit <op> --in <a.wav> [--in <b.wav>] --out <file> [--backend native|sox|rubberband|ffmpeg] [--<param> value ...]
        ops: trim-silence, fade, normalize, pitch, stretch, layer, export
+       export --codec opus|ogg|mp3|flac [--bitrate 96k]: encode through ffmpeg with bitexact flags,
+       so the same WAV gives the same bytes (defaults: opus 96k VBR, ogg 128k, mp3 192k)
   export-midi <project.json> --out <file.mid>
 
   mcp     stdio MCP server exposing the same 15 tools
@@ -112,7 +120,13 @@ function main(argv: readonly string[]): number {
   if (tool !== undefined) {
     if (first === undefined) throw new ToolError(`${cmd} needs a project path`);
     const args: Record<string, unknown> = { project: first, ...flagArgs(flags) };
-    if (cmd === 'render' && typeof args.layers === 'string') args.layers = args.layers.split(',');
+    if (cmd === 'render') {
+      // Ids and layer names stay strings, so `--tracks 1` is track "1", not the number 1.
+      for (const k of ['layers', 'tracks', 'solo']) {
+        const v = flags.get(k)?.at(-1);
+        if (v !== undefined) args[k] = v.split(',').map((x) => x.trim()).filter((x) => x !== '');
+      }
+    }
     return callTool(tool, args);
   }
   switch (cmd) {

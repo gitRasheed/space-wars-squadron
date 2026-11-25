@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { makeRng, midiToHz } from '../src/dsp.js';
+import { gainToDb, hashString, makeRng, midiToHz } from '../src/dsp.js';
 import { INSTRUMENT_MODELS } from '../src/instruments/index.js';
 import type { NoteEvent } from '../src/instruments/common.js';
 import { pluck, tubeAmp } from '../src/instruments/guitar.js';
@@ -40,6 +40,24 @@ test('piano partials sit at the stiff-string stretched frequencies, not the harm
   assert.ok(stretched - harmonic > 3, 'test note should be measurably inharmonic');
   const measured = peakHz(out.left, harmonic - 6, stretched + 6, 0, SR);
   assert.ok(Math.abs(measured - stretched) < 1.2, `partial ${n} at ${measured.toFixed(2)} Hz, expected ${stretched.toFixed(2)} (harmonic ${harmonic})`);
+});
+
+test('the same piano note plays at the same level whatever its seed', () => {
+  // Each note's seed comes from its position, so this is the same key struck at 50 places in a score.
+  let worst = { spread: 0, midi: 0, velocity: 0 };
+  for (const midi of [24, 36, 48, 60, 72, 84, 96]) {
+    for (const velocity of [0.4, 1]) {
+      const peaks = Array.from({ length: 50 }, (_, s) => {
+        const out = INSTRUMENT_MODELS.piano.render({ ...ev(midi, velocity, 0.25), rng: makeRng(hashString(`score/piano/${s}/${midi}`)) }, { pedal: false });
+        let peak = 0;
+        for (let i = 0; i < out.left.length; i += 1) peak = Math.max(peak, Math.abs(out.left[i]), Math.abs(out.right[i]));
+        return gainToDb(peak);
+      });
+      const spread = Math.max(...peaks) - Math.min(...peaks);
+      if (spread > worst.spread) worst = { spread, midi, velocity };
+    }
+  }
+  assert.ok(worst.spread < 0.5, `midi ${worst.midi} at velocity ${worst.velocity} varies by ${worst.spread.toFixed(2)} dB across seeds`);
 });
 
 test('Karplus-Strong guitar strings are in tune within 5 cents across the neck', () => {

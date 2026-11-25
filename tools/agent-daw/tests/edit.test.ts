@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
-import { hasBinary, runEdit } from '../src/edit.js';
+import { CODECS, hasBinary, runEdit } from '../src/edit.js';
 import { integratedLufs } from '../src/loudness.js';
 import { readWav, writeWav, type Audio } from '../src/wav.js';
 import { SR, peakHz, sine, tmpDir } from './helpers.js';
@@ -74,4 +75,19 @@ test('rubberband backend pitch-shifts when the binary is installed', { skip: !ha
 test('sox backend stretches when the binary is installed', { skip: !hasBinary('sox') }, () => {
   runEdit({ op: 'stretch', backend: 'sox', inputs: [file('s.wav')], out: file('sox.wav'), params: { ratio: 2 } });
   assert.ok(Math.abs(len(readWav(file('sox.wav'))) - 2) < 0.05);
+});
+
+test('ffmpeg export --codec encodes the same WAV to the same bytes every time', { skip: !hasBinary('ffmpeg') }, () => {
+  writeWav(file('codec-in.wav'), sine(440, 1.5, 0.3), 24);
+  const encode = (codec: string, name: string): Buffer => {
+    runEdit({ op: 'export', inputs: [file('codec-in.wav')], out: file(name), params: { codec } });
+    return fs.readFileSync(file(name));
+  };
+  for (const codec of CODECS) assert.deepEqual(encode(codec, `b.${codec}`), encode(codec, `a.${codec}`), `${codec} is not deterministic`);
+  const opus = encode('opus', 'c.ogg');
+  assert.equal(opus.subarray(0, 4).toString('latin1'), 'OggS');
+  assert.ok(opus.includes(Buffer.from('OpusHead')));
+  assert.ok(fs.readFileSync(file('a.flac')).subarray(0, 4).toString('latin1') === 'fLaC');
+  assert.throws(() => runEdit({ op: 'export', inputs: [file('codec-in.wav')], out: file('x.flac'), params: { codec: 'flac', bitrate: '96k' } }), /lossless/);
+  assert.throws(() => runEdit({ op: 'export', inputs: [file('codec-in.wav')], out: file('x.aac'), params: { codec: 'aac' } }), /codec must be one of/);
 });

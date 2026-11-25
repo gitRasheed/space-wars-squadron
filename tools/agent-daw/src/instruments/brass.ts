@@ -1,5 +1,5 @@
 import { SAMPLE_RATE, biquad, biquadStep, clamp, panGains, stereo, svfG, svfStep, centsRatio, type Biquad, type Stereo } from '../dsp.js';
-import { articulate, asrEnvelope, bendRatio, noise, num, sawStep, tailFrames, type Instrument, type NoteEvent, type Params } from './common.js';
+import { articulate, asrEnvelope, bendRatio, noise, num, presence, sawStep, tailFrames, type Instrument, type NoteEvent, type Params } from './common.js';
 
 interface BrassVoicing {
   readonly players: number;
@@ -50,6 +50,7 @@ function renderBrass(ev: NoteEvent, params: Params, voicing: BrassVoicing): Ster
   const shape = articulate(ev);
   const vel = clamp(shape.gain, 0, 1.25);
   const players = Math.max(1, Math.round(num(params, 'players', voicing.players)));
+  const bright = presence(params);
   const releaseS = voicing.releaseS * shape.releaseScale;
   const frames = tailFrames(shape.soundS, releaseS) + Math.round(0.03 * sr);
   const out = stereo(frames);
@@ -77,7 +78,7 @@ function renderBrass(ev: NoteEvent, params: Params, voicing: BrassVoicing): Ster
       const cents = centsOff + scoop * Math.exp(-t / 0.035) + vibDepth * Math.sin(2 * Math.PI * vibRate * t + vibPhase);
       const f = ev.freq * bendRatio(ev, t) * centsRatio(cents);
       const e = env[i];
-      if ((i & 15) === 0) g = svfG(clamp(f * (1 + voicing.brightness * vel * vel * Math.pow(e, 1.4)), 120, 12000));
+      if ((i & 15) === 0) g = svfG(clamp(f * (1 + voicing.brightness * vel * vel * Math.pow(e, 1.4)) * bright.cutoff, 120, 12000));
       const raw = svfStep(svf, sawStep(voice, f), g, 1 / 0.75);
       // Nonlinear propagation in the bore steepens loud wavefronts: add the slope, scaled by dynamics.
       const steep = (raw - prev) * (sr / (2 * Math.PI * f));
@@ -91,8 +92,8 @@ function renderBrass(ev: NoteEvent, params: Params, voicing: BrassVoicing): Ster
   const breath = biquad('bandpass', voicing.breathHz, 1.1);
   const lip = Math.round(0.07 * sr);
   const level = (0.2 * Math.pow(vel, 1.2)) / Math.sqrt(players);
-  const bellL = voicing.bell();
-  const bellR = voicing.bell();
+  const bellL = [...voicing.bell(), ...bright.shelf()];
+  const bellR = [...voicing.bell(), ...bright.shelf()];
   for (let i = 0; i < frames; i += 1) {
     const t = i / sr;
     const breathEnv = i < lip ? 0.07 * vel * Math.exp(-t / 0.025) : t < shape.soundS ? 0.006 * vel : 0;

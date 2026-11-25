@@ -65,55 +65,6 @@ export const clip = (id, notes) => ({ id, startBeat: 0, notes: [...notes].sort((
 export const reverb = (preset, mix, extra = {}) => ({ type: 'reverb', preset, mix, ...extra });
 export const eq = (lowDb, midDb, highDb, extra = {}) => ({ type: 'eq3', lowDb, midDb, highDb, ...extra });
 
-const CHORD_STEP = 1e-4;
-const SEED_STEP = 4e-6;
-const SEED_TRIES = 16;
-
-/**
- * Evens out the piano. The model seeds each note from its start beat, and that seed alone moves an
- * otherwise identical note by up to 12 dB. Each note is nudged by under 0.2 ms to the seed that
- * gives its lower-quartile level, so a line plays at the dynamics that were written.
- * Needs the tool built (`npm run build`), since it listens to the same model the renderer uses.
- */
-export async function steadyPiano(project) {
-  const dist = new URL('../dist/', import.meta.url);
-  const { INSTRUMENT_MODELS } = await import(new URL('instruments/index.js', dist));
-  const { hashString, makeRng } = await import(new URL('dsp.js', dist));
-  const secondsPerBeat = 60 / project.tempo.bpm;
-  const window = Math.round(0.35 * 48000);
-  const level = (seed, n) => {
-    const out = INSTRUMENT_MODELS.piano.render({
-      midi: n.midi, freq: 440 * 2 ** ((n.midi - 69) / 12), durationS: Math.min(0.25, n.durationBeats * secondsPerBeat),
-      velocity: n.velocity / 127, articulation: n.articulation, bendSemis: 0, slurred: false, rng: makeRng(seed),
-    }, { pedal: false });
-    let sum = 0;
-    const frames = Math.min(window, out.left.length);
-    for (let i = 0; i < frames; i += 1) sum += out.left[i] ** 2 + out.right[i] ** 2;
-    return sum / frames;
-  };
-  for (const track of project.tracks.filter((t) => t.instrument.type === 'piano')) {
-    // The renderer numbers notes in start order, then pitch order; chord tones keep that order by taking rising offsets.
-    const notes = track.clips.flatMap((c) => c.notes).sort((a, b) => a.startBeat - b.startBeat || a.midi - b.midi);
-    notes.forEach((n, idx) => {
-      const slot = notes.slice(0, idx).filter((other) => other.startBeat === n.startBeat).length;
-      n.nudge = slot * CHORD_STEP;
-    });
-    notes.forEach((n, idx) => {
-      const tries = Array.from({ length: SEED_TRIES }, (_, k) => {
-        const startBeat = Number((n.startBeat + n.nudge + k * SEED_STEP).toFixed(6));
-        return { startBeat, level: level(hashString(`${project.id}/${track.id}/${idx}/${n.midi}/${startBeat}`), n) };
-      }).sort((a, b) => a.level - b.level);
-      n.steady = tries[Math.floor(SEED_TRIES / 4)].startBeat;
-    });
-    for (const n of notes) {
-      n.startBeat = n.steady;
-      delete n.steady;
-      delete n.nudge;
-    }
-  }
-  return project;
-}
-
 export function writeProject(project) {
   const file = path.join(here, `${project.id}.daw.json`);
   // One note per line keeps the file reviewable without five lines per note.

@@ -159,7 +159,7 @@ export const TOOLS: readonly Tool[] = [
   },
   {
     name: 'set_instrument',
-    description: 'Replace a track instrument: {type, params}. Electric guitar params: drive, double, palmMute. SFX params: preset doppler|bell-impact|glass|shield-shatter|chime|riser|sub-drop.',
+    description: 'Replace a track instrument: {type, params}. Brass and strings params: players, brightness (default 0; 1 opens the top). Electric guitar params: drive, double, palmMute. SFX params: preset doppler|bell-impact|glass|shield-shatter|chime|riser|sub-drop.',
     inputSchema: schema({ ...trackArg, instrument: o('Instrument object or type name') }, ['project', 'trackId', 'instrument']),
     run: (a) => commit(a, setInstrument(load(a), reqStr(a, 'trackId'), a.instrument)),
   },
@@ -177,27 +177,30 @@ export const TOOLS: readonly Tool[] = [
   },
   {
     name: 'render',
-    description: 'Render the project to a 48 kHz stereo WAV through the loop-safe master bus. Optional per-layer stems and an N-times looped showcase file.',
-    inputSchema: schema({ ...projectArg, out: s('Output WAV path'), bitDepth: { type: 'number', enum: [16, 24, 32] }, stemsDir: s('Directory for per-layer stems'), repeats: n('Also write the loop tiled N times'), layers: { type: 'array', items: { type: 'string', enum: LAYERS } } }, ['project', 'out']),
+    description: 'Render the project to a 48 kHz stereo WAV through the loop-safe master bus. Reports per-track peak, LUFS and RMS before the master, plus trackBalance warnings for tracks over 16 LU under the loudest. Optional per-layer stems, a track subset (tracks or its alias solo), and an N-times looped file written beside out as <name>_xN.wav.',
+    inputSchema: schema({ ...projectArg, out: s('Output WAV path'), bitDepth: { type: 'number', enum: [16, 24, 32] }, stemsDir: s('Directory for per-layer stems'), repeats: n('Loops only: also write <out name>_xN.wav, the loop tiled N times; out keeps the single pass'), layers: { type: 'array', items: { type: 'string', enum: LAYERS } }, tracks: { type: 'array', items: { type: 'string' }, description: 'Render only these track ids, muted or not; the master still normalises to the target LUFS' }, solo: { type: 'array', items: { type: 'string' }, description: 'Alias of tracks' } }, ['project', 'out']),
     run: (a) => {
       const p = load(a);
       const bd = optNum(a, 'bitDepth');
       if (bd !== undefined && bd !== 16 && bd !== 24 && bd !== 32) throw new ToolError('bitDepth must be 16, 24 or 32');
       const layers = Array.isArray(a.layers) ? (a.layers as unknown[]).map(String) : undefined;
       if (layers?.some((l) => !(LAYERS as readonly string[]).includes(l))) throw new ToolError(`layers must be among ${LAYERS.join(', ')}`);
+      const picked = [a.tracks, a.solo].filter((v) => v !== undefined);
+      if (picked.some((v) => !Array.isArray(v))) throw new ToolError('tracks and solo must be arrays of track ids');
+      const trackIds = picked.length === 0 ? undefined : (picked as unknown[][]).flat().map(String);
       return {
         ok: true,
         data: renderToFiles(p, {
           out: reqStr(a, 'out'),
-          ...defined({ bitDepth: bd as 16 | 24 | 32 | undefined, stemsDir: optStr(a, 'stemsDir'), repeats: optNum(a, 'repeats'), layers: layers as Layer[] | undefined }),
+          ...defined({ bitDepth: bd as 16 | 24 | 32 | undefined, stemsDir: optStr(a, 'stemsDir'), repeats: optNum(a, 'repeats'), layers: layers as Layer[] | undefined, trackIds }),
         }),
       };
     },
   },
   {
     name: 'edit',
-    description: `Edit WAV files (the sfx_edit role): ${EDIT_OPS.join(', ')}. Backends: native (default), sox, rubberband (pitch/stretch), ffmpeg (export to other formats).`,
-    inputSchema: schema({ op: { type: 'string', enum: EDIT_OPS }, inputs: { type: 'array', items: { type: 'string' } }, out: s('Output path'), backend: { type: 'string', enum: ['native', 'sox', 'rubberband', 'ffmpeg'] }, bitDepth: { type: 'number', enum: [16, 24, 32] }, params: o('Op parameters, e.g. {semitones}, {ratio}, {lufs|category|peakDb}, {in, out}') }, ['op', 'inputs', 'out']),
+    description: `Edit WAV files (the sfx_edit role): ${EDIT_OPS.join(', ')}. Backends: native (default), sox, rubberband (pitch/stretch), ffmpeg (export to other formats). Export params codec opus|ogg|mp3|flac and bitrate (e.g. 96k) encode deterministically through ffmpeg.`,
+    inputSchema: schema({ op: { type: 'string', enum: EDIT_OPS }, inputs: { type: 'array', items: { type: 'string' } }, out: s('Output path'), backend: { type: 'string', enum: ['native', 'sox', 'rubberband', 'ffmpeg'] }, bitDepth: { type: 'number', enum: [16, 24, 32] }, params: o('Op parameters, e.g. {semitones}, {ratio}, {lufs|category|peakDb}, {in, out}, {codec, bitrate}') }, ['op', 'inputs', 'out']),
     run: (a) => {
       const op = reqStr(a, 'op');
       if (!(EDIT_OPS as readonly string[]).includes(op)) throw new ToolError(`op must be one of ${EDIT_OPS.join(', ')}`);

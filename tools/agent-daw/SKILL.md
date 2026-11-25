@@ -18,7 +18,7 @@ Run from `tools/agent-daw` after `npm ci && npm run build`. `DAW="node dist/cli.
    - voice low chords open (root and fifth below E3, third above);
    - keep harmony below the lead;
    - make one section clearly quieter than the climax.
-5. **Render.** `$DAW render cue.json --out out/cue.wav --repeats 2 --stems-dir out/stems`. The x2 file lets you hear the wrap.
+5. **Render.** `$DAW render cue.json --out out/cue.wav --repeats 2 --stems-dir out/stems`. On a loop, `--repeats 2` keeps one pass in `out/cue.wav` and writes the wrap to `out/cue_x2.wav` beside it, so you can hear the seam. The summary prints both as `out` and `repeatedOut`. Read `tracks` in the summary: each track has `peak`, `lufs` and `rmsDbfs` measured before the master, and a `trackBalance` warning names any track more than 16 LU under the loudest one. Peak alone hides this: in the trench score the drums peak 2.5 times higher than the guitar (0.85 against 0.34) yet sit 10 LU under it. To hear one part, add `--solo piano` (or `--tracks horns,violins`). That renders only those tracks, even muted ones, and the master still brings the result to the target LUFS.
 6. **Gate.** `$DAW gate out/cue.wav --project cue.json --png-dir out/gate`. Exit 0 means no findings. Open `gate_spectrogram.png` and `gate_waveform.png` and look:
    - a yellow band only below 150 Hz means a bottom-heavy mix (the `rolloff` and `dull` findings);
    - red waveform columns mean clipping;
@@ -30,6 +30,7 @@ Run from `tools/agent-daw` after `npm ci && npm run build`. `DAW="node dist/cli.
 - Set levels with track `gainDb`. The master applies one constant gain to reach the LUFS target, and the limiter only shaves peaks.
 - Timpani, taiko and contrabass pile up energy under 150 Hz quickly. Start them around -8 dB and the sub bass around -15 dB.
 - Put a hall `reverb` (mix 0.25-0.35) on orchestral tracks, a `plate` on piano and a `room` on guitars.
+- A mix that is too dark for the gate's 700 Hz `rolloff` floor needs more brass and string presence. Raise the section's `brightness` param (default 0, about 0.5-1 for a clear top, up to 2) instead of stacking EQ. The piano's own `brightness` (default 0.5) is a different control: it sets hammer hardness.
 - Electric guitar: `drive` 8-12, keep `double: true`, sit it about -12 dB under the orchestra, and play palm-muted staccato gallops on root plus fifth.
 - Automation in a loop must end on its start value.
 
@@ -43,6 +44,7 @@ $DAW edit stretch --in p.wav --out s.wav --ratio 1.25
 $DAW edit normalize --in s.wav --out n.wav --category sfx   # or --lufs -18, --peak-db -1
 $DAW edit layer --in a.wav --in b.wav --out l.wav --gains-db '[0,-6]' --offsets-s '[0,0.05]'
 $DAW gate n.wav --category sfx
+$DAW edit export --in loop.wav --out loop.ogg --codec opus --bitrate 96k   # also ogg, mp3, flac; same bytes every run
 ```
 
 ## MCP

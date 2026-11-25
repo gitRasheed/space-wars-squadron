@@ -12,6 +12,30 @@ export const EDIT_OPS = ['trim-silence', 'fade', 'normalize', 'pitch', 'stretch'
 export type EditOp = (typeof EDIT_OPS)[number];
 export type Backend = 'native' | 'sox' | 'rubberband' | 'ffmpeg';
 
+export const CODECS = ['opus', 'ogg', 'mp3', 'flac'] as const;
+export type Codec = (typeof CODECS)[number];
+
+// ffmpeg arguments per codec: muxer, encoder and the default bitrate (null for lossless).
+const CODEC_ARGS: Readonly<Record<Codec, { readonly format: string; readonly encoder: readonly string[]; readonly bitrate: string | null }>> = {
+  opus: { format: 'ogg', encoder: ['-c:a', 'libopus', '-vbr', 'on', '-application', 'audio'], bitrate: '96k' },
+  ogg: { format: 'ogg', encoder: ['-c:a', 'libvorbis'], bitrate: '128k' },
+  mp3: { format: 'mp3', encoder: ['-c:a', 'libmp3lame'], bitrate: '192k' },
+  flac: { format: 'flac', encoder: ['-c:a', 'flac'], bitrate: null },
+};
+
+// Bitexact flags and no copied metadata make the same input encode to the same bytes every time.
+export function codecArgs(codec: Codec, bitrate: unknown): string[] {
+  const c = CODEC_ARGS[codec];
+  let rate: string | null = c.bitrate;
+  if (bitrate !== undefined) {
+    if (c.bitrate === null) throw new Error(`${codec} is lossless and takes no bitrate`);
+    const text = String(bitrate).trim().toLowerCase();
+    if (!/^\d+k?$/.test(text)) throw new Error(`bitrate must look like 96k or 128, got "${String(bitrate)}"`);
+    rate = text.endsWith('k') ? text : `${text}k`;
+  }
+  return [...c.encoder, ...(rate !== null ? ['-b:a', rate] : []), '-map_metadata', '-1', '-fflags', '+bitexact', '-flags:a', '+bitexact', '-f', c.format];
+}
+
 export const CATEGORY_LUFS: Readonly<Record<Category, number>> = { music: -16, sfx: -18, ui: -22, ambience: -24 };
 
 export function hasBinary(bin: string): boolean {
@@ -238,7 +262,12 @@ function withTemp<T>(f: (dir: string) => T): T {
 
 export function runEdit(req: EditRequest): EditResult {
   const p = req.params ?? {};
-  const backend = req.backend ?? 'native';
+  const codec = p.codec;
+  if (codec !== undefined && !(CODECS as readonly unknown[]).includes(codec)) throw new Error(`codec must be one of ${CODECS.join(', ')}`);
+  if (codec !== undefined && req.op !== 'export') throw new Error('codec only applies to export');
+  if (p.bitrate !== undefined && codec === undefined) throw new Error('bitrate needs a codec');
+  const backend = req.backend ?? (codec !== undefined ? 'ffmpeg' : 'native');
+  if (codec !== undefined && backend !== 'ffmpeg') throw new Error('codec needs the ffmpeg backend');
   const bitDepth = req.bitDepth ?? 24;
   const notes: string[] = [];
   const input = req.inputs[0];
@@ -260,9 +289,9 @@ export function runEdit(req: EditRequest): EditResult {
         run('sox', [input, ...(req.op === 'export' ? ['-b', String(bitDepth)] : []), outTmp, ...effect]);
       } else {
         if (req.op !== 'export') throw new Error('the ffmpeg backend only exports; use rubberband or sox for pitch and stretch');
-        run('ffmpeg', ['-y', '-loglevel', 'error', '-i', input, outTmp]);
+        run('ffmpeg', ['-y', '-loglevel', 'error', '-i', input, ...(codec !== undefined ? codecArgs(codec as Codec, p.bitrate) : []), outTmp]);
       }
-      if (req.op === 'export') return { op: req.op, out: req.out, backend, durationS: 0, notes: [`encoded by ${backend}`] };
+      if (req.op === 'export') return { op: req.op, out: req.out, backend, durationS: 0, notes: [`encoded by ${backend}${codec !== undefined ? ` as ${String(codec)}` : ''}`] };
       return finish(readWav(outTmp));
     });
   }

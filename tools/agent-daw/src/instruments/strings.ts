@@ -1,5 +1,5 @@
 import { SAMPLE_RATE, biquad, biquadStep, clamp, panGains, stereo, svfG, svfStep, centsRatio, type Biquad, type Stereo } from '../dsp.js';
-import { articulate, asrEnvelope, bendRatio, noise, num, sawStep, tailFrames, type Instrument, type NoteEvent, type Params } from './common.js';
+import { articulate, asrEnvelope, bendRatio, noise, num, presence, sawStep, tailFrames, type Instrument, type NoteEvent, type Params } from './common.js';
 
 interface Section {
   readonly players: number;
@@ -43,6 +43,7 @@ function renderStrings(ev: NoteEvent, params: Params, section: Section): Stereo 
   const shape = articulate(ev);
   const vel = clamp(shape.gain, 0, 1.2);
   const players = Math.max(1, Math.round(num(params, 'players', section.players)));
+  const bright = presence(params);
   const staccato = ev.articulation === 'staccato';
   const attackS = (staccato ? 0.012 : ev.articulation === 'accent' || ev.articulation === 'sforzando' ? 0.03 : 0.09) * (staccato ? 1 : shape.attackScale);
   const releaseS = staccato ? 0.08 : 0.32 * shape.releaseScale;
@@ -67,7 +68,7 @@ function renderStrings(ev: NoteEvent, params: Params, section: Section): Stereo 
       const vib = vibDepth * clamp((t - 0.2) / 0.35, 0, 1) * Math.sin(2 * Math.PI * vibRate * t + vibPhase);
       const f = ev.freq * bendRatio(ev, t) * centsRatio(centsOff + vib);
       const e = env[i];
-      if ((i & 15) === 0) g = svfG(clamp(f * (2 + section.brightness * vel * (0.6 + 0.4 * e)), 300, 11000));
+      if ((i & 15) === 0) g = svfG(clamp(f * (2 + section.brightness * vel * (0.6 + 0.4 * e)) * bright.cutoff, 300, 11000));
       const v = svfStep(svf, sawStep(voice, f), g, 1 / 0.6) * e;
       left[i + onset] += v * pl;
       right[i + onset] += v * pr;
@@ -76,8 +77,8 @@ function renderStrings(ev: NoteEvent, params: Params, section: Section): Stereo 
 
   const bow = biquad('bandpass', section.bowHz, 0.9);
   const level = (0.17 * Math.pow(vel, 1.15)) / Math.sqrt(players);
-  const bodyL = section.body();
-  const bodyR = section.body();
+  const bodyL = [...section.body(), ...bright.shelf()];
+  const bodyR = [...section.body(), ...bright.shelf()];
   const out = stereo(frames);
   const scratch = Math.round((staccato ? 0.02 : 0.06) * sr);
   for (let i = 0; i < frames; i += 1) {

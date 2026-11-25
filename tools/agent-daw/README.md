@@ -56,6 +56,10 @@ All synthesis is procedural TypeScript, seeded per note, so renders are bit-iden
 | `piano` | Up to 32 stiff-string partials at `n·f0·√(1+Bn²)` with B rising toward the treble, 1-3 detuned strings per key, velocity-dependent hammer hardness and strike-position comb, two-stage decay, felt knock, damper release, pedal resonance, pitch-spread stereo |
 | `brass-horn`, `brass-trumpet` | Ensemble of 3-4 detuned band-limited saws with an onset scoop, delayed vibrato and loose onsets; a dynamic low-pass and a wave-steepening term make forte notes brassier; breath noise; bell formant filters (horn dark, trumpet bright) |
 | `strings-ensemble`, `strings-cello`, `strings-bass` | 3-6 detuned PolyBLEP saws per note with per-player vibrato, rosin onset noise, violin, cello or bass body resonances, articulation-shaped envelopes; seated violins left, cellos right, basses centre-right |
+
+Brass and strings take `brightness` (default 0, range -1 to 2). At 1 the section's low-pass opens by half and a 6 dB shelf lifts everything above 1.5 kHz. At 0 the output is sample-identical to a track without the param. The piano's `brightness` (default 0.5) is a separate control for hammer hardness.
+
+Each piano partial starts at zero phase, so a note's level depends only on pitch and velocity, not on its seed: the same key struck at 50 places in a score peaks within 0.5 dB.
 | `guitar-electric`, `guitar-acoustic` | Karplus-Strong with fractional-delay tuning (within 5 cents over three octaves), pick-position comb, damping filter, palm mute on staccato. Electric: double-tracked takes, then a biased tube stage and 4x12 cabinet on the summed track. Acoustic: wooden body resonances |
 | `timpani` | Tuned kettle-drum modes with a strike pitch glide and mallet noise |
 | `orchestral-perc` | GM-style map: 35/36 taiko, 41-50 toms, 38/40 snare, 39 hybrid trailer hit, 42/46 hats, 49/57 crash, 51 ride, 52/55 suspended-cymbal swell (swells over the note length) |
@@ -72,6 +76,12 @@ Loops are rendered so the wrap is inaudible:
 - Each track's effect chain runs over two loop periods and keeps the second, so reverb and delay tails wrap.
 - Chorus rates snap to whole cycles per loop.
 - The master bus (30 Hz DC-blocking high-pass, RMS bus compressor, constant gain to the LUFS target, lookahead limiter) runs on the loop padded with 2 s of wrapped audio at each end, then crops the exact loop frames back out. The limiter threshold steps down until the 4x-oversampled true peak sits under the ceiling.
+
+`render --repeats N --out X.wav` (loops only) writes `X.wav` once through and `X_xN.wav`, the loop tiled N times. The summary prints both as `out` and `repeatedOut`, and lists every file in `files`.
+
+`render --tracks a,b` (alias `--solo`) renders only those tracks, muted or not. An unknown id is an error that lists the valid ones. The master still normalises the result to the target LUFS.
+
+The render summary gives each track `peak`, `lufs` (integrated, BS.1770) and `rmsDbfs`, measured where the track enters the master bus. `warnings` holds a `trackBalance` line for each track more than 16 LU below the loudest one. The warning is advisory and never changes the exit code.
 
 `render --stems-dir` writes one WAV per layer. Each stem gets the master's high-pass and the bus compressor's per-frame gain curve (taken from the full mix), so the stems sum to the master before the limiter, to within 1e-9. The limiter is the only stage the sum lacks; it took 0 dB off the demo, whose stem sum gates identically to the master.
 
@@ -105,7 +115,7 @@ Categories `music` (default; -16 ± 2 LUFS or the project's target), `sfx`, `ui`
 
 ## Edit (`edit`)
 
-`trim-silence`, `fade`, `normalize` (LUFS, category or peak; constant gain, limiter only if the ceiling would break, `--loop true` for the loop-safe path), `pitch` (semitones; Lanczos resample plus WSOLA, or `--backend rubberband|sox`), `stretch` (`--ratio` = output/input duration), `layer` (several `--in`, `--gains-db`, `--offsets-s`), `export` (WAV natively; `--backend ffmpeg|sox` for other formats). The binaries are optional and only run when asked for.
+`trim-silence`, `fade`, `normalize` (LUFS, category or peak; constant gain, limiter only if the ceiling would break, `--loop true` for the loop-safe path), `pitch` (semitones; Lanczos resample plus WSOLA, or `--backend rubberband|sox`), `stretch` (`--ratio` = output/input duration), `layer` (several `--in`, `--gains-db`, `--offsets-s`), `export` (WAV natively; `--backend ffmpeg|sox` for other formats; `--codec opus|ogg|mp3|flac [--bitrate 96k]` encodes through ffmpeg with `-map_metadata -1 -fflags +bitexact`, so the same input gives the same bytes; defaults are Opus 96k VBR, Vorbis 128k and MP3 192k, and FLAC rejects a bitrate). The binaries are optional and only run when asked for.
 
 ## MCP server
 
