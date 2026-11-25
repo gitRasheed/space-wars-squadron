@@ -1,6 +1,6 @@
 import { FLIGHT_TUNING } from '../sim/flight';
 import { len, toLocalPoint } from '../sim/math';
-import type { SimEvent, WorldState } from '../sim/types';
+import type { SimEvent, Vec3, WorldState } from '../sim/types';
 import { BAKED_LOOP, loadBakedSoundtrack, type SoundtrackId } from './bakedSoundtrack';
 import { CUE_IDS, engineRunup, renderCue, type CueId } from './combatCues';
 import { combatLoopRenderer } from './combatScore';
@@ -247,7 +247,7 @@ export function createSynthAudio(options: SynthAudioOptions = {}): SynthAudio {
   }
 
   /** Which side of the cockpit a world point is on: -1 hard left to 1 hard right. */
-  function sideOf(world: WorldState, point: { readonly x: number; readonly y: number; readonly z: number }) {
+  function sideOf(world: WorldState, point: Vec3) {
     const local = toLocalPoint(world.player.position, world.player.orientation, point);
     return local.x / Math.max(1e-6, len(local));
   }
