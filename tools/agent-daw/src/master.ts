@@ -83,17 +83,18 @@ export function limit(buf: Stereo, thresholdDb: number, sr = SAMPLE_RATE, lookah
       deepest = Math.min(deepest, g);
     }
   }
-  return { out, deepestDb: -20 * Math.log10(deepest) };
+  return { out, deepestDb: deepest < 1 ? -20 * Math.log10(deepest) : 0 };
 }
 
 // DC-blocking HPF, RMS bus compressor, constant gain to the loudness target, then a true-peak-checked limiter.
 // For loops every stage runs on wrap-padded audio and the exact loop frames are cropped back out.
-export function masterBus(mix: Stereo, cfg: MasterConfig, loop: boolean, sr = SAMPLE_RATE): { readonly out: Stereo; readonly stats: MasterStats } {
+export function masterBus(mix: Stereo, cfg: MasterConfig, loop: boolean, sr = SAMPLE_RATE): { readonly out: Stereo; readonly gainCurve: Float64Array; readonly stats: MasterStats } {
   const n = mix.left.length;
   const pad = loop ? Math.min(n, Math.round(LOOP_PAD_S * sr)) : 0;
   const work = loop ? wrapPad(mix, pad) : { left: mix.left.slice(), right: mix.right.slice() };
   highpass(work, cfg.hpfHz, sr);
-  const compressorGrDb = cfg.compressor === null ? 0 : compress(work, { ...cfg.compressor, kneeDb: 6 }, sr);
+  const curve = new Float64Array(work.left.length).fill(1);
+  const compressorGrDb = cfg.compressor === null ? 0 : compress(work, { ...cfg.compressor, kneeDb: 6 }, sr, curve);
   const body = (b: Stereo): Stereo => (loop ? crop(b, pad, n) : b);
   const preLufs = integratedLufs([body(work).left, body(work).right], sr);
   let gainDb = preLufs === null ? 0 : cfg.targetLufs - preLufs;
@@ -114,8 +115,11 @@ export function masterBus(mix: Stereo, cfg: MasterConfig, loop: boolean, sr = SA
     if (tpOver > 0) thresholdDb -= tpOver + 0.05;
     gainDb += lufsErr;
   }
+  const gain = dbToGain(gainDb);
+  const gainCurve = (loop ? curve.slice(pad, pad + n) : curve).map((g) => g * gain);
   return {
     out: result.out,
+    gainCurve,
     stats: {
       preLufs,
       gainDb,
@@ -126,4 +130,18 @@ export function masterBus(mix: Stereo, cfg: MasterConfig, loop: boolean, sr = SA
       truePeakDbtp: tp,
     },
   };
+}
+
+// The linear part of the master (DC filter, compressor gain curve and make-up) applied to one stem.
+export function masterStem(stem: Stereo, gainCurve: Float64Array, hpfHz: number, loop: boolean, sr = SAMPLE_RATE): Stereo {
+  const n = stem.left.length;
+  const pad = loop ? Math.min(n, Math.round(LOOP_PAD_S * sr)) : 0;
+  const work = loop ? wrapPad(stem, pad) : { left: stem.left.slice(), right: stem.right.slice() };
+  highpass(work, hpfHz, sr);
+  const out = loop ? crop(work, pad, n) : work;
+  for (let i = 0; i < n; i += 1) {
+    out.left[i] *= gainCurve[i];
+    out.right[i] *= gainCurve[i];
+  }
+  return out;
 }

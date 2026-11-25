@@ -97,12 +97,21 @@ test('a polarity-inverted channel is caught as a phase problem', () => {
   assert.ok(codes(gateAudio(a, opts)).includes('phase'));
 });
 
-test('a loop cut mid-note (seam discontinuity) is caught', () => {
+test('a loop cut short is caught by its length, and the cut by the seam step', () => {
   const a = copy(clean);
-  const cut = Math.round(a.channels[0]?.length ?? 0) - 7000;
+  const cut = (a.channels[0]?.length ?? 0) - 7000;
   const cropped: Audio = { sampleRate: SR, channels: a.channels.map((c) => c.slice(0, cut)) };
   const r = gateAudio(cropped, opts);
+  assert.ok(codes(r).includes('loop_length'), JSON.stringify(r.seam));
   assert.ok(codes(r).includes('loop_seam'), JSON.stringify(r.seam));
+});
+
+test('a gain step at the wrap (what a limiter run without wrap padding does) is caught', () => {
+  const a = copy(clean);
+  const ramp = Math.round(0.05 * SR);
+  for (const ch of a.channels) for (let i = 0; i < SR / 4 + ramp; i += 1) ch[i] *= i < SR / 4 ? 0.3 : 0.3 + (0.7 * (i - SR / 4)) / ramp;
+  const r = gateAudio(a, opts);
+  assert.ok(codes(r).includes('loop_seam') || codes(r).includes('loop_level_jump'), JSON.stringify(r.seam));
 });
 
 test('too quiet and muffled audio is caught', () => {

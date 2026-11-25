@@ -1,7 +1,7 @@
 import { SAMPLE_RATE, addInto, clamp, dbToGain, hashString, makeRng, midiToHz, panGains, stereo, svfG, svfStep, type Stereo } from './dsp.js';
 import { applyFx, type FxContext } from './fx.js';
 import { INSTRUMENT_MODELS } from './instruments/index.js';
-import { highpass, masterBus, scale, type MasterStats } from './master.js';
+import { masterBus, masterStem, type MasterStats } from './master.js';
 import { expandTrackNotes, loopFrames, type AutomationLane, type Layer, type Project, type Track } from './project.js';
 
 export interface RenderOptions {
@@ -54,8 +54,15 @@ function renderDry(p: Project, t: Track, frames: number): { readonly buf: Stereo
   const model = INSTRUMENT_MODELS[t.instrument.type];
   const buf = stereo(frames);
   const notes = expandTrackNotes(p, t);
-  let lastEnd = -Infinity;
+  // A note slurs when an earlier-starting note is still sounding (or just ended) at its onset; chord tones do not.
+  let endBefore = -Infinity;
+  let groupStart = -Infinity;
+  let groupEnd = -Infinity;
   notes.forEach((n, idx) => {
+    if (n.startBeat > groupStart + 1e-6) {
+      endBefore = Math.max(endBefore, groupEnd);
+      groupStart = n.startBeat;
+    }
     const ev = {
       midi: n.midi,
       freq: midiToHz(n.midi),
@@ -63,10 +70,10 @@ function renderDry(p: Project, t: Track, frames: number): { readonly buf: Stereo
       velocity: n.velocity / 127,
       articulation: n.articulation,
       bendSemis: n.pitchBend ?? 0,
-      slurred: lastEnd > n.startBeat + 1e-6,
+      slurred: endBefore >= n.startBeat - 1e-6,
       rng: makeRng(hashString(`${p.id}/${t.id}/${idx}/${n.midi}/${n.startBeat}`)),
     };
-    lastEnd = Math.max(lastEnd, n.startBeat + n.durationBeats);
+    groupEnd = Math.max(groupEnd, n.startBeat + n.durationBeats);
     const voice = model.render(ev, t.instrument.params);
     const start = Math.round(n.startBeat * spb * sr);
     const [gl, gr] = n.pan === undefined ? [1, 1] : balance(n.pan);
@@ -151,11 +158,9 @@ export function renderProject(p: Project, opts: RenderOptions = {}): RenderResul
     stats.push({ id: t.id, notes, peak: Number(peak.toFixed(4)) });
   }
   const mastered = masterBus(mix, p.master, p.loop, p.sampleRate);
-  // Stems share the mix's DC filter and constant gain but skip the non-linear stages, so they sum to the pre-limiter mix.
-  for (const stem of Object.values(stems)) {
-    highpass(stem, p.master.hpfHz, p.sampleRate);
-    scale(stem, dbToGain(mastered.stats.gainDb));
-  }
+  // Stems get the same DC filter and the bus compressor's gain curve and make-up taken from the full mix,
+  // so they sum exactly to the pre-limiter master; only the last fraction of a dB of limiting is missing.
+  for (const [layer, stem] of Object.entries(stems) as [Layer, Stereo][]) stems[layer] = masterStem(stem, mastered.gainCurve, p.master.hpfHz, p.loop, p.sampleRate);
   const out = p.loop ? mastered.out : trimTail(mastered.out, frames - Math.round((opts.tailS ?? 3) * p.sampleRate), p.sampleRate);
   return { mix: out, stems, frames: out.left.length, loop: p.loop, master: mastered.stats, tracks: stats };
 }

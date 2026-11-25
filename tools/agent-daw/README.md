@@ -40,7 +40,7 @@ Exit codes: 0 pass, 1 a check failed (invalid project, gate findings, critic bel
 }
 ```
 
-- Notes take `midi` (or `pitch`), `startBeat` relative to the clip, `durationBeats`, `velocity` 1-127, `articulation` (`normal`, `legato`, `staccato`, `accent`, `sforzando`), and optional `pan` and `pitchBend` (semitones, a glide across the note; guitars and drums ignore it).
+- Notes take `midi` (or `pitch`), `startBeat` relative to the clip, `durationBeats`, `velocity` 1-127, `articulation` (`normal`, `legato`, `staccato`, `accent`, `sforzando`), and optional `pan` and `pitchBend` (semitones, a glide across the note; brass, strings and synths honour it, while piano, guitars, timpani, percussion and SFX ignore it).
 - Clips either carry notes or point at a `pattern` with `repeat`, `transpose` and `velocityScale`.
 - `role` (`lead`, `counter`, `harmony`, `bass`, `percussion`, `pad`, `fx`) tells the critic what each track does. Each instrument has a default.
 - `layer` (`base`, `tension`, `combat`, `climax`) groups tracks into adaptive stems. Keep the hook in `base`.
@@ -73,7 +73,7 @@ Loops are rendered so the wrap is inaudible:
 - Chorus rates snap to whole cycles per loop.
 - The master bus (30 Hz DC-blocking high-pass, RMS bus compressor, constant gain to the LUFS target, lookahead limiter) runs on the loop padded with 2 s of wrapped audio at each end, then crops the exact loop frames back out. The limiter threshold steps down until the 4x-oversampled true peak sits under the ceiling.
 
-`render --stems-dir` writes one WAV per layer with the master's high-pass and gain but none of its non-linear stages, so the stems sum to the pre-limiter mix.
+`render --stems-dir` writes one WAV per layer. Each stem gets the master's high-pass and the bus compressor's per-frame gain curve (taken from the full mix), so the stems sum to the master before the limiter, to within 1e-9. The limiter is the only stage the sum lacks; it took 0 dB off the demo, whose stem sum gates identically to the master.
 
 ## Symbolic critic (`critique`, MCP `analyse` with `project`)
 
@@ -94,9 +94,10 @@ Every weak subscore comes with advice the composing agent can act on, for exampl
 Measures the written file (after PCM quantisation and dither), not the float buffer:
 
 - BS.1770-4 integrated, momentary and short-term loudness; 4x-oversampled true peak
-- loop seam: the wrap's sample prediction step and level jump against the roughest bar line in the file
+- loop length: with a known tempo, a loop that is not a whole number of bars is reported as cut
+- loop seam: the wrap's sample step (first and second differences over their local median) against the 75th percentile of bar-line steps, plus the level jump against the largest bar-line jump
 - DC offset, full-scale samples, impulse clicks (onsets that repeat at a pitch period are not clicks)
-- 50/60 Hz hum: a 16 s Hann window resolves 0.25 Hz, so a G1 or B1 bass note does not trip it. A tempo-locked drum pattern puts spectral lines on every multiple of the beat rate (50 Hz is the 25th at 120 BPM), so when the tempo is known the line is judged against its neighbours on that comb
+- 50/60 Hz hum: a 16 s Hann window resolves 0.25 Hz, so a G1 or B1 bass note does not trip it. A tempo-locked drum pattern puts spectral lines on every multiple of the beat rate (50 Hz is the 25th at 120 BPM), so when the tempo is known the line is judged against its neighbours on that comb. Known false positive: a timpani tuned to G1 (below its real range) sweeps through 50 Hz on every strike and trips the check
 - silent channel, stereo correlation and balance, spectral centroid and 85%/95% rolloff
 - labelled waveform (bar lines, clipping in red) and log-frequency spectrogram PNGs
 
@@ -121,6 +122,7 @@ Categories `music` (default; -16 ± 2 LUFS or the project's target), `sfx`, `ui`
 ## Limits
 
 - Only 48 kHz projects.
-- Synthesis is modelled, not sampled. The instruments read as orchestral and expressive but will not pass for a recorded section.
-- The critic is a heuristic for catching structural weaknesses. A high score does not mean the music is good; listen to it.
-- A full 16-bar, 13-track render takes about 20-30 s of CPU.
+- Synthesis is modelled and uses no samples. Nobody has listened to these instruments against a recorded section yet.
+- The critic is a heuristic for catching structural weaknesses. It works as a floor: the demo scores 1.0 on four of five subscores, so it does not rank good pieces against each other. A high score does not mean the music is good; listen to it.
+- The gate's spectral bands (for music, centroid 250-5000 Hz and 85% rolloff 700-13000 Hz) are not calibrated against reference recordings. Orchestral mixes heavy in timpani, taiko and contrabass land near the 700 Hz floor.
+- A full 16-bar, 13-track render takes about 21 s of CPU.

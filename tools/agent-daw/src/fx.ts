@@ -139,8 +139,8 @@ export interface CompressorSettings {
   readonly kneeDb?: number;
 }
 
-// Stereo-linked RMS compressor with a soft knee; returns the deepest gain reduction in dB.
-export function compress(buf: Stereo, c: CompressorSettings, sr = SAMPLE_RATE): number {
+// Stereo-linked RMS compressor with a soft knee; returns the deepest gain reduction in dB and, on request, the gain applied per frame.
+export function compress(buf: Stereo, c: CompressorSettings, sr = SAMPLE_RATE, gainOut?: Float64Array): number {
   const knee = c.kneeDb ?? 6;
   const rmsCoeff = Math.exp(-1 / (0.01 * sr));
   const att = Math.exp(-1 / ((c.attackMs / 1000) * sr));
@@ -161,6 +161,7 @@ export function compress(buf: Stereo, c: CompressorSettings, sr = SAMPLE_RATE): 
     grDb = target > grDb ? att * grDb + (1 - att) * target : rel * grDb + (1 - rel) * target;
     deepest = Math.max(deepest, grDb);
     const g = dbToGain(-grDb) * makeup;
+    if (gainOut !== undefined) gainOut[i] = g;
     buf.left[i] = l * g;
     buf.right[i] = r * g;
   }

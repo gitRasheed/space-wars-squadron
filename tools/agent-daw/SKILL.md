@@ -22,7 +22,7 @@ Run from `tools/agent-daw` after `npm ci && npm run build`. `DAW="node dist/cli.
 6. **Gate.** `$DAW gate out/cue.wav --project cue.json --png-dir out/gate`. Exit 0 means no findings. Open `gate_spectrogram.png` and `gate_waveform.png` and look:
    - a yellow band only below 150 Hz means a bottom-heavy mix (the `rolloff` and `dull` findings);
    - red waveform columns mean clipping;
-   - a step at the right edge means a bad seam.
+   - a step at the right edge means a bad seam, and a `loop_length` finding means the file is not a whole number of bars.
 7. **Revise** until critic ≥ 0.85 and the gate is clean, then get a human listen. Passing both gates is not the same as sounding good.
 
 ## Mixing rules that keep the gate green

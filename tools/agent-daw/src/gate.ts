@@ -63,7 +63,9 @@ export interface Finding {
 }
 
 export interface SeamMetrics {
+  readonly bars: number | null;
   readonly wrapStep: number;
+  readonly typicalBarStep: number;
   readonly maxBarStep: number;
   readonly wrapJumpDb: number;
   readonly maxBarJumpDb: number;
@@ -310,25 +312,34 @@ function levelJumpDb(buf: Float64Array, at: number, sr: number): number {
   return Math.abs(10 * Math.log10((a + 1e-12) / (b + 1e-12)));
 }
 
-// The loop wrap must look like any other bar line: compared against the roughest bar line in the file.
+// The loop wrap must look like an ordinary bar line. The reference is the 75th percentile of bar-line steps,
+// because downbeat hits make the roughest bar line a poor yardstick.
 function measureSeam(channels: readonly Float64Array[], sr: number, barFrames: number | null, level: number): SeamMetrics {
   let wrapStep = 0;
-  let maxBarStep = 0;
   let wrapJumpDb = 0;
   let maxBarJumpDb = 0;
+  const barSteps: number[] = [];
+  const n = channels[0]?.length ?? 0;
   for (const ch of channels) {
-    const n = ch.length;
     wrapStep = Math.max(wrapStep, boundaryStep(ch, 0, sr, level));
     wrapJumpDb = Math.max(wrapJumpDb, levelJumpDb(ch, 0, sr));
     if (barFrames !== null && barFrames > 0) {
       for (let b = barFrames; b < n - 2; b += barFrames) {
         const at = Math.round(b);
-        maxBarStep = Math.max(maxBarStep, boundaryStep(ch, at, sr, level));
+        barSteps.push(boundaryStep(ch, at, sr, level));
         maxBarJumpDb = Math.max(maxBarJumpDb, levelJumpDb(ch, at, sr));
       }
     }
   }
-  return { wrapStep: round(wrapStep), maxBarStep: round(maxBarStep), wrapJumpDb: round(wrapJumpDb, 2), maxBarJumpDb: round(maxBarJumpDb, 2) };
+  const steps = Float64Array.from(barSteps);
+  return {
+    bars: barFrames !== null && barFrames > 0 ? round(n / barFrames, 4) : null,
+    wrapStep: round(wrapStep),
+    typicalBarStep: round(percentile(steps, 0.75)),
+    maxBarStep: round(steps.length > 0 ? Math.max(...steps) : 0),
+    wrapJumpDb: round(wrapJumpDb, 2),
+    maxBarJumpDb: round(maxBarJumpDb, 2),
+  };
 }
 
 export function gateAudio(audio: Audio, o: GateOptions = {}): GateReport {
@@ -425,8 +436,10 @@ export function gateAudio(audio: Audio, o: GateOptions = {}): GateReport {
   if (o.loop === true) {
     const barFrames = o.bpm !== undefined ? ((o.beatsPerBar ?? 4) * 60 * sr) / o.bpm : null;
     seam = measureSeam(chans, sr, barFrames, level);
-    const limit = Math.max(th.maxSeamStep, th.seamVsBarRatio * seam.maxBarStep);
-    if (seam.wrapStep > limit) add({ code: 'loop_seam', message: `loop wrap step ${seam.wrapStep} exceeds ${round(limit, 2)} (roughest bar line ${seam.maxBarStep})` });
+    if (seam.bars !== null && Math.abs(seam.bars - Math.round(seam.bars)) * (barFrames ?? 0) > 0.001 * sr)
+      add({ code: 'loop_length', message: `loop is ${seam.bars} bars long at ${String(o.bpm)} BPM; a loop must be a whole number of bars` });
+    const limit = Math.max(th.maxSeamStep, th.seamVsBarRatio * seam.typicalBarStep);
+    if (seam.wrapStep > limit) add({ code: 'loop_seam', message: `loop wrap step ${seam.wrapStep} exceeds ${round(limit, 2)} (typical bar line ${seam.typicalBarStep})` });
     const jumpLimit = Math.max(6, seam.maxBarJumpDb + 3);
     if (seam.wrapJumpDb > jumpLimit) add({ code: 'loop_level_jump', message: `loop wrap level jump ${seam.wrapJumpDb} dB exceeds ${round(jumpLimit, 2)} dB` });
   }

@@ -6,8 +6,8 @@ import { gateAudio } from '../src/gate.js';
 import { measureTruePeak } from '../src/loudness.js';
 import { limit, masterBus } from '../src/master.js';
 import { parseProject, type FxConfig } from '../src/project.js';
-import { renderProject } from '../src/render.js';
-import { SR, centroid, project, rmsOf, sine, track } from './helpers.js';
+import { renderProject, renderTrack } from '../src/render.js';
+import { SR, centroid, peakHz, project, rmsOf, sine, track } from './helpers.js';
 
 const ctx: FxContext = { sampleRate: SR, secondsPerBeat: 0.5, loopFrames: null };
 
@@ -153,3 +153,65 @@ test('the master bus on a seamless loop leaves the wrap seamless (compressor and
   const seam = gateAudio({ sampleRate: SR, channels: [out.left, out.right] }, { loop: true, bpm: 120 }).seam;
   assert.ok(seam !== null && seam.wrapStep < 3 && seam.wrapJumpDb < 0.5, JSON.stringify(seam));
 });
+
+test('layer stems sum to the master when the limiter is idle', () => {
+  const p = project({
+    bars: 2,
+    master: { targetLufs: -26, ceilingDbtp: -1, compressor: { thresholdDb: -40, ratio: 3, attackMs: 10, releaseMs: 200 } },
+    tracks: [
+      track('a', 'strings-ensemble', [{ midi: 62, startBeat: 0, durationBeats: 8, velocity: 100 }], { layer: 'base' }),
+      track('b', 'brass-trumpet', [{ midi: 74, startBeat: 2, durationBeats: 4, velocity: 120 }], { layer: 'combat' }),
+    ],
+  });
+  const r = renderProject(p);
+  assert.equal(r.master.limiterGrDb, 0);
+  assert.ok(r.master.compressorGrDb > 3, 'the compressor must be working for this test to mean anything');
+  let maxDiff = 0;
+  for (let i = 0; i < r.frames; i += 1) {
+    const sum = (r.stems.base?.left[i] ?? 0) + (r.stems.combat?.left[i] ?? 0);
+    maxDiff = Math.max(maxDiff, Math.abs(sum - r.mix.left[i]));
+  }
+  assert.ok(maxDiff < 1e-9, `stems differ from the mix by ${maxDiff}`);
+});
+
+test('chorus modulates the signal and its loop-snapped LFO keeps a looped tone seamless', () => {
+  const s = sine(440, 2, 0.4);
+  const b = { left: s.channels[0] ?? new Float64Array(0), right: s.channels[1] ?? new Float64Array(0) };
+  const p = project({ bars: 1, tracks: [track('pad', 'synth-pad', [{ midi: 57, startBeat: 0, durationBeats: 4, velocity: 90 }], { fx: [{ type: 'chorus', rateHz: 0.7, depthMs: 4, mix: 0.5 }] })] });
+  applyFx(b, fx({ type: 'chorus', rateHz: 0.7, depthMs: 4, mix: 0.5 }), ctx);
+  let diffLR = 0;
+  for (let i = SR / 2; i < SR; i += 1) diffLR = Math.max(diffLR, Math.abs(b.left[i] - b.right[i]));
+  assert.ok(diffLR > 0.01, 'quadrature LFOs should make left and right differ');
+  const r = renderProject(p);
+  const seam = gateAudio({ sampleRate: SR, channels: [r.mix.left, r.mix.right] }, { loop: true, bpm: 120 }).seam;
+  assert.ok(seam !== null && seam.wrapStep < 6, JSON.stringify(seam));
+});
+
+test('volume automation follows its points in dB', () => {
+  const notes = [{ midi: 60, startBeat: 0, durationBeats: 8, velocity: 100 }];
+  const flat = project({ bars: 2, master: { compressor: null }, tracks: [track('p', 'synth-pad', notes, { instrument: { type: 'synth-pad', params: { attack: 0.01 } } })] });
+  const ducked = project({ bars: 2, master: { compressor: null }, tracks: [track('p', 'synth-pad', notes, { instrument: { type: 'synth-pad', params: { attack: 0.01 } }, automation: [{ param: 'volume', points: [{ beat: 0, value: 0 }, { beat: 3, value: 0 }, { beat: 3.01, value: -12 }, { beat: 5, value: -12 }, { beat: 5.01, value: 0 }] }] })] });
+  const db = (x: number, y: number): number => 20 * Math.log10(x / y);
+  const quiet = rmsOf(renderTrackAudio(ducked, 0), 3.5 * SR / 2, 4.5 * SR / 2);
+  const loud = rmsOf(renderTrackAudio(flat, 0), 3.5 * SR / 2, 4.5 * SR / 2);
+  assert.ok(Math.abs(db(quiet, loud) + 12) < 0.5, `${db(quiet, loud)} dB`);
+});
+
+test('per-note pan and pitch bend reach the audio', () => {
+  const p = project({ bars: 1, loop: false, kind: 'cue', tracks: [track('s', 'synth-bass', [{ midi: 45, startBeat: 0, durationBeats: 2, velocity: 100, pan: -1, pitchBend: 12 }], { pan: 0 })] });
+  const audio = renderTrackAudioStereo(p, 0);
+  assert.ok(rmsOf(audio.left) > 20 * rmsOf(audio.right), 'hard-left note');
+  const early = peakHz(audio.left, 90, 260, Math.round(0.02 * SR), Math.round(0.15 * SR));
+  const late = peakHz(audio.left, 150, 260, Math.round(0.8 * SR), Math.round(0.15 * SR));
+  assert.ok(Math.abs(early - 110) < 12 && late > 190, `bend ${early.toFixed(1)} -> ${late.toFixed(1)} Hz`);
+});
+
+function renderTrackAudioStereo(p: ReturnType<typeof project>, idx: number): { left: Float64Array; right: Float64Array } {
+  const t = p.tracks[idx];
+  if (t === undefined) throw new Error('no track');
+  return renderTrack(p, t, 1).audio;
+}
+
+function renderTrackAudio(p: ReturnType<typeof project>, idx: number): Float64Array {
+  return renderTrackAudioStereo(p, idx).left;
+}
