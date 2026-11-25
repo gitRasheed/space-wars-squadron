@@ -421,7 +421,7 @@ export function stepWorld(
     asteroids: combatStep.asteroids,
     projectiles: battle === null ? combatStep.projectiles : [...combatStep.projectiles, ...battle.spawned],
     explosions: combatStep.explosions,
-    radio: battle?.radio ?? combatStep.radio,
+    radio: battle === null ? combatStep.radio : battle.radio,
     enemiesDestroyed,
     subsystemsDestroyed,
     planetary: battle?.planetary ?? null,

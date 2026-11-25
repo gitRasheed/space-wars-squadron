@@ -264,7 +264,7 @@ async function run() {
       canyonGlSignal.nonBlackRatio >= 0.15 && canyonGlSignal.uniqueColors >= 24,
       `Planetary 3D canvas lacks visual signal (${JSON.stringify(canyonGlSignal)})`,
     );
-    const flakSnap = await waitForTelemetry(page, (snap) => snap.flakBursts > 0, 'flak bursting around the player', null, 60_000);
+    const flakSnap = await waitForTelemetry(page, (snap) => snap.flakBursts > 0, 'flak bursting around the player', null, 180_000);
     await page.screenshot({ path: path.join(OUT_DIR, 'planetary-02-flak.png') });
 
     // 7. Stage 2 boot: the air wave dives through the cloud deck over the canyon.
@@ -277,7 +277,7 @@ async function run() {
       (snap) => snap.phase === 'active' && snap.enemiesRemaining === 4 && snap.enemyInViewRange !== null && snap.enemyInViewRange < 600,
       'air wave closing on the player',
       null,
-      60_000,
+      180_000,
     );
     await page.screenshot({ path: path.join(OUT_DIR, 'planetary-03-air-wave.png') });
 

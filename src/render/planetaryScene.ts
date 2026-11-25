@@ -315,6 +315,14 @@ function buildGroundRig(kind: GroundTargetKind): GroundRig {
   return { root, intact, wreck, turret, legs, charge, shield };
 }
 
+/** Intact ground target with no wreck or shield dome, for turntables. */
+export function buildGroundTargetMesh(kind: GroundTargetKind): THREE.Group {
+  const rig = buildGroundRig(kind);
+  rig.root.remove(rig.wreck);
+  if (rig.shield !== null) rig.root.remove(rig.shield.mesh);
+  return rig.root;
+}
+
 function friendlyMats(): { readonly hull: THREE.Material; readonly trim: THREE.Material; readonly light: THREE.Material } {
   return {
     hull: celMat(SUNSET_PALETTE.friendlyHull, { rimColor: RIM_PALETTE.friendly, rimStrength: 0.22 }),
@@ -406,6 +414,7 @@ export function createPlanetaryScene(): PlanetaryScene {
 
   function sync(planetary: PlanetaryState, playerPosition: Vec3, tick: number): void {
     const byId = new Map(planetary.groundTargets.map((t) => [t.id, t]));
+    let beamShown = false;
     for (const target of planetary.groundTargets) {
       const rig = rigs.get(target.id);
       if (rig === undefined) continue;
@@ -435,8 +444,8 @@ export function createPlanetaryScene(): PlanetaryScene {
         rig.shield.mesh.visible = shielded;
         rig.shield.flash.value = 0.32 + target.shieldHitFlash * 0.68;
         rig.shield.mesh.rotation.y = tick * 0.02;
-        beam.visible = shielded;
         if (shielded) {
+          beamShown = true;
           const positions = beamGeo.getAttribute('position') as THREE.BufferAttribute;
           positions.setXYZ(0, relay.position.x, relay.position.y + 6.5, relay.position.z);
           positions.setXYZ(1, target.position.x, target.position.y + 10, target.position.z);
@@ -444,7 +453,7 @@ export function createPlanetaryScene(): PlanetaryScene {
         }
       }
     }
-    if (!(rigs.get('siege-gun')?.intact.visible ?? false)) beam.visible = false;
+    beam.visible = beamShown;
 
     convoy.forEach((tank, i) => {
       const slot = CONVOY_SLOTS[i];

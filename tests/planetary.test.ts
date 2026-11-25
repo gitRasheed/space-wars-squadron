@@ -236,11 +236,24 @@ describe('planetary ground battle', () => {
   it('marches the walkers down the road toward the outpost', () => {
     const world = planetaryWorld();
     const before = planetaryOf(world).groundTargets.filter((t) => t.kind === 'walker');
-    const after = planetaryOf(step(world, 120).world).groundTargets.filter((t) => t.kind === 'walker');
+    const after = planetaryOf(step(world, 240).world).groundTargets.filter((t) => t.kind === 'walker');
     before.forEach((walker, i) => {
       const moved = after[i];
       expect(moved?.position.z ?? 0).toBeGreaterThan(walker.position.z + 10);
     });
+  });
+
+  it('gives an untouched outpost three to five minutes before the siege overruns it', () => {
+    let world = planetaryWorld();
+    let fellAt: number | null = null;
+    for (let tick = 0; tick < 60 * 300 && fellAt === null; tick += 1) {
+      // Park the player out of flak reach so only the ground war runs.
+      world = stepWorld({ ...world, player: { ...world.player, position: vec3(0, 30, 1500), hull: world.player.maxHull } }, NEUTRAL_INPUT, FIXED_DT);
+      if (world.phase.kind === 'failed') fellAt = tick / 60;
+    }
+    expect(world.phase.kind === 'failed' && world.phase.reason).toBe('FORWARD OUTPOST OVERRUN');
+    expect(fellAt).toBeGreaterThan(180);
+    expect(fellAt).toBeLessThan(300);
   });
 
   it('survives 60 seconds of randomized flight over the canyon with finite state and no ship inside rock', () => {
@@ -249,6 +262,7 @@ describe('planetary ground battle', () => {
     let sawAirWave = false;
     const finite = (v: Vec3): boolean => Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z);
     for (let tick = 0; tick < 3600; tick += 1) {
+      const before = new Map([...world.enemies.map((e) => [e.id, e.position] as const), ['wingmate', world.wingmate.position] as const]);
       const r1 = nextRandom(seed);
       const r2 = nextRandom(r1.nextState);
       const r3 = nextRandom(r2.nextState);
@@ -274,6 +288,11 @@ describe('planetary ground battle', () => {
       }
       const planetary = planetaryOf(world);
       sawAirWave ||= planetary.stage.kind === 'air_superiority';
+      // No NPC may teleport over a ledge: the fastest one covers about 2.2 m per tick.
+      for (const [id, pos] of [...world.enemies.map((e) => [e.id, e.position] as const), ['wingmate', world.wingmate.position] as const]) {
+        const prev = before.get(id);
+        if (prev !== undefined && world.tick > 1) expect(len(sub(pos, prev))).toBeLessThan(5);
+      }
       expect(finite(world.player.position) && finite(world.player.velocity)).toBe(true);
       expect(insideAnyTerrace(world.player.position)).toBe(false);
       expect(world.player.position.y).toBeGreaterThan(0);

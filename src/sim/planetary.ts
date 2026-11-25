@@ -99,8 +99,11 @@ export interface TerrainClearance {
 }
 
 /** Pushes a point out of the floor and terraces along the shallowest axis and bounces its velocity off that face. */
-export function resolveTerrainClearance(position: Vec3, velocity: Vec3): TerrainClearance {
-  const margin = PLANETARY_TUNING.terrainClearance;
+export function resolveTerrainClearance(
+  position: Vec3,
+  velocity: Vec3,
+  margin: number = PLANETARY_TUNING.terrainClearance,
+): TerrainClearance {
   let pos = position;
   let vel = velocity;
   let impactSpeed = 0;
@@ -311,10 +314,11 @@ function stepGroundTarget(
   }
 }
 
+// Same push-out as the player with a wider margin, so an NPC slides along a cliff instead of popping onto the ledge.
 function keepAboveGround<T extends { readonly position: Vec3; readonly velocity: Vec3 }>(ship: T): T {
-  const floor = terrainHeightAt(ship.position.x, ship.position.z) + PLANETARY_TUNING.npcMinAltitude;
-  if (ship.position.y >= floor) return ship;
-  return { ...ship, position: { ...ship.position, y: floor }, velocity: { ...ship.velocity, y: Math.max(ship.velocity.y, 0) } };
+  const clearance = resolveTerrainClearance(ship.position, ship.velocity, PLANETARY_TUNING.npcMinAltitude);
+  if (clearance.position === ship.position) return ship;
+  return { ...ship, position: clearance.position, velocity: clearance.velocity };
 }
 
 export interface GroundBattleInput {

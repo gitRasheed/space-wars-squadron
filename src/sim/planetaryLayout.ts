@@ -172,7 +172,7 @@ export const FORWARD_OUTPOST = {
   name: 'FWD OUTPOST GRIT',
   position: vec3(0, 12, 700),
   halfExtents: vec3(44, 12, 30),
-  hull: 600,
+  hull: 800,
 } as const;
 
 /** Friendly armor parked ahead of the outpost; it rolls forward as the ground targets fall. */
@@ -209,14 +209,15 @@ export const PLANETARY_TUNING = {
   flakLeadAbove: [4, 18],
   flakBurstRadius: 26,
   flakBurstDamage: 18,
-  walkerSpeed: 9,
+  // Paced so an untouched outpost falls in about four minutes: the siege gun chips from the start, the walkers finish it.
+  walkerSpeed: 5,
   walkerStopDistance: 170,
   walkerFireRange: 520,
-  walkerFireInterval: 1.6,
-  walkerBoltDamage: 9,
-  artilleryInterval: 6.5,
+  walkerFireInterval: 2,
+  walkerBoltDamage: 6,
+  artilleryInterval: 9,
   artilleryShellSpeed: 320,
-  artilleryDamage: 26,
+  artilleryDamage: 18,
   /** Destroyed ground targets needed before the air wave scrambles. */
   airWaveThreshold: Math.ceil(GROUND_TARGET_PLACEMENTS.length / 2),
 } as const;
