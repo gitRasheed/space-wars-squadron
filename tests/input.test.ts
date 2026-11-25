@@ -83,6 +83,10 @@ describe('input deadzone and channel merging', () => {
         fakeCanvas as unknown as HTMLCanvasElement,
         () => false,
       );
+      // Number keys pick a mission once per press.
+      fakeWindow.emit('keydown', { code: 'Digit2', repeat: false, preventDefault: () => undefined });
+      expect(channel.sample().selectLevel).toBe('trench');
+      expect(channel.sample().selectLevel).toBeNull();
       fakeWindow.emit('keydown', { code: 'KeyE', repeat: false, preventDefault: () => undefined });
       fakeWindow.emit('keydown', { code: 'KeyM', repeat: false, preventDefault: () => undefined });
       fakeWindow.emit('blur', {});

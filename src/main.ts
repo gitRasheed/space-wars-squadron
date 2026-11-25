@@ -3,13 +3,17 @@ import { createInputChannel } from './input/keyboardMouse';
 import { createCockpitHud } from './render/cockpitHud';
 import { createSceneRenderer } from './render/sceneRenderer';
 import { len } from './sim/math';
-import { DEFAULT_SORTIE_SEED, FIXED_DT, type WorldState } from './sim/types';
-import { createInitialWorld, stepFrame } from './sim/world';
+import { DEFAULT_SORTIE_SEED, FIXED_DT, type LevelId, type Vec3, type WorldState } from './sim/types';
+import { createInitialWorld, SORTIE_CONFIGS, stepFrame } from './sim/world';
 
 interface ReadOnlyTelemetry {
   readonly getSnapshot: () => {
     readonly tick: number;
+    readonly level: LevelId;
     readonly phase: WorldState['phase']['kind'];
+    readonly playerPosition: Vec3;
+    readonly hull: number;
+    readonly reactorsRemaining: number;
     readonly cameraMode: WorldState['cameraMode'];
     readonly speed: number;
     readonly throttle: number;
@@ -135,7 +139,9 @@ function boot(): void {
   const glCanvas = requireCanvas('gl-canvas');
   const hudCanvas = requireCanvas('hud-canvas');
 
-  let world = createInitialWorld(DEFAULT_SORTIE_SEED, false);
+  // `?level=trench` boots straight into Level 2's briefing; anything else is the default sortie.
+  const requestedLevel: LevelId = new URLSearchParams(window.location.search).get('level') === 'trench' ? 'trench' : 'saturn';
+  let world = createInitialWorld(DEFAULT_SORTIE_SEED, false, SORTIE_CONFIGS[requestedLevel]);
   const input = createInputChannel(glCanvas, () => world.phase.kind !== 'active');
   const renderer = createSceneRenderer(glCanvas);
   const hud = createCockpitHud(hudCanvas);
@@ -160,7 +166,11 @@ function boot(): void {
   window.__SWS_TELEMETRY__ = {
     getSnapshot: () => ({
       tick: world.tick,
+      level: world.sortie.level,
       phase: world.phase.kind,
+      playerPosition: world.player.position,
+      hull: world.player.hull,
+      reactorsRemaining: world.reactors.filter((r) => r.hull > 0).length,
       cameraMode: world.cameraMode,
       speed: len(world.player.velocity),
       throttle: world.player.throttle,
@@ -170,7 +180,7 @@ function boot(): void {
       shieldCharge: world.player.energy.shieldCharge,
       missilesReady: world.player.missilesReady,
       enemiesRemaining: world.enemies.length,
-      subsystemsRemaining: world.hostileFrigate.subsystems.filter((s) => s.hull > 0).length,
+      subsystemsRemaining: world.hostileFrigate?.subsystems.filter((s) => s.hull > 0).length ?? 0,
       projectilesCount: world.projectiles.length,
       selectedTargetId: world.player.selectedTargetId,
       targetPinned: world.player.targetPinned,

@@ -105,6 +105,20 @@ export const RIM_PALETTE = {
 /** Share of the colour under an ink line that survives; the rest is the biome's ink tint. */
 export const INK_KEEP = 0.1;
 
+/** Biome B surfaces. Walls stay matte and under 0.45 luma; the guide ribs are the one cold light inside. */
+export const TRENCH_PALETTE = {
+  wallDeep: 0x33262a,
+  wall: 0x6e4a3c,
+  wallLit: 0x8a6650,
+  void: 0x05070f,
+  guideRib: 0xaab8ff,
+  coldGap: 0xaab8ff,
+  coldGapCore: 0xe4e9ff,
+  pylon: 0x3b314d,
+  pylonTrim: 0x67647c,
+  reactorCore: 0xff5ec0,
+} as const;
+
 export const SCENE_PALETTE = {
   playerStripe: 0xe88332,
   wingmateStripe: 0x4bc5e8,

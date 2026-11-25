@@ -24,6 +24,7 @@ import {
   type WorldState,
 } from '../../src/sim/types';
 import { createInitialWorld, stepWorld } from '../../src/sim/world';
+import { capitalShipsOf } from './levels';
 
 export interface PilotMemory {
   readonly rng: number;
@@ -130,7 +131,8 @@ function chooseGoal(world: WorldState, extending: boolean): (AimGoal & { readonl
     return { point: lead ?? nearest.position, attack: true, extending: false };
   }
   const frigate = world.hostileFrigate;
-  const subsystem = frigate.subsystems.find((s) => s.hull > 0);
+  const subsystem = frigate?.subsystems.find((s) => s.hull > 0);
+  if (frigate === null) return null;
   if (subsystem === undefined) return null;
   const core = subsystemWorldPosition(frigate, subsystem);
   // Attack each core from its exposed side; the hull blocks shots through it.
@@ -152,7 +154,7 @@ function padded(ship: CapitalShipState, pad: number): Vec3 {
 /** Detour around a capital ship's flank when the straight path to `point` would cross its hull. */
 function routeAround(world: WorldState, point: Vec3): Vec3 {
   const from = world.player.position;
-  for (const ship of [world.friendlyCarrier, world.hostileFrigate]) {
+  for (const ship of capitalShipsOf(world)) {
     if (segmentBoxEntry(from, point, ship.position, ship.orientation, padded(ship, 40)) !== null) {
       const local = toLocalPoint(ship.position, ship.orientation, from);
       const side = rotateVec3(ship.orientation, { x: local.x >= 0 ? 1 : -1, y: 0, z: 0 });
@@ -166,7 +168,7 @@ function avoidObstacles(world: WorldState, desired: Vec3): Vec3 {
   const player = world.player;
   const forward = forwardOf(player.orientation);
   const lookAhead = add(player.position, scale(forward, 170));
-  for (const ship of [world.friendlyCarrier, world.hostileFrigate]) {
+  for (const ship of capitalShipsOf(world)) {
     if (segmentBoxEntry(player.position, lookAhead, ship.position, ship.orientation, padded(ship, 30)) !== null) {
       return normalize(add(normalize(sub(player.position, ship.position)), forward));
     }

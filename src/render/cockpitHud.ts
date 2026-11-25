@@ -25,7 +25,7 @@ interface Rect {
 }
 
 function playerFireSolution(world: WorldState): PlayerFireSolution {
-  const selected = findTargetContact(world.player.selectedTargetId, world.enemies, world.hostileFrigate);
+  const selected = findTargetContact(world.player.selectedTargetId, world.enemies, world.hostileFrigate, world.reactors);
   return computePlayerFireSolution(world.player, selected);
 }
 
@@ -477,7 +477,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     const s = hudScale();
     let selectedBracket: Rect | null = null;
 
-    for (const contact of listHostileContacts(world.enemies, world.hostileFrigate)) {
+    for (const contact of listHostileContacts(world.enemies, world.hostileFrigate, world.reactors)) {
       const projected = project(contact.position, cssWidth, cssHeight);
       const isSelected = contact.id === selectedId;
       const label = `${contact.label} ${Math.round(distance(world.player.position, contact.position))}M`;
@@ -543,7 +543,8 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
         }
         drawBar(barX, barY + 6, barW, 3, enemy.hull / enemy.maxHull, CRIMSON);
       } else {
-        const subsystem = world.hostileFrigate.subsystems.find((sub) => sub.id === contact.id);
+        const subsystem =
+          world.hostileFrigate?.subsystems.find((sub) => sub.id === contact.id) ?? world.reactors.find((r) => r.id === contact.id);
         if (subsystem !== undefined) {
           drawBar(barX, barY, barW, 4, subsystem.hull / subsystem.maxHull, MAGENTA);
         }
@@ -648,7 +649,9 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     }
 
     drawBlip(world.friendlyCarrier.position, CYAN, 3, 'square');
-    drawBlip(world.hostileFrigate.position, CRIMSON, 3.5, 'square');
+    if (world.hostileFrigate !== null) {
+      drawBlip(world.hostileFrigate.position, CRIMSON, 3.5, 'square');
+    }
     drawBlip(world.wingmate.position, CYAN, 2.2, 'square');
 
     const selectedId = world.player.selectedTargetId;
@@ -660,10 +663,14 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
         drawBlip(enemy.position, CRIMSON, 2.2);
       }
     }
-    for (const subsystem of world.hostileFrigate.subsystems) {
-      if (subsystem.hull <= 0) continue;
-      const pos = subsystemWorldPosition(world.hostileFrigate, subsystem);
-      if (subsystem.id === selectedId) {
+    const frigate = world.hostileFrigate;
+    const objectives = [
+      ...(frigate === null ? [] : frigate.subsystems.map((sub) => ({ id: sub.id, hull: sub.hull, pos: subsystemWorldPosition(frigate, sub) }))),
+      ...world.reactors.map((r) => ({ id: r.id, hull: r.hull, pos: r.position })),
+    ];
+    for (const { id, hull, pos } of objectives) {
+      if (hull <= 0) continue;
+      if (id === selectedId) {
         selectedPos = pos;
       } else {
         drawBlip(pos, MAGENTA, 2);
@@ -722,10 +729,13 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
   }
 
   function drawTopStrip(world: WorldState): void {
-    const cores = world.hostileFrigate.subsystems.filter((sub) => sub.hull > 0).length;
+    const cores = world.sortie.level === 'trench'
+      ? world.reactors.filter((r) => r.hull > 0).length
+      : (world.hostileFrigate?.subsystems.filter((sub) => sub.hull > 0).length ?? 0);
     const s = hudScale();
-    drawText(`RAIDERS ${world.enemies.length}`, 18, 26 * s, CREAM);
-    drawText(`CORES ${cores}`, 18 + textWidth(`RAIDERS ${world.enemies.length}`) + 14 * s, 26 * s, MAGENTA);
+    const hostiles = `${world.sortie.level === 'trench' ? 'HOSTILES' : 'RAIDERS'} ${world.enemies.length}`;
+    drawText(hostiles, 18, 26 * s, CREAM);
+    drawText(`${world.sortie.level === 'trench' ? 'REACTORS' : 'CORES'} ${cores}`, 18 + textWidth(hostiles) + 14 * s, 26 * s, MAGENTA);
     const carrier = world.friendlyCarrier.hull / world.friendlyCarrier.maxHull;
     drawBar(18, 34 * s, 128 * s, 4, carrier, carrier < 0.35 ? AMBER : CYAN);
     drawText('HEARTHSTONE', 18 + 128 * s + 8, 34 * s + 7, CYAN);
@@ -752,7 +762,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
 
     const s = hudScale();
     const cardW = Math.min(560 * s, cssWidth - 40);
-    const cardH = 236 * s;
+    const cardH = Math.max(236, 140 + lines.length * 24) * s;
     const cardX = (cssWidth - cardW) * 0.5;
     const cardY = (cssHeight - cardH) * 0.5;
     ctx.fillStyle = 'rgba(11, 13, 24, 0.95)';
@@ -780,8 +790,20 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     const phase = world.phase;
     const cream = CREAM;
     if (phase.kind === 'briefing') {
+      const trench = world.sortie.level === 'trench';
       drawCard('SPACE WAR SQUADRONS', AMBER, [
-        { text: 'Defend Hearthstone. Destroy the raiders and both frigate cores.', color: cream, size: 13 },
+        {
+          text: trench ? '1  SATURN ORBIT  ·  [ 2  MEGASTRUCTURE TRENCH ]' : '[ 1  SATURN ORBIT ]  ·  2  MEGASTRUCTURE TRENCH',
+          color: GOLD,
+          size: 13,
+        },
+        {
+          text: trench
+            ? 'Fly into the spine and destroy its three conduit cores.'
+            : 'Defend Hearthstone. Destroy the raiders and both frigate cores.',
+          color: cream,
+          size: 13,
+        },
         { text: 'MOUSE steer  ·  LMB cannons, watch the heat  ·  RMB / E lock-on missile', color: HUD_PALETTE.warmWhite },
         { text: 'W / S throttle, tap W at 100% for overdrive  ·  A / D roll', color: HUD_PALETTE.warmWhite },
         { text: 'T target  ·  ESC / P pause  ·  R restart  ·  M / N audio', color: AMBER },
@@ -794,7 +816,13 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       ], { text: 'CLICK OR PRESS ESC TO RESUME', color: cream });
     } else if (phase.kind === 'victory') {
       drawCard('SORTIE COMPLETE', GOLD, [
-        { text: `Raiders down ${phase.enemiesDestroyed}  ·  Cores neutralized ${phase.subsystemsDestroyed}`, color: cream, size: 14 },
+        {
+          text: world.sortie.level === 'trench'
+            ? `Hostiles down ${phase.enemiesDestroyed}  ·  Conduit cores dark ${phase.reactorsDestroyed}`
+            : `Raiders down ${phase.enemiesDestroyed}  ·  Cores neutralized ${phase.subsystemsDestroyed}`,
+          color: cream,
+          size: 14,
+        },
         { text: `Flight time ${phase.elapsedSeconds.toFixed(1)}s`, color: cream, size: 14 },
       ], { text: 'PRESS R OR ENTER TO FLY AGAIN', color: cream });
     } else if (phase.kind === 'failed') {

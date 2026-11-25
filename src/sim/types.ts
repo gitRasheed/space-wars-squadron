@@ -28,7 +28,11 @@ export type LockState =
       readonly targetId: string;
     };
 
+export type LevelId = 'saturn' | 'trench';
+
 export type EnemyManeuver =
+  /** Holds station around a guard post until the player comes close or the guard takes fire. */
+  | { readonly kind: 'patrol'; readonly post: Vec3 }
   | { readonly kind: 'approach'; readonly remainingSeconds: number }
   | {
       readonly kind: 'break_away';
@@ -45,6 +49,7 @@ export type SortiePhase =
       readonly elapsedSeconds: number;
       readonly enemiesDestroyed: number;
       readonly subsystemsDestroyed: number;
+      readonly reactorsDestroyed: number;
     }
   | {
       readonly kind: 'failed';
@@ -67,6 +72,8 @@ export interface FlightInput {
   readonly pauseRequested: boolean;
   readonly launchBriefing: boolean;
   readonly restartSortie: boolean;
+  /** Briefing-only mission pick; ignored once a sortie is underway. */
+  readonly selectLevel: LevelId | null;
 }
 
 export interface EnergyState {
@@ -158,6 +165,40 @@ export interface CapitalShipState {
   readonly subsystems: readonly SubsystemState[];
 }
 
+/** A targetable core bolted into level geometry; its collider and mesh come from the level layout. */
+export interface ReactorState {
+  readonly id: string;
+  readonly label: string;
+  readonly position: Vec3;
+  readonly radius: number;
+  readonly hull: number;
+  readonly maxHull: number;
+}
+
+export type ArenaRole = 'wall' | 'rib' | 'gantry' | 'monolith' | 'rock' | 'pylon' | 'core';
+
+export type ArenaSolid =
+  | {
+      readonly kind: 'box';
+      readonly id: string;
+      readonly role: ArenaRole;
+      readonly center: Vec3;
+      readonly halfExtents: Vec3;
+      readonly orientation: Quat;
+      /** Bounding-sphere radius for the broad phase. */
+      readonly bound: number;
+    }
+  | {
+      readonly kind: 'sphere';
+      readonly id: string;
+      readonly role: ArenaRole;
+      readonly center: Vec3;
+      readonly radius: number;
+      readonly bound: number;
+      /** Set on a reactor's core: alive it takes damage, dead it is just more wall. */
+      readonly reactorId: string | null;
+    };
+
 export interface AsteroidState {
   readonly id: string;
   readonly position: Vec3;
@@ -206,6 +247,7 @@ export type SimEvent =
   | { readonly kind: 'player_damaged' }
   | { readonly kind: 'overdrive_engaged' }
   | { readonly kind: 'subsystem_destroyed'; readonly label: string }
+  | { readonly kind: 'wall_scrape'; readonly position: Vec3 }
   | { readonly kind: 'crit_hit'; readonly position: Vec3 }
   | { readonly kind: 'near_miss'; readonly source: 'bolt' | 'buzz'; readonly reward: 'heat_vent' | 'shield' }
   | { readonly kind: 'supply_drop'; readonly drop: SupplyDrop }
@@ -222,24 +264,30 @@ export interface WorldState {
   readonly wingmate: WingmateState;
   readonly enemies: readonly EnemyShipState[];
   readonly friendlyCarrier: CapitalShipState;
-  readonly hostileFrigate: CapitalShipState;
+  readonly hostileFrigate: CapitalShipState | null;
+  readonly reactors: readonly ReactorState[];
   readonly asteroids: readonly AsteroidState[];
   readonly projectiles: readonly ProjectileState[];
   readonly explosions: readonly ExplosionState[];
   readonly radio: RadioMessage | null;
   readonly enemiesDestroyed: number;
   readonly subsystemsDestroyed: number;
+  readonly reactorsDestroyed: number;
   readonly events: readonly SimEvent[];
 }
 
 export interface SortieConfig {
   readonly id: string;
+  readonly level: LevelId;
+  /** Indestructible level geometry; empty in open space. */
+  readonly arena: readonly ArenaSolid[];
+  readonly reactors: readonly ReactorState[];
   readonly openingRadio: RadioMessage;
   readonly player: PlayerShipState;
   readonly wingmate: WingmateState;
   readonly enemies: readonly EnemyShipState[];
   readonly friendlyCarrier: CapitalShipState;
-  readonly hostileFrigate: CapitalShipState;
+  readonly hostileFrigate: CapitalShipState | null;
   readonly asteroids: readonly AsteroidState[];
 }
 
@@ -261,4 +309,5 @@ export const NEUTRAL_INPUT: FlightInput = {
   pauseRequested: false,
   launchBriefing: false,
   restartSortie: false,
+  selectLevel: null,
 };

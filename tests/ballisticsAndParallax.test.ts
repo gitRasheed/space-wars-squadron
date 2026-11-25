@@ -3,6 +3,7 @@ import { computeCameraPose, projectPointFromPose } from '../src/render/cameraPos
 import { computeHudReticlePoint } from '../src/render/cockpitHud';
 import { buildCockpitRig, buildHostileFrigateMesh } from '../src/render/models';
 import type { HullTextureSet } from '../src/render/textures';
+import { frigateOf } from './support/levels';
 import {
   COCKPIT_CAMERA_OFFSET,
   COCKPIT_GUN_LOCAL,
@@ -233,8 +234,8 @@ describe('ballistic lead solver, manual aim, cockpit gun alignment, pause freeze
     } as unknown as HullTextureSet;
     const rig = buildHostileFrigateMesh(stubTextures);
 
-    expect(world.hostileFrigate.subsystems.length).toBeGreaterThan(0);
-    for (const subsys of world.hostileFrigate.subsystems) {
+    expect(frigateOf(world).subsystems.length).toBeGreaterThan(0);
+    for (const subsys of frigateOf(world).subsystems) {
       const mesh = rig.subsystemMeshes.get(subsys.id);
       expect(mesh).toBeDefined();
       expect(mesh?.position.x).toBe(subsys.localOffset.x);

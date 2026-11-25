@@ -233,6 +233,50 @@ async function run() {
     await page.screenshot({ path: path.join(OUT_DIR, '05-missile-combat.png') });
     await page.keyboard.up('KeyJ');
 
+    // 5. Level 2: boot straight into the trench briefing, fly in through the mouth and down the spine.
+    const trenchUrl = new URL(baseUrl);
+    trenchUrl.searchParams.set('level', 'trench');
+    await page.goto(trenchUrl.href, { waitUntil: 'networkidle' });
+    const trenchBriefing = await waitForTelemetry(
+      page,
+      (snap) => snap.phase === 'briefing' && snap.level === 'trench' && snap.reactorsRemaining === 3,
+      'trench briefing from ?level=trench',
+    );
+    await page.screenshot({ path: path.join(OUT_DIR, 'trench-01-briefing.png') });
+    await page.keyboard.press('Enter');
+    const trenchMouth = await waitForTelemetry(
+      page,
+      (snap) => snap.phase === 'active' && snap.playerPosition.z < 840,
+      'player inside the trench mouth',
+      null,
+      45_000,
+    );
+    await page.screenshot({ path: path.join(OUT_DIR, 'trench-02-mouth.png') });
+    const trenchGlSignal = await measureWebglSignal(page);
+    assertCondition(
+      trenchGlSignal.nonBlackRatio >= 0.15 && trenchGlSignal.uniqueColors >= 24,
+      `Trench 3D canvas lacks visual signal (${JSON.stringify(trenchGlSignal)})`,
+    );
+    await page.keyboard.down('KeyW');
+    await waitForTelemetry(page, (snap) => snap.throttle >= 0.995, 'trench throttle at 100% detent');
+    await page.keyboard.up('KeyW');
+    await page.keyboard.press('KeyW');
+    await page.keyboard.down('KeyJ');
+    const trenchDeep = await waitForTelemetry(
+      page,
+      (snap) => snap.phase === 'active' && snap.overdrive && snap.playerPosition.z < 470,
+      'overdrive run deep in the spine',
+      null,
+      45_000,
+    );
+    await page.screenshot({ path: path.join(OUT_DIR, 'trench-03-spine-run.png') });
+    await page.keyboard.up('KeyJ');
+    const inside = trenchDeep.playerPosition;
+    assertCondition(
+      trenchDeep.level === 'trench' && Math.abs(inside.x) < 78 && inside.y > -51.5 && inside.y < 51.5,
+      `Player should be flying inside the trench envelope (${JSON.stringify(inside)})`,
+    );
+
     assertCondition(
       await page.evaluate(() => globalThis.__SW_PROFILE__ === undefined),
       'Profiler must stay off without ?profile=1',
@@ -260,6 +304,7 @@ async function run() {
       glSignal: {
         cockpit: cockpitGlSignal,
         overdrive: overdriveGlSignal,
+        trench: trenchGlSignal,
       },
       screenshots: [
         '01-briefing.png',
@@ -267,6 +312,9 @@ async function run() {
         '03-overheat.png',
         '04-overdrive.png',
         '05-missile-combat.png',
+        'trench-01-briefing.png',
+        'trench-02-mouth.png',
+        'trench-03-spine-run.png',
       ],
       snapshots: {
         initial,
@@ -276,6 +324,9 @@ async function run() {
         lockSnap,
         homingSnap,
         finalSnap,
+        trenchBriefing,
+        trenchMouth,
+        trenchDeep,
       },
     };
     await fs.writeFile(path.join(OUT_DIR, 'report.json'), JSON.stringify(report, null, 2));

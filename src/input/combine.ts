@@ -27,5 +27,6 @@ export function mergeFlightInputs(primary: FlightInput, secondary: FlightInput):
     toggleMusic: primary.toggleMusic || secondary.toggleMusic,
     togglePause: primary.togglePause || secondary.togglePause,
     pauseRequested: primary.pauseRequested || secondary.pauseRequested,
+    selectLevel: primary.selectLevel ?? secondary.selectLevel,
   };
 }

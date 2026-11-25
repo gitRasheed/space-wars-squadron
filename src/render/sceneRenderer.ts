@@ -5,12 +5,14 @@ import {
   FIXED_DT,
   type CapitalShipState,
   type ExplosionState,
+  type LevelId,
   type Quat,
   type Vec3,
   type WorldState,
 } from '../sim/types';
 import { FRIGATE_SUBSYSTEM_LAYOUT } from '../sim/world';
 import { computeCameraPose } from './cameraPose';
+import { LEVEL_BIOME, setActiveBiome } from './biome';
 import { celMat } from './celMaterial';
 import {
   buildAsteroidMesh,
@@ -31,9 +33,10 @@ import {
   type FighterMeshRig,
   type HostileFrigateRig,
 } from './models';
-import { SCENE_PALETTE } from './palette';
+import { BIOME_CARDS, SCENE_PALETTE } from './palette';
 import { CAMERA_CLIP, createStylizedPostPass } from './postProcess';
 import { createHullTextureSet } from './textures';
+import { buildTrenchLevel, buildTrenchSky, type TrenchRig } from './trenchModels';
 import {
   createBlastShellBatch,
   createBoltBatch,
@@ -145,6 +148,7 @@ function grazedSide(world: WorldState, source: 'bolt' | 'buzz'): -1 | 0 | 1 {
       passes.push({ offset: sub(rock.position, position), clearance: distance(rock.position, position) - rock.radius });
     }
     for (const ship of [world.friendlyCarrier, world.hostileFrigate]) {
+      if (ship === null) continue;
       const offset = sub(ship.position, position);
       passes.push({ offset, clearance: capitalClearance(ship, offset) });
     }
@@ -350,6 +354,38 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     if (!Array.isArray(mesh.material)) {
       initialSubMaterials.set(id, mesh.material);
     }
+  }
+
+  let trenchRig: TrenchRig | null = null;
+  let trenchSky: THREE.Group | null = null;
+  let currentLevel: LevelId = 'saturn';
+
+  /** Swaps backdrop, level geometry and biome card when the sortie's level changes. */
+  function syncLevel(world: WorldState): void {
+    const level = world.sortie.level;
+    if (level === 'trench' && (trenchRig === null || trenchSky === null)) {
+      trenchRig = buildTrenchLevel();
+      trenchSky = buildTrenchSky(dotTexture);
+      scene.add(trenchRig.root, trenchSky);
+    }
+    if (level !== currentLevel) {
+      currentLevel = level;
+      setActiveBiome(BIOME_CARDS[LEVEL_BIOME[level]]);
+    }
+    backdrop.visible = level === 'saturn';
+    if (trenchRig !== null) {
+      trenchRig.root.visible = level === 'trench';
+      for (const reactor of world.reactors) {
+        const mesh = trenchRig.coreMeshes.get(reactor.id);
+        if (mesh !== undefined) {
+          mesh.material = reactor.hull > 0 ? trenchRig.coreLiveMaterial : trenchRig.coreDeadMaterial;
+        }
+      }
+    }
+    if (trenchSky !== null) {
+      trenchSky.visible = level === 'trench';
+    }
+    frigateRig.root.visible = world.hostileFrigate !== null;
   }
 
   let lastTick = -1;
@@ -648,7 +684,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
 
   function syncSubsystems(world: WorldState): void {
     let shieldAlive = false;
-    for (const subsys of world.hostileFrigate.subsystems) {
+    for (const subsys of world.hostileFrigate?.subsystems ?? []) {
       const mesh = frigateRig.subsystemMeshes.get(subsys.id);
       if (mesh === undefined) {
         continue;
@@ -845,6 +881,8 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
           shakeIntensity = Math.min(1, shakeIntensity + (evt.isKill ? 0.34 : 0.12));
         } else if (evt.kind === 'cannon_fired' && evt.faction === 'friendly') {
           shakeIntensity = Math.min(1, shakeIntensity + 0.065);
+        } else if (evt.kind === 'wall_scrape') {
+          sparks.emit(evt.position, world.tick, SCENE_PALETTE.explosionShardHighlight, 9, 0.05, 0.3, world.player.velocity);
         }
       }
     }
@@ -860,7 +898,10 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
 
     setPose(wingmateRig.root, world.wingmate.position, world.wingmate.orientation);
     setPose(carrierMesh, world.friendlyCarrier.position, world.friendlyCarrier.orientation);
-    setPose(frigateRig.root, world.hostileFrigate.position, world.hostileFrigate.orientation);
+    syncLevel(world);
+    if (world.hostileFrigate !== null) {
+      setPose(frigateRig.root, world.hostileFrigate.position, world.hostileFrigate.orientation);
+    }
     syncSubsystems(world);
 
     const plumeFlicker = 0.85 * (0.92 + ((world.tick * 13) % 7) * 0.03);
@@ -879,6 +920,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
       emitDamageSparks(world);
     }
     backdrop.position.copy(camera.position);
+    trenchSky?.position.copy(camera.position);
     updateDustField(player.position);
     updateSpeedStreaks(world, dt);
     syncAsteroids(world);

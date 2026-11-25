@@ -27,6 +27,7 @@ import {
   type WorldState,
 } from '../src/sim/types';
 import { createInitialWorld, DEFAULT_SORTIE_CONFIG, stepFrame, stepWorld } from '../src/sim/world';
+import { frigateOf } from './support/levels';
 import { afkPilot, cannonPilot, evasivePilot, flySortie, type Pilot } from './support/pilots';
 
 describe('throttle overdrive and weapon overheat kernel', () => {
@@ -286,8 +287,8 @@ describe('sortie simulation contracts and enemy shield entities', () => {
       ...base,
       enemies: [],
       hostileFrigate: {
-        ...base.hostileFrigate,
-        subsystems: base.hostileFrigate.subsystems.map((s) => ({ ...s, hull: 0 })),
+        ...frigateOf(base),
+        subsystems: frigateOf(base).subsystems.map((s) => ({ ...s, hull: 0 })),
       },
     };
     const won = stepWorld(cleared, NEUTRAL_INPUT, FIXED_DT);
@@ -484,6 +485,8 @@ function combatTick(world: WorldState, tick = 1, input: FlightInput = NEUTRAL_IN
     enemies: world.enemies,
     friendlyCarrier: world.friendlyCarrier,
     hostileFrigate: world.hostileFrigate,
+    reactors: world.reactors,
+    arena: world.sortie.arena,
     asteroids: world.asteroids,
     projectiles: world.projectiles,
     explosions: [],
@@ -515,18 +518,18 @@ describe('precision hitboxes and frigate hull occlusion', () => {
 
   it('stops a bolt fired up from under the frigate at the hull instead of the dorsal shield dome', () => {
     const base = emptyArena();
-    const frigate = base.hostileFrigate;
+    const frigate = frigateOf(base);
     const dome = frigate.subsystems[0];
     if (dome === undefined) throw new Error('frigate has no dome');
     const domePos = subsystemWorldPosition(frigate, dome);
     const up = rotateVec3(frigate.orientation, vec3(0, 1, 0));
 
     const fromBelow = combatTick({ ...base, projectiles: [playerBolt('b', sub(domePos, scale(up, 60)), scale(up, 560))] });
-    expect(fromBelow.hostileFrigate.subsystems[0]?.hull).toBe(dome.maxHull);
+    expect(frigateOf(fromBelow).subsystems[0]?.hull).toBe(dome.maxHull);
     expect(fromBelow.projectiles).toHaveLength(0);
 
     const fromAbove = combatTick({ ...base, projectiles: [playerBolt('b', add(domePos, scale(up, 22)), scale(up, -560))] });
-    expect(fromAbove.hostileFrigate.subsystems[0]?.hull).toBeLessThan(dome.maxHull);
+    expect(frigateOf(fromAbove).subsystems[0]?.hull).toBeLessThan(dome.maxHull);
   });
 });
 
@@ -679,7 +682,7 @@ describe('missile trigger and manual target pin', () => {
     const base = emptyArena();
     let world: WorldState = {
       ...base,
-      hostileFrigate: { ...base.hostileFrigate, subsystems: base.hostileFrigate.subsystems.map((s) => ({ ...s, hull: 0 })) },
+      hostileFrigate: { ...frigateOf(base), subsystems: frigateOf(base).subsystems.map((s) => ({ ...s, hull: 0 })) },
       enemies: [parkedRaider(vec3(0, 0, 2000))],
     };
     let launches = 0;
