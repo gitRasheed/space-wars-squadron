@@ -18,6 +18,7 @@
 | 3 | Throttle Overdrive & Weapon Heat | `overdrive` × `WeaponState` (`ready`/`overheated`) × charges | Traced (pass 3) | Medium (Common) | `src/sim/energy.ts`, `src/sim/flight.ts` | 1 |
 | 4 | Target Selection, Pin & Missile Lock | Sum (`LockState`) × `selectedTargetId` × `targetPinned` × `missileTriggerHeld` × `missilesReady` | Traced (pass 3) | Medium (Common) | `src/sim/combat.ts` (`resolveTargetSelection`, `stepPlayerWeapons`) | 1 |
 | 6 | Enemy Maneuver | Sum (`EnemyManeuver`: `patrol`/`approach`/`break_away`) | Traced (pass 3) | Medium (Common) | `src/sim/combat.ts` (`stepEnemyAi`) | 1 |
+| 7 | Planetary Stage (ground attack → air superiority) | Sum (`PlanetaryStage`) × ground-target hulls × `enemies` | Traced (pass 4) | Low (Edge) | `src/sim/planetary.ts` (`stepGroundBattle`, `remainingPlanetaryHostiles`), `src/sim/world.ts` | 1 |
 | 5 | Web Audio Engine Lifecycle | Implicit (`muted` × `ctx` × `document.hidden`) | Traced | Low (Edge) | `src/audio/synthAudio.ts:13-57,125-138` | 0 |
 
 ## 3. Detailed Sections (`Traced` Only)
@@ -91,3 +92,8 @@
 
 - **Machine 1, briefing.** `briefing` + `selectLevel` for a different level rebuilds the world from that level's config and stays in `briefing`. Every other phase ignores `selectLevel`, and restart keeps `world.sortie`, so a restart never changes level.
 - **Machine 6, `patrol`.** Trench guards start in `patrol` around a post. `patrol` → `approach` when the player is inside 520 m or the guard has lost any shield or hull. Nothing returns to `patrol`. Raiders on `patrol` hold no attack token. Saturn spawns no guards, so its machine is unchanged.
+
+## 8. Level 3 additions (2026-11-25, planetary ground support)
+
+- **Machine 7, one-way hand-off.** `PlanetaryStage` lives on the optional `world.planetary`, so `SortiePhase` and its formal model are untouched. `ground_attack` becomes `air_superiority` once `airWaveThreshold` ground targets are down, which spawns the air wave exactly once; nothing moves it back. Restart rebuilds it from `world.sortie.planetary`.
+- **Victory gate.** Stage 1 has no air enemies and no frigate cores, so the orbital rule (`enemies === 0 && cores === 0`) would have won on the first tick. Planetary sorties count living ground targets plus the unspawned wave as remaining hostiles (`remainingPlanetaryHostiles`). `tests/planetary.test.ts` pins this, and dropping the gate fails 8 tests.

@@ -1,7 +1,19 @@
 import { stepCombat } from './combat';
 import { createInitialEnergy } from './energy';
 import { stepPlayerFlight } from './flight';
-import { IDENTITY_QUAT, quatLookAt, vec3 } from './math';
+import { IDENTITY_QUAT, normalize, quatLookAt, scale, vec3 } from './math';
+import {
+  applyTerrainToPlayer,
+  burstFlak,
+  createGroundTargets,
+  createOutpost,
+  GROUND_SPEAKER,
+  OUTPOST_LOST_REASON,
+  remainingPlanetaryHostiles,
+  spawnAirWave,
+  stepGroundBattle,
+} from './planetary';
+import { GROUND_TARGET_PLACEMENTS, PLANETARY_TUNING, PLAYER_START, segmentTerrainEntry, WINGMATE_START } from './planetaryLayout';
 import { SHIP_STATS } from './ships';
 import { TRENCH_ARENA, TRENCH_PATROL_POSTS, TRENCH_REACTORS } from './trenchLayout';
 import type {
@@ -197,7 +209,7 @@ function createInitialPlayer(): PlayerShipState {
 
 function createInitialWingmate(): WingmateState {
   return {
-    callsign: 'VALKYRIE-2',
+    callsign: 'FALCON-2',
     position: vec3(-32, 10, 162),
     velocity: vec3(0, 0, -64),
     orientation: IDENTITY_QUAT,
@@ -212,7 +224,7 @@ export const DEFAULT_SORTIE_CONFIG: SortieConfig = {
   arena: [],
   reactors: [],
   openingRadio: {
-    speaker: 'VALKYRIE-2',
+    speaker: 'FALCON-2',
     text: 'Shielded raiders inbound on Hearthstone—watch your heat, cleared hot!',
     remainingSeconds: 4.5,
   },
@@ -266,7 +278,7 @@ export const TRENCH_SORTIE_CONFIG: SortieConfig = {
   arena: TRENCH_ARENA,
   reactors: TRENCH_REACTORS,
   openingRadio: {
-    speaker: 'VALKYRIE-2',
+    speaker: 'FALCON-2',
     text: 'Three conduit cores inside the spine. Thread the ribs, light them up, exit cold.',
     remainingSeconds: 5,
   },
@@ -278,10 +290,63 @@ export const TRENCH_SORTIE_CONFIG: SortieConfig = {
   asteroids: [],
 };
 
-export const SORTIE_CONFIGS: Readonly<Record<LevelId, SortieConfig>> = {
-  saturn: DEFAULT_SORTIE_CONFIG,
-  trench: TRENCH_SORTIE_CONFIG,
-};
+export const PLANETARY_SORTIE_ID = 'sortie-03-sunset-cas';
+
+export interface PlanetaryOptions {
+  /** Boots straight into stage 2 with half the ground targets already down, for screenshots and tests. */
+  readonly airWave?: boolean;
+}
+
+/** Level 3: break the siege on the canyon road, then win the sky. */
+export function createPlanetarySortieConfig(options: PlanetaryOptions = {}): SortieConfig {
+  const airWave = options.airWave ?? false;
+  const destroyed = new Set(
+    airWave ? GROUND_TARGET_PLACEMENTS.slice(0, PLANETARY_TUNING.airWaveThreshold).map((p) => p.id) : [],
+  );
+  const groundTargets = createGroundTargets(destroyed);
+  // The scramble preset starts in a gentle climb toward the diving wave.
+  const heading = airWave ? normalize(vec3(0, 0.27, -1)) : vec3(0, 0, -1);
+  const velocity = scale(heading, PLAYER_START.speed);
+  return {
+    id: PLANETARY_SORTIE_ID,
+    level: 'planetary',
+    arena: [],
+    reactors: [],
+    openingRadio: airWave
+      ? { speaker: 'OVERWATCH', text: 'SCRAMBLE! Bandits diving through the cloud deck. Break and engage!', remainingSeconds: 4.5 }
+      : { speaker: GROUND_SPEAKER, text: 'Falcon lead, we are pinned in the canyon! Burn the flak and walkers off that road!', remainingSeconds: 5 },
+    player: {
+      ...DEFAULT_SORTIE_CONFIG.player,
+      position: PLAYER_START.position,
+      velocity,
+      orientation: quatLookAt(heading),
+      selectedTargetId: groundTargets.find((t) => t.hull > 0)?.id ?? null,
+    },
+    wingmate: { ...DEFAULT_SORTIE_CONFIG.wingmate, position: WINGMATE_START, velocity, orientation: quatLookAt(heading), targetId: null },
+    enemies: airWave ? spawnAirWave() : [],
+    friendlyCarrier: createOutpost(),
+    hostileFrigate: null,
+    asteroids: [],
+    planetary: {
+      stage: airWave ? { kind: 'air_superiority', elapsedSeconds: 0 } : { kind: 'ground_attack' },
+      groundTargets,
+      groundTargetsDestroyed: destroyed.size,
+      convoyAdvance: 0,
+      terrainWarning: false,
+    },
+  };
+}
+
+export function createLevelConfig(level: LevelId, options: PlanetaryOptions = {}): SortieConfig {
+  switch (level) {
+    case 'saturn':
+      return DEFAULT_SORTIE_CONFIG;
+    case 'trench':
+      return TRENCH_SORTIE_CONFIG;
+    case 'planetary':
+      return createPlanetarySortieConfig(options);
+  }
+}
 
 export function createInitialWorld(
   seed: number,
@@ -307,23 +372,26 @@ export function createInitialWorld(
     enemiesDestroyed: 0,
     subsystemsDestroyed: 0,
     reactorsDestroyed: 0,
+    planetary: config.planetary ?? null,
     events: [],
   };
 }
 
 /** Whether the level's win condition is met; each level names its own objective. */
-function objectiveComplete(world: Pick<WorldState, 'sortie' | 'enemies' | 'hostileFrigate' | 'reactors'>): boolean {
+function objectiveComplete(world: Pick<WorldState, 'sortie' | 'enemies' | 'hostileFrigate' | 'reactors' | 'planetary'>): boolean {
   switch (world.sortie.level) {
     case 'saturn':
       return world.enemies.length === 0 && (world.hostileFrigate?.subsystems.every((s) => s.hull <= 0) ?? true);
     case 'trench':
       return world.reactors.every((r) => r.hull <= 0);
+    case 'planetary':
+      return world.planetary !== null && remainingPlanetaryHostiles(world.planetary, world.enemies) === 0;
   }
 }
 
 function evaluatePhase(
   currentPhase: SortiePhase,
-  next: Pick<WorldState, 'sortie' | 'enemies' | 'hostileFrigate' | 'reactors' | 'player' | 'friendlyCarrier'>,
+  next: Pick<WorldState, 'sortie' | 'enemies' | 'hostileFrigate' | 'reactors' | 'planetary' | 'player' | 'friendlyCarrier'>,
   tally: Pick<WorldState, 'enemiesDestroyed' | 'subsystemsDestroyed' | 'reactorsDestroyed'>,
   dt: number,
 ): SortiePhase {
@@ -335,7 +403,7 @@ function evaluatePhase(
     return { kind: 'failed', elapsedSeconds, reason: 'FIGHTER DESTROYED' };
   }
   if (next.friendlyCarrier.hull <= 0) {
-    return { kind: 'failed', elapsedSeconds, reason: 'CARRIER HEARTHSTONE LOST' };
+    return { kind: 'failed', elapsedSeconds, reason: next.sortie.level === 'planetary' ? OUTPOST_LOST_REASON : 'CARRIER HEARTHSTONE LOST' };
   }
   if (objectiveComplete(next)) {
     return { kind: 'victory', elapsedSeconds, ...tally };
@@ -350,7 +418,7 @@ export function stepWorld(
 ): WorldState {
   if (world.phase.kind === 'briefing') {
     if (input.selectLevel !== null && input.selectLevel !== world.sortie.level) {
-      return createInitialWorld(world.rngState, false, SORTIE_CONFIGS[input.selectLevel]);
+      return createInitialWorld(world.rngState, false, createLevelConfig(input.selectLevel));
     }
     if (input.launchBriefing || input.restartSortie) {
       return {
@@ -403,10 +471,28 @@ export function stepWorld(
     world.sortie.arena,
     dt,
   );
+  const planetary = world.planetary;
+  const tick = world.tick + 1;
+  let player = flightStep.player;
+  let projectiles = world.projectiles;
+  let explosions = world.explosions;
+  const preEvents: SimEvent[] = [...flightStep.events];
+  let terrainWarning = false;
+  if (planetary !== null) {
+    const terrain = applyTerrainToPlayer(player);
+    terrainWarning = terrain.warning;
+    preEvents.push(...terrain.events);
+    const flak = burstFlak(tick, projectiles, terrain.player, dt);
+    player = flak.player;
+    projectiles = flak.projectiles;
+    explosions = [...explosions, ...flak.explosions];
+    preEvents.push(...flak.events);
+  }
+
   const combatStep = stepCombat({
-    tick: world.tick + 1,
+    tick,
     rngState: world.rngState,
-    player: flightStep.player,
+    player,
     wingmate: world.wingmate,
     enemies: world.enemies,
     friendlyCarrier: world.friendlyCarrier,
@@ -414,38 +500,68 @@ export function stepWorld(
     reactors: world.reactors,
     arena: world.sortie.arena,
     asteroids: world.asteroids,
-    projectiles: world.projectiles,
-    explosions: world.explosions,
+    projectiles,
+    explosions,
     radio: world.radio,
     input,
     dt,
+    ...(planetary === null
+      ? {}
+      : { groundTargets: planetary.groundTargets, terrainEntry: segmentTerrainEntry, groundSpeaker: GROUND_SPEAKER }),
   });
 
+  const battle =
+    planetary === null
+      ? null
+      : stepGroundBattle({
+          tick,
+          planetary,
+          groundTargets: combatStep.groundTargets,
+          groundTargetsDestroyedDelta: combatStep.groundTargetsDestroyedDelta,
+          terrainWarning,
+          player: combatStep.player,
+          wingmate: combatStep.wingmate,
+          enemies: combatStep.enemies,
+          outpost: combatStep.friendlyCarrier,
+          radio: combatStep.radio,
+          dt,
+        });
+
+  const enemies = battle?.enemies ?? combatStep.enemies;
+  const planetaryNext = battle?.planetary ?? null;
   const tally = {
     enemiesDestroyed: world.enemiesDestroyed + combatStep.enemiesDestroyedDelta,
     subsystemsDestroyed: world.subsystemsDestroyed + combatStep.subsystemsDestroyedDelta,
     reactorsDestroyed: world.reactorsDestroyed + combatStep.reactorsDestroyedDelta,
   };
-  const phase = evaluatePhase(world.phase, { ...combatStep, sortie: world.sortie }, tally, dt);
+  // The planetary debrief counts ground targets where the orbital one counts frigate cores.
+  const phaseTally = planetaryNext === null ? tally : { ...tally, subsystemsDestroyed: planetaryNext.groundTargetsDestroyed };
+  const phase = evaluatePhase(
+    world.phase,
+    { ...combatStep, enemies, planetary: planetaryNext, sortie: world.sortie },
+    phaseTally,
+    dt,
+  );
 
   return {
-    tick: world.tick + 1,
+    tick,
     rngState: combatStep.rngState,
     sortie: world.sortie,
     phase,
     cameraMode: 'cockpit',
     player: combatStep.player,
-    wingmate: combatStep.wingmate,
-    enemies: combatStep.enemies,
+    wingmate: battle?.wingmate ?? combatStep.wingmate,
+    enemies,
     friendlyCarrier: combatStep.friendlyCarrier,
     hostileFrigate: combatStep.hostileFrigate,
     reactors: combatStep.reactors,
     asteroids: combatStep.asteroids,
-    projectiles: combatStep.projectiles,
+    projectiles: battle === null ? combatStep.projectiles : [...combatStep.projectiles, ...battle.spawned],
     explosions: combatStep.explosions,
-    radio: combatStep.radio,
+    radio: battle === null ? combatStep.radio : battle.radio,
     ...tally,
-    events: [...flightStep.events, ...combatStep.events],
+    planetary: planetaryNext,
+    events: [...preEvents, ...combatStep.events, ...(battle?.events ?? [])],
   };
 }
 

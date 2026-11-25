@@ -33,6 +33,7 @@ export const BIOME_UNIFORMS = {
 export const LEVEL_BIOME: Readonly<Record<LevelId, BiomeId>> = {
   saturn: 'saturnOrbit',
   trench: 'megastructureTrench',
+  planetary: 'sunsetGroundSupport',
 };
 
 export function setActiveBiome(card: BiomeCard): void {

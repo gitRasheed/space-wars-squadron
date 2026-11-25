@@ -62,7 +62,8 @@ export const BIOME_CARDS = {
     },
   },
   sunsetGroundSupport: {
-    sunDirection: { x: 0.8, y: 0.21, z: -0.56 },
+    // About 12° up and just right of the canyon axis, so the sky's sun disc sits over the valley you fly down.
+    sunDirection: { x: 0.32, y: 0.215, z: -0.92 },
     bands: {
       highlight: [1.0, 0.82, 0.6],
       base: [0.6, 0.44, 0.5],
@@ -117,6 +118,31 @@ export const TRENCH_PALETTE = {
   pylon: 0x3b314d,
   pylonTrim: 0x67647c,
   reactorCore: 0xff5ec0,
+} as const;
+
+export const SUNSET_PALETTE = {
+  skyZenith: 0x2b2f5e,
+  skyHigh: 0x7a4f7c,
+  skyLow: 0xe8866a,
+  skyHorizon: 0xe9ab78,
+  sunHalo: 0xf2bf86,
+  sunDisc: 0xffc48a,
+  cloudLit: 0xe0a58c,
+  cloudShadow: 0x6a4a78,
+  mesaLight: 0xb88a68,
+  mesaMid: 0x7d5560,
+  mesaDark: 0x3d2f52,
+  /** The lightest terrain tone: pads and the walker road, so dark hostile bodies pop by value. */
+  pad: 0xe2bd94,
+  padMarking: 0x7d5560,
+  hostileHull: 0x3b314d,
+  hostilePlate: 0x57566e,
+  hostileGlow: 0xf04c48,
+  flakCharge: 0x5dffb3,
+  friendlyHull: 0xede6d5,
+  friendlyTrim: 0x2a3456,
+  friendlyLight: 0x52d4ff,
+  wreck: 0x1b1922,
 } as const;
 
 export const SCENE_PALETTE = {

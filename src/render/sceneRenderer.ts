@@ -34,6 +34,7 @@ import {
   type HostileFrigateRig,
 } from './models';
 import { BIOME_CARDS, SCENE_PALETTE } from './palette';
+import { createPlanetaryScene, type PlanetaryScene } from './planetaryScene';
 import { CAMERA_CLIP, createStylizedPostPass } from './postProcess';
 import { createHullTextureSet } from './textures';
 import { buildTrenchLevel, buildTrenchSky, type TrenchRig } from './trenchModels';
@@ -98,6 +99,7 @@ interface TimedBurst {
 const BOLT_TINTS = {
   friendly: new THREE.Color(SCENE_PALETTE.friendlyBolt).multiplyScalar(2.1),
   hostile: new THREE.Color(SCENE_PALETTE.hostileBolt).multiplyScalar(2.1),
+  flak: new THREE.Color(SCENE_PALETTE.hostileBolt).multiplyScalar(2.6),
   flame: new THREE.Color(SCENE_PALETTE.missileTrail).multiplyScalar(2.2),
 } as const;
 
@@ -358,7 +360,9 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
 
   let trenchRig: TrenchRig | null = null;
   let trenchSky: THREE.Group | null = null;
-  let currentLevel: LevelId = 'saturn';
+  // Built on first planetary frame, then kept so switching missions on the briefing card stays instant.
+  let planetaryScene: PlanetaryScene | null = null;
+  let currentLevel: LevelId | null = null;
 
   /** Swaps backdrop, level geometry and biome card when the sortie's level changes. */
   function syncLevel(world: WorldState): void {
@@ -368,11 +372,20 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
       trenchSky = buildTrenchSky(dotTexture);
       scene.add(trenchRig.root, trenchSky);
     }
+    if (level === 'planetary' && planetaryScene === null) {
+      planetaryScene = createPlanetaryScene();
+      scene.add(planetaryScene.root, planetaryScene.sky);
+    }
     if (level !== currentLevel) {
       currentLevel = level;
       setActiveBiome(BIOME_CARDS[LEVEL_BIOME[level]]);
     }
     backdrop.visible = level === 'saturn';
+    carrierMesh.visible = level !== 'planetary';
+    if (planetaryScene !== null) {
+      planetaryScene.root.visible = level === 'planetary';
+      planetaryScene.sky.visible = level === 'planetary';
+    }
     if (trenchRig !== null) {
       trenchRig.root.visible = level === 'trench';
       for (const reactor of world.reactors) {
@@ -546,6 +559,15 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
       const { x, y, z } = proj.position;
       scratchDir.set(proj.velocity.x, proj.velocity.y, proj.velocity.z).normalize();
 
+      if (proj.kind === 'flak') {
+        const reach = BOLT_LENGTH * 0.3;
+        bolts.push(
+          x + scratchDir.x * reach, y + scratchDir.y * reach, z + scratchDir.z * reach,
+          x - scratchDir.x * reach, y - scratchDir.y * reach, z - scratchDir.z * reach,
+          BOLT_TINTS.flak.r, BOLT_TINTS.flak.g, BOLT_TINTS.flak.b, 0.55,
+        );
+        continue;
+      }
       if (proj.kind === 'bolt') {
         const reach = BOLT_LENGTH * 0.5;
         scratchTail.set(x, y, z).addScaledVector(scratchDir, -reach);
@@ -859,7 +881,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
         if (evt.kind === 'player_damaged') {
           playerHit = true;
           shakeIntensity = Math.min(1, shakeIntensity + 0.55);
-        } else if (evt.kind === 'subsystem_destroyed') {
+        } else if (evt.kind === 'subsystem_destroyed' || evt.kind === 'ground_target_destroyed') {
           shakeIntensity = Math.min(1, shakeIntensity + 0.65);
         } else if (evt.kind === 'shield_broken') {
           shakeIntensity = Math.min(1, shakeIntensity + 0.28);
@@ -921,6 +943,10 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     }
     backdrop.position.copy(camera.position);
     trenchSky?.position.copy(camera.position);
+    if (world.planetary !== null && planetaryScene !== null) {
+      planetaryScene.sky.position.copy(camera.position);
+      planetaryScene.sync(world.planetary, player.position, world.tick);
+    }
     updateDustField(player.position);
     updateSpeedStreaks(world, dt);
     syncAsteroids(world);
@@ -954,6 +980,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   }
 
   function destroy(): void {
+    planetaryScene?.dispose();
     sparks.mesh.dispose();
     disposeObject3D(scene);
     destroyedSubMat.dispose();

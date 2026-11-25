@@ -6,7 +6,7 @@ import {
   type PlayerFireSolution,
 } from '../sim/combat';
 import { add, clamp, distance, dot, forwardOf, len, rightOf, scale, sub, upOf } from '../sim/math';
-import type { SupplyDrop, Vec3, WorldState } from '../sim/types';
+import type { GroundTargetState, SupplyDrop, Vec3, WorldState } from '../sim/types';
 import { HUD_PALETTE } from './palette';
 import type { ProjectedPoint } from './sceneRenderer';
 
@@ -25,8 +25,16 @@ interface Rect {
 }
 
 function playerFireSolution(world: WorldState): PlayerFireSolution {
-  const selected = findTargetContact(world.player.selectedTargetId, world.enemies, world.hostileFrigate, world.reactors);
+  const selected = findTargetContact(world.player.selectedTargetId, world.enemies, world.hostileFrigate, world.reactors, groundTargetsOf(world));
   return computePlayerFireSolution(world.player, selected);
+}
+
+function groundTargetsOf(world: WorldState): readonly GroundTargetState[] {
+  return world.planetary?.groundTargets ?? [];
+}
+
+function isShielded(world: WorldState, target: GroundTargetState): boolean {
+  return target.shieldedBy !== null && groundTargetsOf(world).some((g) => g.id === target.shieldedBy && g.hull > 0);
 }
 
 function reticlePoint(solution: PlayerFireSolution, project: Project, width: number, height: number): ScreenPoint {
@@ -107,6 +115,8 @@ type Status =
   | { readonly kind: 'warning'; readonly text: string; readonly sinceTick: number }
   | { readonly kind: 'supply'; readonly drop: SupplyDrop }
   | { readonly kind: 'word'; readonly text: string; readonly color: string };
+const GROUND_MARKER_COUNT = 6;
+const GROUND_STEM_RANGE = 600;
 
 interface TextStyle {
   readonly size?: number;
@@ -133,6 +143,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
   let overheatSince: number | null = null;
   let hullLowSince: number | null = null;
   let proximitySince: number | null = null;
+  let pullUpSince: number | null = null;
 
   function hudScale(): number {
     return clamp(cssHeight / 720, 0.85, 1.45);
@@ -477,7 +488,16 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     const s = hudScale();
     let selectedBracket: Rect | null = null;
 
-    for (const contact of listHostileContacts(world.enemies, world.hostileFrigate, world.reactors)) {
+    const contacts = listHostileContacts(world.enemies, world.hostileFrigate, world.reactors, groundTargetsOf(world));
+    const markedGround = new Set(
+      contacts
+        .filter((c) => c.kind === 'ground')
+        .map((c) => ({ id: c.id, dist: distance(world.player.position, c.position) }))
+        .sort((a, b) => a.dist - b.dist)
+        .slice(0, GROUND_MARKER_COUNT)
+        .map((c) => c.id),
+    );
+    for (const contact of contacts) {
       const projected = project(contact.position, cssWidth, cssHeight);
       const isSelected = contact.id === selectedId;
       const label = `${contact.label} ${Math.round(distance(world.player.position, contact.position))}M`;
@@ -487,8 +507,24 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       }
       const { x, y } = projected;
 
+      if (!isSelected && contact.kind === 'ground') {
+        if (!markedGround.has(contact.id)) continue;
+        // Down-caret above the target; beyond stem range a thin stem pins it to the exact spot on the ground.
+        const tipY = y - 14 * s;
+        const caret = new Path2D();
+        caret.moveTo(x - 6 * s, tipY - 8 * s);
+        caret.lineTo(x, tipY);
+        caret.lineTo(x + 6 * s, tipY - 8 * s);
+        if (distance(world.player.position, contact.position) > GROUND_STEM_RANGE) {
+          caret.moveTo(x, tipY);
+          caret.lineTo(x, y);
+        }
+        strokeInked(caret, CRIMSON, 1.7, 0.9);
+        continue;
+      }
       if (!isSelected) {
-        strokeInked(diamondPath(x, y, 6 * s), CRIMSON, 1.2, 0.9);
+        // Over the bright sunset sky the faint orbital diamond disappears, so it gets the middle stroke weight.
+        strokeInked(diamondPath(x, y, 6 * s), CRIMSON, world.planetary === null ? 1.2 : 1.7, 0.9);
         continue;
       }
 
@@ -513,7 +549,9 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
 
       // The label takes the first slot around the bracket that is clear of the reticle cluster and the lead pip;
       // with the target dead in the sights it steps just outside the cluster instead.
-      const text = locked ? `${label} · LOCK` : label;
+      const ground = contact.kind === 'ground' ? groundTargetsOf(world).find((g) => g.id === contact.id) : undefined;
+      const shielded = ground !== undefined && isShielded(world, ground);
+      const text = locked ? `${label} · LOCK` : shielded ? `${label} · SHIELDED` : label;
       const width = textWidth(text);
       const cluster = reticleCluster(reticle);
       const obstacles = lead === null
@@ -531,7 +569,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
           slot.x >= box.right || slot.x + width <= box.left || slot.y - 11 * s >= box.bottom || slot.y + 3 * s <= box.top);
       const slot = slots.find(isClear)
         ?? { x: x >= reticle.x ? cluster.right + 6 : cluster.left - 6 - width, y: beside };
-      drawText(text, slot.x, slot.y, CRIMSON);
+      drawText(text, slot.x, slot.y, shielded ? CYAN : CRIMSON);
 
       const barW = 36 * s;
       const barX = x - barW * 0.5;
@@ -542,6 +580,8 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
           drawBar(barX, barY, barW, 3, enemy.shields / enemy.maxShields, CYAN);
         }
         drawBar(barX, barY + 6, barW, 3, enemy.hull / enemy.maxHull, CRIMSON);
+      } else if (ground !== undefined) {
+        drawBar(barX, barY, barW, 4, shielded ? 1 : ground.hull / ground.maxHull, shielded ? CYAN : CRIMSON);
       } else {
         const subsystem =
           world.hostileFrigate?.subsystems.find((sub) => sub.id === contact.id) ?? world.reactors.find((r) => r.id === contact.id);
@@ -648,9 +688,32 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       }
     }
 
-    drawBlip(world.friendlyCarrier.position, CYAN, 3, 'square');
-    if (world.hostileFrigate !== null) {
-      drawBlip(world.hostileFrigate.position, CRIMSON, 3.5, 'square');
+    function drawGroundBlip(pos: Vec3, color: string): void {
+      const rel = sub(pos, world.player.position);
+      const lx = dot(rel, right) / RADAR_RANGE;
+      const lz = dot(rel, fwd) / RADAR_RANGE;
+      const planar = Math.hypot(lx, lz);
+      const fit = planar > 0.88 ? 0.88 / planar : 1;
+      const bx = cx + lx * fit * radius;
+      const by = cy - lz * fit * radius;
+      const tri = new Path2D();
+      tri.moveTo(bx, by - 3.4);
+      tri.lineTo(bx + 3.2, by + 2.4);
+      tri.lineTo(bx - 3.2, by + 2.4);
+      tri.closePath();
+      strokeInked(tri, color, 1.2);
+    }
+
+    if (world.planetary === null) {
+      drawBlip(world.friendlyCarrier.position, CYAN, 3, 'square');
+      if (world.hostileFrigate !== null) {
+        drawBlip(world.hostileFrigate.position, CRIMSON, 3.5, 'square');
+      }
+    } else {
+      drawBlip(world.friendlyCarrier.position, CYAN, 3, 'square');
+      for (const target of world.planetary.groundTargets) {
+        if (target.hull > 0) drawGroundBlip(target.position, target.id === world.player.selectedTargetId ? CREAM : CRIMSON);
+      }
     }
     drawBlip(world.wingmate.position, CYAN, 2.2, 'square');
 
@@ -717,7 +780,9 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       drawWarningPill('HUL', rightX + barW + 9, radarY + 4 * s + 9, hullLowSince, world.tick, 'left');
     }
 
-    if (proximitySince !== null) {
+    if (pullUpSince !== null) {
+      drawWarningPill('PULL UP', cx, radarY - radarRadius - 12 * s, pullUpSince, world.tick);
+    } else if (proximitySince !== null) {
       drawWarningPill('PROXIMITY', cx, radarY - radarRadius - 12 * s, proximitySince, world.tick);
     }
 
@@ -733,6 +798,18 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       ? world.reactors.filter((r) => r.hull > 0).length
       : (world.hostileFrigate?.subsystems.filter((sub) => sub.hull > 0).length ?? 0);
     const s = hudScale();
+    if (world.planetary !== null) {
+      const ground = `GROUND ${world.planetary.groundTargets.filter((t) => t.hull > 0).length}`;
+      drawText(ground, 18, 26 * s, CREAM);
+      if (world.planetary.stage.kind === 'air_superiority') {
+        drawText(`AIR ${world.enemies.length}`, 18 + textWidth(ground) + 14 * s, 26 * s, CRIMSON);
+      }
+      const outpost = world.friendlyCarrier.hull / world.friendlyCarrier.maxHull;
+      drawBar(18, 34 * s, 128 * s, 4, outpost, outpost < 0.35 ? AMBER : CYAN);
+      drawText('OUTPOST', 18 + 128 * s + 8, 34 * s + 7, CYAN);
+      drawRadio(world);
+      return;
+    }
     const hostiles = `${world.sortie.level === 'trench' ? 'HOSTILES' : 'RAIDERS'} ${world.enemies.length}`;
     drawText(hostiles, 18, 26 * s, CREAM);
     drawText(`${world.sortie.level === 'trench' ? 'REACTORS' : 'CORES'} ${cores}`, 18 + textWidth(hostiles) + 14 * s, 26 * s, MAGENTA);
@@ -740,6 +817,11 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     drawBar(18, 34 * s, 128 * s, 4, carrier, carrier < 0.35 ? AMBER : CYAN);
     drawText('HEARTHSTONE', 18 + 128 * s + 8, 34 * s + 7, CYAN);
 
+    drawRadio(world);
+  }
+
+  function drawRadio(world: WorldState): void {
+    const s = hudScale();
     if (world.radio !== null) {
       const speaker = `${world.radio.speaker} `;
       const right = cssWidth - 18;
@@ -754,6 +836,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     readonly color: string;
     readonly size?: number;
     readonly bold?: boolean;
+    readonly alpha?: number;
   }
 
   function drawCard(title: string, titleColor: string, lines: readonly CardLine[], prompt: CardLine): void {
@@ -780,7 +863,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     drawText(title, mid, cardY + 48 * s, titleColor, { size: 25, align: 'center' });
     let y = cardY + 98 * s;
     for (const line of lines) {
-      drawText(line.text, mid, y, line.color, { size: line.size ?? 12, align: 'center', bold: line.bold ?? false });
+      drawText(line.text, mid, y, line.color, { size: line.size ?? 12, align: 'center', bold: line.bold ?? false, alpha: line.alpha ?? 1 });
       y += 24 * s;
     }
     drawText(prompt.text, mid, cardY + cardH - 24 * s, prompt.color, { size: 14, align: 'center' });
@@ -810,7 +893,13 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       ], { text: 'PRESS ENTER OR CLICK TO LAUNCH', color: cream });
     } else if (phase.kind === 'paused') {
       drawCard('SORTIE PAUSED', AMBER, [
-        { text: `Flight time ${phase.elapsedSeconds.toFixed(1)}s  ·  Raiders left ${world.enemies.length}`, color: cream, size: 13 },
+        {
+          text: world.sortie.level === 'planetary'
+            ? `Flight time ${phase.elapsedSeconds.toFixed(1)}s  ·  Hostiles left ${world.enemies.length + (world.planetary?.groundTargets.filter((t) => t.hull > 0).length ?? 0)}`
+            : `Flight time ${phase.elapsedSeconds.toFixed(1)}s  ·  Raiders left ${world.enemies.length}`,
+          color: cream,
+          size: 13,
+        },
         { text: 'ESC / P / ENTER or click to resume  ·  R restart', color: HUD_PALETTE.warmWhite },
         { text: 'M mute all  ·  N toggle soundtrack', color: AMBER },
       ], { text: 'CLICK OR PRESS ESC TO RESUME', color: cream });
@@ -819,6 +908,8 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
         {
           text: world.sortie.level === 'trench'
             ? `Hostiles down ${phase.enemiesDestroyed}  ·  Conduit cores dark ${phase.reactorsDestroyed}`
+            : world.sortie.level === 'planetary'
+            ? `Ground targets ${phase.subsystemsDestroyed}  ·  Air kills ${phase.enemiesDestroyed}`
             : `Raiders down ${phase.enemiesDestroyed}  ·  Cores neutralized ${phase.subsystemsDestroyed}`,
           color: cream,
           size: 14,
@@ -861,12 +952,13 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       overheatSince = null;
       hullLowSince = null;
       proximitySince = null;
+      pullUpSince = null;
     } else if (tick > lastHudTick) {
       if (hitMarker !== null && tick - hitMarker.bornTick >= hitMarker.style.ticks) hitMarker = null;
       if (supply !== null && tick >= supply.untilTick) supply = null;
       threats = threats.filter((threat) => tick < threat.untilTick);
       for (const evt of world.events) {
-        if (evt.kind === 'subsystem_destroyed') {
+        if (evt.kind === 'subsystem_destroyed' || evt.kind === 'ground_target_destroyed') {
           showHitMarker(HIT_MARKERS.objective, tick);
         } else if (evt.kind === 'shield_broken') {
           showHitMarker(HIT_MARKERS.shield, tick);
@@ -886,6 +978,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     overheatSince = p.energy.weaponState === 'overheated' ? (overheatSince ?? tick) : null;
     hullLowSince = p.hull < p.maxHull * 0.35 ? (hullLowSince ?? tick) : null;
     proximitySince = p.proximityWarning ? (proximitySince ?? tick) : null;
+    pullUpSince = world.planetary?.terrainWarning === true ? (pullUpSince ?? tick) : null;
     lastHudTick = tick;
   }
 

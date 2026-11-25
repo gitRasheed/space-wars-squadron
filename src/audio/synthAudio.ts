@@ -271,7 +271,7 @@ export function createSynthAudio(options: SynthAudioOptions = {}): SynthAudio {
           lastHitStep = -Infinity;
           playCue(bus, 'kill-confirm');
           // A subsystem kill emits its own larger explosion immediately after the confirmation.
-          if (next?.kind !== 'subsystem_destroyed') playCue(bus, 'explosion');
+          if (next?.kind !== 'subsystem_destroyed' && next?.kind !== 'ground_target_destroyed') playCue(bus, 'explosion');
         } else {
           chain = step - lastHitStep <= CHAIN_WINDOW_STEPS ? chain + 1 : 0;
           lastHitStep = step;
@@ -299,7 +299,9 @@ export function createSynthAudio(options: SynthAudioOptions = {}): SynthAudio {
       }
       case 'shield_broken': playCue(bus, 'shield-break'); break;
       case 'weapon_overheated': playCue(bus, 'weapon-overheat'); break;
-      case 'subsystem_destroyed': playCue(bus, 'subsystem-destruction'); break;
+      case 'subsystem_destroyed':
+      case 'ground_target_destroyed': playCue(bus, 'subsystem-destruction'); break;
+      case 'flak_burst': playCue(bus, 'enemy-cannon'); break;
       case 'missile_fired': playCue(bus, 'missile-launch'); break;
       case 'target_locked': playCue(bus, 'lock-chirp'); break;
       case 'player_damaged': playCue(bus, 'player-damage'); break;

@@ -16,7 +16,14 @@ type SteeringMode =
   | { readonly kind: 'pointer_locked'; readonly dx: number; readonly dy: number };
 
 const MOUSE_SENSITIVITY = 0.0046;
-const LEVEL_KEYS: Readonly<Partial<Record<string, LevelId>>> = { Digit1: 'saturn', Digit2: 'trench', Numpad1: 'saturn', Numpad2: 'trench' };
+const LEVEL_KEYS: Readonly<Partial<Record<string, LevelId>>> = {
+  Digit1: 'saturn',
+  Digit2: 'trench',
+  Digit3: 'planetary',
+  Numpad1: 'saturn',
+  Numpad2: 'trench',
+  Numpad3: 'planetary',
+};
 const CURSOR_STEER_DEADZONE = 0.05;
 
 export function createInputChannel(
