@@ -20,7 +20,7 @@ describe('formal TLA+ timing agreement at 60 Hz', () => {
     const damaged = absorbShieldDamage(world.player.energy, COMBAT_TUNING.enemyBoltDamage).energy;
     let delayState = damaged;
     const shieldDelayTicks = ticksUntil(() => {
-      delayState = stepEnergy(delayState, false, false, false, FIXED_DT).energy;
+      delayState = stepEnergy(delayState, false, false, FIXED_DT).energy;
       return delayState.shieldRegenDelay <= 0;
     });
 
@@ -72,21 +72,21 @@ describe('formal TLA+ timing agreement at 60 Hz', () => {
 
     let ohState: EnergyState = { ...world.player.energy, weaponState: 'overheated', weaponHeat: 100 };
     const overheatTicks = ticksUntil(() => {
-      ohState = stepEnergy(ohState, false, false, false, FIXED_DT).energy;
+      ohState = stepEnergy(ohState, false, false, FIXED_DT).energy;
       return ohState.weaponState === 'ready';
     });
 
-    let rechargeState: EnergyState = { ...damaged, shieldCharge: 0 };
-    const rechargeTicks = ticksUntil(() => {
-      rechargeState = stepEnergy(rechargeState, false, false, true, FIXED_DT).energy;
-      return rechargeState.shieldCharge >= 100;
+    let regenState: EnergyState = { ...world.player.energy, shieldCharge: 0, shieldRegenDelay: 0 };
+    const regenTicks = ticksUntil(() => {
+      regenState = stepEnergy(regenState, false, false, FIXED_DT).energy;
+      return regenState.shieldCharge >= 100;
     });
 
     const rack = player.maxMissiles;
-    expect(shieldDelayTicks).toBe(133);
+    expect(shieldDelayTicks).toBe(109);
     expect(overheatTicks).toBe(400);
-    // 28/s from empty, straight through the regen delay the hit just set.
-    expect(rechargeTicks).toBe(215);
+    // Automatic shield regeneration at 15/s from empty once the hit delay has expired.
+    expect(regenTicks).toBe(400);
     expect(acquireTicks).toBe(48);
     expect((shotTicks[1] ?? 0) - (shotTicks[0] ?? 0)).toBe(9);
     expect((missileTicks[1] ?? 0) - (missileTicks[0] ?? 0)).toBe(34);

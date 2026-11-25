@@ -301,21 +301,9 @@ export function selectNextTarget(
     }
   }
 
-  if (currentIndex >= 0) {
-    return currentId;
-  }
-
-  let bestId = contacts[0]?.id ?? null;
-  let bestScore = -Infinity;
-  for (const contact of contacts) {
-    const view = angleOffNose(playerPos, playerForward, contact.position);
-    const score = Math.cos(view.angle) * 2 - view.dist / 1400;
-    if (score > bestScore) {
-      bestScore = score;
-      bestId = contact.id;
-    }
-  }
-  return bestId;
+  // Pure center-of-view targeting: when nothing is inside your forward cone, select nothing
+  // instead of sticking to an off-screen contact or forcing an arbitrary "next objective".
+  return null;
 }
 
 export interface TargetSelection {
@@ -342,7 +330,7 @@ export function resolveTargetSelection(
   if (cycleRequested) {
     const candidates = contacts.filter((c) => insidePinCone(playerPos, playerForward, c));
     if (candidates.length === 0) {
-      return { targetId: selectNextTarget(current.targetId, playerPos, playerForward, contacts, true), pinned: false };
+      return { targetId: null, pinned: false };
     }
     const index = candidates.findIndex((c) => c.id === current.targetId);
     if (current.pinned && candidates.length === 1 && index === 0) {
@@ -475,9 +463,7 @@ function stepPlayerWeapons(
   let nextBarrel: BarrelSide = player.nextBarrel;
   let lockState = lockStep.lockState;
 
-  // Manual shield recharge takes the power the weapons would draw.
-  const weaponsOnline = !input.rechargeShields;
-  if (weaponsOnline && input.firePrimary && primaryCooldown <= 0) {
+  if (input.firePrimary && primaryCooldown <= 0) {
     const hotZone = inHotZone(energy);
     const spent = addWeaponHeat(energy, ENERGY_RULES.primaryShotHeat);
     if (spent !== null) {
@@ -518,7 +504,7 @@ function stepPlayerWeapons(
   // A held trigger only launches on a completed lock; a fresh press launches immediately.
   const lockedId = lockState.kind === 'locked' ? lockState.targetId : null;
   const missileTriggered = input.fireMissilePressed || (input.fireMissile && lockedId !== null);
-  if (weaponsOnline && missileTriggered && missileCooldown <= 0 && missilesReady > 0) {
+  if (missileTriggered && missileCooldown <= 0 && missilesReady > 0) {
     missilesReady -= 1;
     missileCooldown = COMBAT_TUNING.missileCooldown;
     lockState = { kind: 'none' };

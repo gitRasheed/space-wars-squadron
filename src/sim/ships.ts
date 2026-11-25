@@ -27,8 +27,8 @@ export const SHIP_STATS: {
   player: {
     hull: 80,
     shields: 100,
-    shieldRegenDelay: 2.2,
-    shieldRegenPerSecond: 10,
+    shieldRegenDelay: 1.8,
+    shieldRegenPerSecond: 15,
     hitRadius: 5.5,
   },
   enemies: {

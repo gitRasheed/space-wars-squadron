@@ -10,7 +10,6 @@ export function hullCritical(player: PlayerShipState): boolean {
 export function overdriveArmed(player: PlayerShipState): boolean {
   const { energy } = player;
   return !energy.overdrive
-    && !energy.recharging
     && player.throttle >= FLIGHT_TUNING.maxCruiseThrottle - 0.005
     && energy.shieldCharge >= ENERGY_RULES.minOverdriveShield;
 }

@@ -193,7 +193,7 @@ function createInitialPlayer(): PlayerShipState {
     missilesReady: 4,
     maxMissiles: 4,
     missileRearmTimer: 0,
-    selectedTargetId: 'raider-1',
+    selectedTargetId: null,
     targetPinned: false,
     lockState: { kind: 'none' },
     critPity: 0,
@@ -322,7 +322,7 @@ export function createPlanetarySortieConfig(options: PlanetaryOptions = {}): Sor
       position: PLAYER_START.position,
       velocity,
       orientation: quatLookAt(heading),
-      selectedTargetId: groundTargets.find((t) => t.hull > 0)?.id ?? null,
+      selectedTargetId: null,
     },
     wingmate: { ...DEFAULT_SORTIE_CONFIG.wingmate, position: WINGMATE_START, velocity, orientation: quatLookAt(heading), targetId: null },
     enemies: airWave ? spawnAirWave() : [],
@@ -579,9 +579,12 @@ export function stepWorld(
   };
 }
 
-/** Repeats `hull_critical` while the hull sits at or below the critical fraction and the fighter is still alive. */
+/** Repeats `hull_critical` only when hull is critical AND shields are depleted (< 15%), avoiding alarm spam while shielded. */
 export function soundHullAlarm(player: PlayerShipState, dt: number): { readonly player: PlayerShipState; readonly events: readonly SimEvent[] } {
-  const critical = player.hull > 0 && player.hull <= player.maxHull * HULL_CRITICAL_FRACTION;
+  const critical =
+    player.hull > 0 &&
+    player.hull <= player.maxHull * HULL_CRITICAL_FRACTION &&
+    player.energy.shieldCharge < 15;
   if (!critical) {
     return { player: player.hullAlarmCooldown === 0 ? player : { ...player, hullAlarmCooldown: 0 }, events: [] };
   }

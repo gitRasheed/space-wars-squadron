@@ -342,9 +342,6 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     if (world.player.energy.overdrive) {
       return { kind: 'word', text: 'OVERDRIVE', color: GOLD };
     }
-    if (world.player.energy.recharging) {
-      return { kind: 'word', text: 'SHIELD RECHARGE', color: CYAN };
-    }
     if (inHotZone(world.player.energy)) {
       return { kind: 'word', text: 'HOT ZONE', color: GOLD };
     }
@@ -552,7 +549,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       const isSelected = contact.id === selectedId;
       const label = `${contact.label} ${Math.round(distance(world.player.position, contact.position))}M`;
       if (!inCanopy(projected)) {
-        if (isSelected) drawEdgeChevron(projected, CRIMSON, label);
+        if (isSelected && world.player.targetPinned) drawEdgeChevron(projected, CRIMSON, label);
         continue;
       }
       const { x, y } = projected;
@@ -961,8 +958,8 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     y += 34 * s;
     const controls = [
       'MOUSE steer  ·  LMB cannons, fire hot for harder crits  ·  RMB / E lock-on missile',
-      'W / S throttle, tap W at 100% for overdrive  ·  A / D roll  ·  hold C recharge shields',
-      'T target  ·  ESC / P pause  ·  R restart  ·  M / N audio',
+      'W / S throttle, tap W at 100% for overdrive  ·  A / D roll',
+      'T pin target  ·  ESC / P pause  ·  R restart  ·  M / N audio',
     ];
     for (const line of controls) {
       drawText(line, mid, y, HUD_PALETTE.warmWhite, { size: 10, align: 'center', bold: false, alpha: 0.75 });

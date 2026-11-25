@@ -274,7 +274,6 @@ export function createInputChannel(
       firePrimary: mouseLeftHeld || heldKeys.has('KeyJ'),
       fireMissile: mouseRightHeld || heldKeys.has('KeyE'),
       fireMissilePressed: queuedFireMissile,
-      rechargeShields: heldKeys.has('KeyC'),
       cycleTarget: queuedCycleTarget,
       launchBriefing: queuedLaunchBriefing,
       restartSortie: queuedRestartSortie,

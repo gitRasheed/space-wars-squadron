@@ -31,7 +31,6 @@ interface ReadOnlyTelemetry {
     readonly weaponState: WorldState['player']['energy']['weaponState'];
     readonly weaponHeat: number;
     readonly hotZone: boolean;
-    readonly recharging: boolean;
     readonly shieldCharge: number;
     readonly missilesReady: number;
     readonly enemiesRemaining: number;
@@ -214,7 +213,6 @@ function boot(): void {
       weaponState: world.player.energy.weaponState,
       weaponHeat: world.player.energy.weaponHeat,
       hotZone: inHotZone(world.player.energy),
-      recharging: world.player.energy.recharging,
       shieldCharge: world.player.energy.shieldCharge,
       missilesReady: world.player.missilesReady,
       enemiesRemaining: world.enemies.length,

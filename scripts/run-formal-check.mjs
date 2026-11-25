@@ -11,7 +11,6 @@ const jar = join(formal, 'tla2tools.jar');
 const model = 'EnergyAndLock';
 const mutant = 'EnergyAndLockMutant';
 const overheatMutant = 'OverheatMutant';
-const rechargeMutant = 'ShieldRechargeMutant';
 
 async function ensureJar() {
   try {
@@ -75,7 +74,7 @@ async function measureSimulation(work) {
     const world = createInitialWorld(1, true);
     assert.equal(dt, 1 / 60);
     assert.deepEqual(world.player.energy, {
-      overdrive: false, recharging: false, weaponState: 'ready', weaponHeat: 0, shieldCharge: 100, shieldRegenDelay: 0,
+      overdrive: false, weaponState: 'ready', weaponHeat: 0, shieldCharge: 100, shieldRegenDelay: 0,
     });
     assert.equal(world.player.missilesReady, world.player.maxMissiles);
     const unit = 600;
@@ -87,13 +86,13 @@ async function measureSimulation(work) {
     }
 
     const initial = { ...world.player.energy, weaponHeat: 50, shieldCharge: 50, shieldRegenDelay: 0 };
-    const idle = stepEnergy(initial, false, false, false, dt).energy;
-    const od = stepEnergy(initial, true, false, false, dt).energy;
+    const idle = stepEnergy(initial, false, false, dt).energy;
+    const od = stepEnergy(initial, true, false, dt).energy;
     const overheated = { ...initial, weaponState: 'overheated', weaponHeat: 50 };
-    const cooling = stepEnergy(overheated, false, false, false, dt).energy;
+    const cooling = stepEnergy(overheated, false, false, dt).energy;
     let ohState = { ...initial, weaponState: 'overheated', weaponHeat: 100 };
     const overheatTicks = ticksUntil(() => {
-      ohState = stepEnergy(ohState, false, false, false, dt).energy;
+      ohState = stepEnergy(ohState, false, false, dt).energy;
       return ohState.weaponState === 'ready';
     });
     const shot = addWeaponHeat(initial, ENERGY_RULES.primaryShotHeat);
@@ -101,19 +100,9 @@ async function measureSimulation(work) {
     const hit = absorbShieldDamage(initial, COMBAT_TUNING.enemyBoltDamage).energy;
     let delayState = hit;
     const shieldRegenDelayTicks = ticksUntil(() => {
-      delayState = stepEnergy(delayState, false, false, false, dt).energy;
+      delayState = stepEnergy(delayState, false, false, dt).energy;
       return delayState.shieldRegenDelay <= 0;
     });
-
-    // Manual recharge: past the regen delay at its own rate, a ready gun holds its heat, a lockout keeps cooling.
-    const recharged = stepEnergy({ ...hit, overdrive: true }, true, false, true, dt).energy;
-    assert.equal(recharged.overdrive, false, 'Manual recharge kept or entered Overdrive');
-    assert.equal(recharged.weaponHeat, hit.weaponHeat, 'Manual recharge cooled a ready gun');
-    assert.equal(stepEnergy(overheated, false, false, true, dt).energy.weaponHeat, cooling.weaponHeat,
-      'Manual recharge paused the overheat lockout');
-    const rechargePull = combatFrame(1, { ...world.player, primaryCooldown: 0 },
-      { ...NEUTRAL_INPUT, firePrimary: true, fireMissile: true, fireMissilePressed: true, rechargeShields: true });
-    const rechargeFires = rechargePull.events.some(e => e.kind === 'missile_fired' || (e.kind === 'cannon_fired' && e.faction === 'friendly'));
 
     // Rewards near a cap must stay inside 0..100: a vent on a nearly cold gun, a restore or surge on nearly full shields.
     const fastPlayer = { ...world.player, velocity: { x: 0, y: 0, z: -100 } };
@@ -179,7 +168,6 @@ async function measureSimulation(work) {
       MinOverdriveShield: units(ENERGY_RULES.minOverdriveShield),
       OverdriveDrain: units(initial.shieldCharge - od.shieldCharge),
       ShieldRecharge: units(idle.shieldCharge - initial.shieldCharge),
-      ManualRecharge: units(recharged.shieldCharge - hit.shieldCharge),
       WeaponCool: units(initial.weaponHeat - idle.weaponHeat),
       OverheatCool: units(overheated.weaponHeat - cooling.weaponHeat),
       ShotHeat: units(shot.energy.weaponHeat - initial.weaponHeat),
@@ -196,8 +184,6 @@ async function measureSimulation(work) {
       ShieldRestore: units(COMBAT_TUNING.nearMissShieldRestore),
       ShieldSurge: units(COMBAT_TUNING.shieldSurge),
       OverheatedShotFires: overheatedShotFires ? 'TRUE' : 'FALSE',
-      RechargeAllowsFire: rechargeFires ? 'TRUE' : 'FALSE',
-      RechargeAllowsOverdrive: recharged.overdrive ? 'TRUE' : 'FALSE',
     };
   } finally {
     await vite.close();
@@ -258,7 +244,6 @@ try {
       await copyFile(join(formal, name), join(work, name));
     }
   }
-  await copyFile(join(formal, `${rechargeMutant}.tla`), join(work, `${rechargeMutant}.tla`));
   await copyFile(join(formal, `${model}Combat.cfg`), join(work, `${model}Combat.cfg`));
 
   const measured = await measureSimulation(work);
@@ -270,7 +255,6 @@ try {
   // overheat three, each a primary cooldown apart.
   const probes = [
     ['NeverOverdrive', 'FlightInit', 2],
-    ['NeverRecharging', 'FlightInit', 2],
     ['NeverHotZone', 'FlightInit', 1 + measured.PrimaryCooldown + 1],
     ['NeverOverheated', 'FlightInit', 1 + 2 * measured.PrimaryCooldown + 1],
     ['NeverLocked', 'CombatInit', 1 + measured.AcquireTicks],
@@ -287,18 +271,6 @@ try {
   // Firing on the first overheated frame needs three shots to overheat plus one more pull.
   checks.push(expectViolation(overheatMutant, `${overheatMutant}.cfg`, 'Action property OverheatCannotFire',
     2 + 3 * measured.PrimaryCooldown));
-  // Each half of the recharge lockout is mutated on its own, and each breaks RechargeExclusive on the first frame:
-  // Overdrive and the cannons in the flight projection, missiles in the combat one.
-  const rechargeMutants = [
-    ['RechargeKeepsOverdrive', 'FlightInit', 'RechargeAllowsOverdrive'],
-    ['RechargeFiresCannons', 'FlightInit', 'RechargeAllowsFire'],
-    ['RechargeFiresMissiles', 'CombatInit', 'RechargeAllowsFire'],
-  ];
-  for (const [name, init, gate] of rechargeMutants) {
-    const config = `${name}.cfg`;
-    await writeFile(join(work, config), `INIT ${init}\nNEXT Next\nCONSTANT ${gate} <- RechargeIgnored\nINVARIANT RechargeExclusive\n`);
-    checks.push(expectViolation(rechargeMutant, config, 'Invariant RechargeExclusive', 2));
-  }
   const flight = expectClean(`${model}.cfg`);
   const combat = expectClean(`${model}Combat.cfg`);
   await Promise.all(checks);

@@ -52,7 +52,7 @@ function withFakeDom(
   }
 }
 
-describe('missile, recharge and briefing input', () => {
+describe('missile and briefing input', () => {
   it('keeps a right click pressed and released between two ticks as a fresh missile press', () => {
     withFakeDom(false, undefined, ({ window, canvas, channel }) => {
       canvas.emit('mousedown', { button: 2, clientX: 0, clientY: 0 });
@@ -60,15 +60,6 @@ describe('missile, recharge and briefing input', () => {
       const tick = channel.sample();
       expect(tick).toMatchObject({ fireMissilePressed: true, fireMissile: false });
       expect(channel.sample().fireMissilePressed).toBe(false);
-    });
-  });
-
-  it('holds manual shield recharge while C is down', () => {
-    withFakeDom(false, undefined, ({ window, channel }) => {
-      window.emit('keydown', { code: 'KeyC', repeat: false, preventDefault: () => undefined });
-      expect(channel.sample().rechargeShields).toBe(true);
-      window.emit('keyup', { code: 'KeyC' });
-      expect(channel.sample().rechargeShields).toBe(false);
     });
   });
 

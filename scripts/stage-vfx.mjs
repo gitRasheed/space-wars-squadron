@@ -176,9 +176,6 @@ const DASH_STATES = [
     assertCondition(reticleGold > 60, `the Hot Zone should light the reticle gold, saw ${reticleGold} pixels`);
   }],
   ['overheat', { energy: { weaponHeat: 70, weaponState: 'overheated' } }, 64],
-  ['recharge', { throttle: 1, energy: { recharging: true, shieldCharge: 40 } }, 4, ({ hint }) => {
-    assertCondition(hint === 0, `the Overdrive hint must hide while recharging, saw ${hint} gold pixels`);
-  }],
   ['low-hull', { hullFraction: 0.2 }, 100, ({ lamps }) => {
     assertCondition(
       lamps.count > 200 && lamps.minRadius > 120 && lamps.maxRadius < 240,

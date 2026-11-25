@@ -94,7 +94,7 @@ describe('throttle overdrive and weapon overheat kernel', () => {
 
     // Cannot fire while overheated, even after partial cooling.
     for (let i = 0; i < 100; i += 1) {
-      energy = stepEnergy(energy, false, false, false, FIXED_DT).energy;
+      energy = stepEnergy(energy, false, false, FIXED_DT).energy;
     }
     expect(energy.weaponHeat).toBeCloseTo(100 - 100 * FIXED_DT * ENERGY_RULES.overheatCoolPerSecond, 6);
     expect(energy.weaponState).toBe('overheated');
@@ -103,7 +103,7 @@ describe('throttle overdrive and weapon overheat kernel', () => {
     // Once cooled back to 0, cannons unlock cleanly and announce it.
     let readyEvents = 0;
     for (let i = 0; i < 400 && energy.weaponState !== 'ready'; i += 1) {
-      const step = stepEnergy(energy, false, false, false, FIXED_DT);
+      const step = stepEnergy(energy, false, false, FIXED_DT);
       energy = step.energy;
       readyEvents += step.events.filter((e) => e.kind === 'weapon_ready').length;
     }
@@ -115,8 +115,8 @@ describe('throttle overdrive and weapon overheat kernel', () => {
 
   it('cools a ready gun at 24/s and an overheated one at 15/s', () => {
     const warm = { ...createInitialEnergy(), weaponHeat: 50 };
-    expect(stepEnergy(warm, false, false, false, 1).energy.weaponHeat).toBe(50 - ENERGY_RULES.weaponCoolPerSecond);
-    expect(stepEnergy({ ...warm, weaponState: 'overheated' }, false, false, false, 1).energy.weaponHeat).toBe(50 - ENERGY_RULES.overheatCoolPerSecond);
+    expect(stepEnergy(warm, false, false, 1).energy.weaponHeat).toBe(50 - ENERGY_RULES.weaponCoolPerSecond);
+    expect(stepEnergy({ ...warm, weaponState: 'overheated' }, false, false, 1).energy.weaponHeat).toBe(50 - ENERGY_RULES.overheatCoolPerSecond);
   });
 });
 
@@ -222,7 +222,7 @@ describe('sortie simulation contracts and enemy shield entities', () => {
     expect(afterSecondMissile.events.some((e) => e.kind === 'hit_confirmed' && e.isKill)).toBe(true);
   });
 
-  it('auto-focuses whichever hostile is in the center of your view so lead pip and lock-on track who you are actually fighting', () => {
+  it('auto-focuses whichever hostile is in the center of your view and clears when nobody is ahead', () => {
     const contacts = [
       { id: 'behind', label: 'VANE-1', position: vec3(0, 0, 260), velocity: vec3(0, 0, 0), kind: 'enemy' as const },
       { id: 'ahead', label: 'VANE-2', position: vec3(8, 2, -320), velocity: vec3(0, 0, 0), kind: 'enemy' as const },
@@ -231,7 +231,7 @@ describe('sortie simulation contracts and enemy shield entities', () => {
     const selected = selectNextTarget('behind', vec3(0, 0, 0), vec3(0, 0, -1), contacts, false);
     expect(selected).toBe('ahead');
 
-    // If nobody is in the forward cone, keep tracking the current target so the edge arrow guides you back.
+    // If nobody is in the forward cone, unpinned selection clears instead of forcing an off-screen target.
     const outOfView = selectNextTarget(
       'behind',
       vec3(0, 0, 0),
@@ -239,7 +239,7 @@ describe('sortie simulation contracts and enemy shield entities', () => {
       contacts,
       false,
     );
-    expect(outOfView).toBe('behind');
+    expect(outOfView).toBeNull();
   });
 
   it('clears lock and rearms missiles after firing', () => {
@@ -624,53 +624,57 @@ describe('cannon Hot Zone', () => {
   });
 });
 
-describe('manual shield recharge', () => {
-  const recharge = { ...NEUTRAL_INPUT, rechargeShields: true };
-
-  it('fills shields at 28/s straight through the regen delay', () => {
-    const energy = { ...createInitialEnergy(), shieldCharge: 20, shieldRegenDelay: SHIP_STATS.player.shieldRegenDelay };
-    expect(stepEnergy(energy, false, false, true, 1).energy.shieldCharge).toBe(48);
-    expect(stepEnergy({ ...energy, shieldCharge: 90 }, false, false, true, 1).energy.shieldCharge).toBe(100);
-    expect(stepEnergy(energy, false, false, false, 1).energy.shieldCharge).toBe(20);
-  });
-
-  it('holds a ready gun at its heat but keeps an overheat lockout cooling', () => {
-    const warm = { ...createInitialEnergy(), weaponHeat: 60 };
-    expect(stepEnergy(warm, false, false, true, 1).energy.weaponHeat).toBe(60);
-    expect(stepEnergy({ ...warm, weaponState: 'overheated' }, false, false, true, 1).energy.weaponHeat).toBe(60 - ENERGY_RULES.overheatCoolPerSecond);
-  });
-
-  it('keeps cannons and missiles silent while held', () => {
-    const base = emptyArena();
-    const after = combatTick(base, 1, { ...recharge, firePrimary: true, fireMissile: true, fireMissilePressed: true });
-    expect(after.events.filter((e) => e.kind === 'cannon_fired' || e.kind === 'missile_fired')).toEqual([]);
-    expect(after.player.missilesReady).toBe(base.player.missilesReady);
-  });
-
-  it('drops Overdrive to the 100% detent and refuses to re-enter it while held', () => {
-    let world = emptyArena();
-    world = { ...world, player: { ...world.player, throttle: FLIGHT_TUNING.overdriveThrottle, energy: { ...world.player.energy, overdrive: true } } };
-    world = stepWorld(world, recharge, FIXED_DT);
-    expect(world.player.energy.overdrive).toBe(false);
-    expect(world.player.throttle).toBe(FLIGHT_TUNING.maxCruiseThrottle);
-    world = stepWorld(world, { ...recharge, throttleDelta: 1, throttlePushEdge: true }, FIXED_DT);
-    expect(world.player.energy.overdrive).toBe(false);
+describe('automatic shield regeneration', () => {
+  it('waits out the 1.8 s hit delay, then refills shields automatically at 15/s when not in Overdrive', () => {
+    const delayed = { ...createInitialEnergy(), shieldCharge: 20, shieldRegenDelay: SHIP_STATS.player.shieldRegenDelay };
+    expect(stepEnergy(delayed, false, false, 1).energy.shieldCharge).toBe(20);
+    const ready = { ...delayed, shieldRegenDelay: 0 };
+    expect(stepEnergy(ready, false, false, 1).energy.shieldCharge).toBe(20 + SHIP_STATS.player.shieldRegenPerSecond);
+    expect(stepEnergy({ ...ready, shieldCharge: 95 }, false, false, 1).energy.shieldCharge).toBe(100);
   });
 });
 
 describe('low-hull alarm', () => {
-  it('sounds at 35% hull and repeats every 1.5 s, never above it', () => {
+  it('sounds at 35% hull only when shields are down (< 15), repeating every 3.0 s', () => {
     const base = emptyArena();
-    const critical = { ...base, player: { ...base.player, hull: base.player.maxHull * HULL_CRITICAL_FRACTION } };
-    let world = critical;
+    const lowHullShielded = { ...base, player: { ...base.player, hull: base.player.maxHull * HULL_CRITICAL_FRACTION } };
+    expect(stepWorld(lowHullShielded, NEUTRAL_INPUT, FIXED_DT).events.some((e) => e.kind === 'hull_critical')).toBe(false);
+
+    const lowHullExposed = {
+      ...base,
+      player: {
+        ...base.player,
+        hull: base.player.maxHull * HULL_CRITICAL_FRACTION,
+        energy: { ...base.player.energy, shieldCharge: 0, shieldRegenDelay: 99 },
+      },
+    };
+    let world = lowHullExposed;
     const alarms: number[] = [];
-    for (let i = 0; i < 200; i += 1) {
-      world = stepWorld({ ...world, player: { ...world.player, hull: critical.player.hull } }, NEUTRAL_INPUT, FIXED_DT);
+    for (let i = 0; i < 380; i += 1) {
+      world = stepWorld(
+        {
+          ...world,
+          player: {
+            ...world.player,
+            hull: lowHullExposed.player.hull,
+            energy: { ...world.player.energy, shieldCharge: 0, shieldRegenDelay: 99 },
+          },
+        },
+        NEUTRAL_INPUT,
+        FIXED_DT,
+      );
       if (world.events.some((e) => e.kind === 'hull_critical')) alarms.push(world.tick);
     }
-    expect(alarms).toEqual([1, 91, 181]);
+    expect(alarms).toEqual([1, 181, 361]);
 
-    const healthy = stepWorld({ ...base, player: { ...base.player, hull: base.player.maxHull * 0.36 } }, NEUTRAL_INPUT, FIXED_DT);
+    const healthy = stepWorld(
+      {
+        ...lowHullExposed,
+        player: { ...lowHullExposed.player, hull: base.player.maxHull * 0.36 },
+      },
+      NEUTRAL_INPUT,
+      FIXED_DT,
+    );
     expect(healthy.events.some((e) => e.kind === 'hull_critical')).toBe(false);
   });
 });

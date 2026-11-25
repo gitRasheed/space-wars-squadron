@@ -15,7 +15,7 @@
 |---|---|---|---|---|---|---|
 | 1 | Sortie Lifecycle & Launch/Restart | Sum (`SortiePhase`) + dual write sites | Traced | Medium (Common) | `src/main.ts:59-82`, `src/input/keyboardMouse.ts:62-63`, `src/sim/world.ts:153-184` | 3 |
 | 2 | Input Steering & Focus / Pointer Lock | Implicit 2-flag product (`pointerLocked` × `cursorActive` × held keys) | Traced | Medium (Common) | `src/input/keyboardMouse.ts:14-40,102-129,154-164` | 2 |
-| 3 | Throttle Overdrive & Weapon Heat | `overdrive` × `recharging` × `WeaponState` (`ready`/`overheated`) × heat and shield | Traced (pass 3) | Medium (Common) | `src/sim/energy.ts`, `src/sim/flight.ts` | 1 |
+| 3 | Throttle Overdrive & Weapon Heat | `overdrive` × `WeaponState` (`ready`/`overheated`) × heat and shield | Traced (pass 3) | Medium (Common) | `src/sim/energy.ts`, `src/sim/flight.ts` | 1 |
 | 4 | Target Selection, Pin & Missile Lock | Sum (`LockState`) × `selectedTargetId` × `targetPinned` × `missilesReady` (fresh press is the `fireMissilePressed` input edge) | Traced (pass 3) | Medium (Common) | `src/sim/combat.ts` (`resolveTargetSelection`, `stepPlayerWeapons`) | 1 |
 | 6 | Enemy Maneuver | Sum (`EnemyManeuver`: `patrol`/`approach`/`break_away`) | Traced (pass 3) | Medium (Common) | `src/sim/combat.ts` (`stepEnemyAi`) | 1 |
 | 7 | Planetary Stage (ground attack → air superiority) | Sum (`PlanetaryStage`) × ground-target hulls × `enemies` | Traced (pass 4) | Low (Edge) | `src/sim/planetary.ts` (`stepGroundBattle`, `remainingPlanetaryHostiles`), `src/sim/world.ts` | 1 |
@@ -104,4 +104,10 @@
 - **Machine 3, manual recharge.** Holding `C` sets `energy.recharging` for that tick: Overdrive drops and cannot start, cannons and missiles hold fire, shields fill at 28/s past the regen delay, a ready gun's heat holds, and a lockout keeps cooling so `OverheatCompletes` still holds. `RechargeExclusive` checks it in both projections; `ShieldRechargeMutant.tla` must fail it, and `run-formal-check.mjs` measures from TS that the C key lets no shot or Overdrive through.
 - **Machine 4, missile press.** The sim no longer infers a fresh press from `missileTriggerHeld`. Input sends `fireMissilePressed` for any press since the last tick, so a press and release between two ticks still launches.
 - **Machine 1, debrief.** `B` from victory or failure rebuilds the world at the briefing card with the same mission selected.
+
+## 10. Playtest polish pass (2026-11-25): automatic shields, forward-cone targeting, quiet alarms
+
+- **Machine 3, automatic shield regen only.** Removed the manual `C` recharge mode (`recharging`) so shields simply regenerate automatically at 15/s after a 1.8 s hit delay (`ShieldRegenDelayTicks = 109`, `ShieldRecharge = 150` in `formal/EnergyAndLock.tla`).
+- **Machine 4, pure forward-cone focus.** Unpinned `selectNextTarget` now returns `null` when no hostile is inside the forward focus cone instead of forcing an arbitrary off-screen target; the HUD edge chevron only appears for an explicit `T` pin.
+- **Audio quietness.** `hull_critical` audio only emits when hull `≤ 35%` **and** `shieldCharge < 15` (every 3.0 s); `incoming_fire` steers directional near-miss pan without playing a radar chirp; `target_locked` debounces rapid switches (90 ticks global, 180 ticks same target).
 

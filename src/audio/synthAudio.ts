@@ -30,7 +30,8 @@ const BAKED_MUSIC_GAIN = 0.27;
 const CHAIN_WINDOW_STEPS = 48;
 // C D E G A sit in every level key, so the chain climbs D E G A C D over the hit-confirm's D.
 const CHAIN_CENTS = [0, 200, 500, 700, 1000, 1200];
-const INCOMING_COOLDOWN_STEPS = 30;
+const LOCK_CHIRP_COOLDOWN_STEPS = 90;
+const LOCK_SAME_TARGET_COOLDOWN_STEPS = 180;
 const CRIT_DUCK = { depth: 0.63, holdS: 0.12 };
 
 interface CueOptions {
@@ -97,7 +98,8 @@ export function createSynthAudio(options: SynthAudioOptions = {}): SynthAudio {
   let step = 0;
   let chain = 0;
   let lastHitStep = -Infinity;
-  let incomingReadyStep = 0;
+  let lastLockChirpStep = -Infinity;
+  let lastLockedTargetId: string | null = null;
   let threatSide = -1;
 
   function stopMusic(): void {
@@ -291,11 +293,9 @@ export function createSynthAudio(options: SynthAudioOptions = {}): SynthAudio {
       // A drop that clears an overheat chimes first, then the cannons latch.
       case 'weapon_ready': playCue(bus, 'weapon-ready', { delayS: previous?.kind === 'supply_drop' ? 0.25 : 0 }); break;
       case 'incoming_fire': {
+        // Track threat bearing silently for directional near-miss whooshes without spamming radar beeps on every shot.
         const side = sideOf(world, event.position);
         threatSide = side < 0 ? -1 : 1;
-        if (step < incomingReadyStep) break;
-        incomingReadyStep = step + INCOMING_COOLDOWN_STEPS;
-        playCue(bus, 'incoming-fire', { pan: side * 0.7 });
         break;
       }
       case 'shield_broken': playCue(bus, 'shield-break'); break;
@@ -304,7 +304,17 @@ export function createSynthAudio(options: SynthAudioOptions = {}): SynthAudio {
       case 'ground_target_destroyed': playCue(bus, 'subsystem-destruction'); break;
       case 'flak_burst': playCue(bus, 'enemy-cannon'); break;
       case 'missile_fired': playCue(bus, 'missile-launch'); break;
-      case 'target_locked': playCue(bus, 'lock-chirp'); break;
+      case 'target_locked': {
+        const lockedId = world.player.lockState.kind === 'locked' ? world.player.lockState.targetId : null;
+        const cooldown = lockedId !== null && lockedId === lastLockedTargetId
+          ? LOCK_SAME_TARGET_COOLDOWN_STEPS
+          : LOCK_CHIRP_COOLDOWN_STEPS;
+        if (step - lastLockChirpStep < cooldown) break;
+        lastLockChirpStep = step;
+        lastLockedTargetId = lockedId;
+        playCue(bus, 'lock-chirp');
+        break;
+      }
       case 'player_damaged': playCue(bus, 'player-damage'); break;
       case 'hull_critical': playCue(bus, 'hull-warning'); break;
       case 'overdrive_engaged': playCue(bus, 'boost'); break;

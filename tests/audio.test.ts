@@ -222,8 +222,8 @@ describe('combat audio', () => {
     expect(ctx.cues.slice(-5).map(s => s.detune.value)).toEqual([200, 0, 0, 0, 200]);
   });
 
-  it('plays the reward and warning cues, ducks the score under a crit and pans the warning to the shooter', () => {
-    const { ctx, tick, world } = cockpit();
+  it('plays reward cues, ducks the score under a crit, keeps incoming fire silent while steering near-miss pan, and debounces lock chirps', () => {
+    const { ctx, audio, tick, world } = cockpit();
     tick();
     const musicGain = ctx.music[0]?.connections[0] as Gain;
     const setTarget = vi.spyOn(musicGain.gain, 'setTargetAtTime');
@@ -231,7 +231,7 @@ describe('combat audio', () => {
     const left = { ...right, x: world.player.position.x - 50 };
     tick({ kind: 'crit_hit', position: right }, { kind: 'supply_drop', drop: 'heat_flush' }, { kind: 'weapon_ready' },
       { kind: 'incoming_fire', position: left }, { kind: 'near_miss', source: 'bolt', reward: 'shield' });
-    const expected = ['crit-hit', 'supply-drop', 'weapon-ready', 'incoming-fire', 'near-miss'] as const;
+    const expected = ['crit-hit', 'supply-drop', 'weapon-ready', 'near-miss'] as const;
     expect(ctx.cues.map(s => s.buffer?.length)).toEqual(expected.map(id => cues[id].durationS * ctx.sampleRate));
     for (const [i, id] of expected.entries()) {
       expect(ctx.cues[i]?.buffer?.getChannelData(0)).toEqual(renderCue(id, ctx.sampleRate).left);
@@ -240,17 +240,32 @@ describe('combat audio', () => {
     expect(ducks).toHaveLength(4);
     for (const [i, value] of [.31 * .63, .05, .31, .17].entries()) expect(ducks[i]).toBeCloseTo(value);
     expect(ctx.cues[2]?.start).toHaveBeenCalledWith(expect.closeTo(.3));
-    expect((ctx.cues[3]?.connections[0] as Panner).pan.value).toBeCloseTo(-.7);
 
-    // Shots inside the cooldown stay quiet but still steer the next pass, which now runs right to left.
+    // Incoming fire stays silent but still steers the next near-miss pass, which now runs right to left.
     tick({ kind: 'incoming_fire', position: right }, { kind: 'near_miss', source: 'buzz', reward: 'heat_vent' });
-    expect(ctx.cues).toHaveLength(6);
+    expect(ctx.cues).toHaveLength(5);
     const pass = renderCue('near-miss', ctx.sampleRate);
-    expect(ctx.cues[5]?.buffer?.getChannelData(0)).toEqual(pass.right);
-    expect(ctx.cues[5]?.buffer?.getChannelData(1)).toEqual(pass.left);
-    for (let i = 0; i < 30; i++) tick();
-    tick({ kind: 'incoming_fire', position: right });
-    expect((ctx.cues[6]?.connections[0] as Panner).pan.value).toBeCloseTo(.7);
+    expect(ctx.cues[4]?.buffer?.getChannelData(0)).toEqual(pass.right);
+    expect(ctx.cues[4]?.buffer?.getChannelData(1)).toEqual(pass.left);
+
+    // Lock chirp debounces rapid lock switches (90 ticks global, 180 ticks same target).
+    const lockOn = (targetId: string) => {
+      audio.sync({
+        ...world,
+        player: { ...world.player, lockState: { kind: 'locked', targetId } },
+        events: [{ kind: 'target_locked' }],
+      });
+    };
+    const beforeLocks = ctx.cues.length;
+    lockOn('raider-1');
+    expect(ctx.cues).toHaveLength(beforeLocks + 1);
+    lockOn('raider-2'); // blocked by 90-tick global cooldown
+    expect(ctx.cues).toHaveLength(beforeLocks + 1);
+    for (let i = 0; i < 95; i++) tick();
+    lockOn('raider-1'); // still blocked by 180-tick same-target cooldown
+    expect(ctx.cues).toHaveLength(beforeLocks + 1);
+    lockOn('raider-2'); // different target after global cooldown plays cleanly
+    expect(ctx.cues).toHaveLength(beforeLocks + 2);
   });
 
   it('streams a baked level score between its padded loop points once it decodes', async () => {

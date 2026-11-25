@@ -156,7 +156,7 @@ export function stepPlayerFlight(
   const enterOverdrive = !player.energy.overdrive && atHighWatermark && input.throttlePushEdge;
   const cancelOverdrive = player.energy.overdrive && input.throttleDelta < 0;
 
-  const energyStep = stepEnergy(player.energy, enterOverdrive, cancelOverdrive, input.rechargeShields, dt);
+  const energyStep = stepEnergy(player.energy, enterOverdrive, cancelOverdrive, dt);
   const energy = energyStep.energy;
   const events: SimEvent[] = [...energyStep.events];
 

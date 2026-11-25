@@ -12,7 +12,6 @@ export const ENERGY_RULES = {
   maxHeat: 100,
   /** Firing a ready gun at or above this heat is a Hot Zone shot. */
   hotZoneHeat: 80,
-  manualRechargePerSecond: 28,
 } as const;
 
 export interface EnergyStepResult {
@@ -23,7 +22,6 @@ export interface EnergyStepResult {
 export function createInitialEnergy(): EnergyState {
   return {
     overdrive: false,
-    recharging: false,
     weaponState: 'ready',
     weaponHeat: 0,
     shieldCharge: SHIP_STATS.player.shields,
@@ -36,21 +34,18 @@ export function inHotZone(energy: EnergyState): boolean {
 }
 
 /**
- * One tick of overdrive, shields and cannon heat. Holding manual recharge drops Overdrive, refuses to
- * enter it, fills the shield past the regen delay and holds a ready gun's heat where it is; an
- * overheat lockout keeps cooling so it always ends.
+ * One tick of overdrive, automatic shield regeneration, and cannon heat cooling.
  */
 export function stepEnergy(
   current: EnergyState,
   enterOverdrive: boolean,
   cancelOverdrive: boolean,
-  recharging: boolean,
   dt: number,
 ): EnergyStepResult {
   const events: SimEvent[] = [];
 
   let overdrive = current.overdrive;
-  if (cancelOverdrive || recharging) {
+  if (cancelOverdrive) {
     overdrive = false;
   } else if (!overdrive && enterOverdrive && current.shieldCharge >= ENERGY_RULES.minOverdriveShield) {
     overdrive = true;
@@ -65,9 +60,6 @@ export function stepEnergy(
     if (shieldCharge <= 0) {
       overdrive = false;
     }
-  } else if (recharging) {
-    shieldRegenDelay = Math.max(0, current.shieldRegenDelay - dt);
-    shieldCharge = clamp(current.shieldCharge + ENERGY_RULES.manualRechargePerSecond * dt, 0, SHIP_STATS.player.shields);
   } else {
     const regen = regenShield(
       current.shieldCharge,
@@ -84,9 +76,7 @@ export function stepEnergy(
   const coolRate =
     weaponState === 'overheated'
       ? ENERGY_RULES.overheatCoolPerSecond
-      : recharging
-        ? 0
-        : ENERGY_RULES.weaponCoolPerSecond;
+      : ENERGY_RULES.weaponCoolPerSecond;
   const weaponHeat = clamp(current.weaponHeat - coolRate * dt, 0, ENERGY_RULES.maxHeat);
   if (weaponState === 'overheated' && weaponHeat <= 0) {
     weaponState = 'ready';
@@ -96,7 +86,6 @@ export function stepEnergy(
   return {
     energy: {
       overdrive,
-      recharging,
       weaponState,
       weaponHeat,
       shieldCharge,

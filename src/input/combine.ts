@@ -21,7 +21,6 @@ export function mergeFlightInputs(primary: FlightInput, secondary: FlightInput):
     firePrimary: primary.firePrimary || secondary.firePrimary,
     fireMissile: primary.fireMissile || secondary.fireMissile,
     fireMissilePressed: primary.fireMissilePressed || secondary.fireMissilePressed,
-    rechargeShields: primary.rechargeShields || secondary.rechargeShields,
     cycleTarget: primary.cycleTarget || secondary.cycleTarget,
     launchBriefing: primary.launchBriefing || secondary.launchBriefing,
     restartSortie: primary.restartSortie || secondary.restartSortie,

@@ -66,6 +66,10 @@ jobs:
   browser:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [saturn, trench, planetary]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -87,11 +91,14 @@ jobs:
             npx playwright install-deps chromium
           fi
       - run: npm run verify:browser
+        env:
+          VERIFY_SUITE: ${{ matrix.suite }}
+          VERIFY_TIMEOUT_MS: "60000"
       - name: Upload Playwright screenshots and telemetry
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: verify-screenshots
+          name: verify-screenshots-${{ matrix.suite }}
           path: artifacts/verify/
 
   tools-audio:

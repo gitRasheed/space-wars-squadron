@@ -68,8 +68,6 @@ export interface FlightInput {
   readonly fireMissile: boolean;
   /** A fresh missile trigger press since the last tick, kept even if it was released before the tick ran. */
   readonly fireMissilePressed: boolean;
-  /** `C` held: shields channel power, cannons, missiles and Overdrive stay offline. */
-  readonly rechargeShields: boolean;
   readonly cycleTarget: boolean;
   readonly toggleMute: boolean;
   readonly toggleMusic: boolean;
@@ -85,8 +83,6 @@ export interface FlightInput {
 
 export interface EnergyState {
   readonly overdrive: boolean;
-  /** Manual shield recharge held this tick; weapons and Overdrive are offline while it is. */
-  readonly recharging: boolean;
   readonly weaponState: WeaponState;
   /** 0 is cold; a shot that reaches 100 overheats the cannons until they cool back to 0. */
   readonly weaponHeat: number;
@@ -353,7 +349,7 @@ export interface SortieConfig {
 export const FIXED_DT = 1 / 60;
 /** At or below this share of max hull the cockpit warns and the alarm repeats. */
 export const HULL_CRITICAL_FRACTION = 0.35;
-export const HULL_ALARM_INTERVAL_SECONDS = 1.5;
+export const HULL_ALARM_INTERVAL_SECONDS = 3.0;
 export const DEFAULT_SORTIE_SEED = 0x51a7f00d;
 
 export const NEUTRAL_INPUT: FlightInput = {
@@ -365,7 +361,6 @@ export const NEUTRAL_INPUT: FlightInput = {
   firePrimary: false,
   fireMissile: false,
   fireMissilePressed: false,
-  rechargeShields: false,
   cycleTarget: false,
   toggleMute: false,
   toggleMusic: false,

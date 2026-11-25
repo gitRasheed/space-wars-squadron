@@ -3,12 +3,11 @@ EXTENDS Integers, Sequences
 
 VARIABLES projection, primaryCooldown, overdrive, weaponState, weaponHeat, overheatTicks, shieldCharge,
           shieldDelay, cannonFired, missilesReady, targetAlive, lockTicks, rearmTicks, rearmPeriod, missileCooldown,
-          launchStock, recharging
+          launchStock
 
 flight == <<primaryCooldown, overdrive, weaponState, weaponHeat, overheatTicks, shieldCharge, shieldDelay, cannonFired>>
 combat == <<missilesReady, targetAlive, lockTicks, rearmTicks, rearmPeriod, missileCooldown, launchStock>>
-(* The `C` key is pilot input both state machines read, so each frame of either one chooses it. *)
-vars == <<projection, flight, combat, recharging>>
+vars == <<projection, flight, combat>>
 
 (* With geometry supplied as input, each property depends on just one of
    these two state machines. Explore each projection from the initial ship. *)
@@ -18,7 +17,7 @@ FreshRearm == 720
 CarriedRearm == 720
 MissileCooldown == 34
 PrimaryCooldown == 9
-ShieldRegenDelayTicks == 133
+ShieldRegenDelayTicks == 109
 OverheatTicks == 400
 LockState == CASE lockTicks = 0 -> "none" [] lockTicks = AcquireTicks -> "locked" [] OTHER -> "acquiring"
 
@@ -32,7 +31,6 @@ Init ==
     /\ shieldCharge = 3
     /\ shieldDelay = 0
     /\ cannonFired = FALSE
-    /\ recharging = FALSE
     /\ missilesReady = MaxMissiles
     /\ targetAlive = TRUE
     /\ lockTicks = 0
@@ -48,8 +46,7 @@ Unit == 600
 Full == 100 * Unit
 MinOverdriveShield == 9000
 OverdriveDrain == 240
-ShieldRecharge == 100
-ManualRecharge == 280
+ShieldRecharge == 150
 WeaponCool == 240
 OverheatCool == 150
 ShotHeat == 5700
@@ -63,13 +60,9 @@ ShieldSurge == 15000
 ASSUME OverheatCool < WeaponCool
 ASSUME (OverheatTicks - 1) * OverheatCool < Full /\ Full <= OverheatTicks * OverheatCool
 ASSUME 0 < HotHeat /\ HotHeat < Full
-(* Measured from the simulation: a trigger pull on a partially cooled, overheated gun, and what holding
-   manual recharge lets through. *)
+(* Measured from the simulation: a trigger pull on a partially cooled, overheated gun. *)
 OverheatedShotFires == FALSE
-RechargeAllowsFire == FALSE
-RechargeAllowsOverdrive == FALSE
 CanFire(state) == state = "ready" \/ OverheatedShotFires
-CanFireWhile(recharge) == ~recharge \/ RechargeAllowsFire
 (* Heat bands: 0 cold, 1 warm, 2 the Hot Zone from HotHeat up, 3 at Full, which only an overheat reaches. *)
 WeaponEdges == <<0, 0, HotHeat, Full, Full>>
 FullHeat == Len(WeaponEdges) - 2
@@ -101,7 +94,7 @@ Hold(w) ==
     /\ primaryCooldown' = IF primaryCooldown > 0 THEN primaryCooldown - 1 ELSE 0
     /\ cannonFired' = FALSE
 
-StepReadyWeapon(w, recharge) == Hold(w) \/ (CanFireWhile(recharge) /\ Shoot(w))
+StepReadyWeapon(w) == Hold(w) \/ Shoot(w)
 
 (* A lockout cools at a fixed rate, so the ticks left fix its heat band; the exact boundary may round either way. *)
 LockoutBands(ticks) ==
@@ -109,38 +102,33 @@ LockoutBands(ticks) ==
       [] ticks * OverheatCool = HotHeat -> {1, HotBand}
       [] OTHER -> {1}
 
-StepOverheatedWeapon(recharge) ==
+StepOverheatedWeapon ==
     \/ /\ weaponState' = "overheated"
        /\ weaponHeat' \in LockoutBands(overheatTicks - 1)
        /\ overheatTicks' = overheatTicks - 1
        /\ primaryCooldown' = IF primaryCooldown > 0 THEN primaryCooldown - 1 ELSE 0
        /\ cannonFired' = FALSE
-    \/ CanFire(weaponState) /\ CanFireWhile(recharge) /\ Shoot(weaponHeat)
+    \/ CanFire(weaponState) /\ Shoot(weaponHeat)
 
-(* Holding recharge drops Overdrive and refuses it, fills shields past the regen delay, holds a ready
-   gun's heat and lets a lockout keep cooling. *)
+(* Flight steps Overdrive, automatic shield regeneration after the hit delay, and weapon cooling/lockout. *)
 Fly ==
     /\ projection = "flight"
-    /\ \E enterOd \in BOOLEAN, cancelOd \in BOOLEAN, recharge \in BOOLEAN :
+    /\ \E enterOd \in BOOLEAN, cancelOd \in BOOLEAN :
          LET nextDelay == IF shieldDelay > 0 THEN shieldDelay - 1 ELSE 0
-             blocked == recharge /\ ~RechargeAllowsOverdrive
-             odStart == IF cancelOd \/ blocked THEN FALSE
+             odStart == IF cancelOd THEN FALSE
                         ELSE IF ~overdrive /\ enterOd /\ shieldCharge >= 2 THEN TRUE
                         ELSE overdrive
              shieldDelta == IF odStart THEN -OverdriveDrain
-                            ELSE IF recharge THEN ManualRecharge
                             ELSE IF nextDelay = 0 THEN ShieldRecharge
                             ELSE 0
-         IN /\ recharging' = recharge
-            /\ shieldDelay' = nextDelay
+         IN /\ shieldDelay' = nextDelay
             /\ \E s \in After(shieldCharge, shieldDelta, ShieldEdges) :
                  /\ shieldCharge' = s
                  /\ overdrive' = IF odStart /\ s > 0 THEN TRUE ELSE FALSE
             /\ IF weaponState = "overheated" THEN
-                 IF overheatTicks = 1 THEN StepReadyWeapon(0, recharge)
-                 ELSE StepOverheatedWeapon(recharge)
-               ELSE IF recharge THEN StepReadyWeapon(weaponHeat, recharge)
-               ELSE \E w \in After(weaponHeat, -WeaponCool, WeaponEdges) : StepReadyWeapon(w, recharge)
+                 IF overheatTicks = 1 THEN StepReadyWeapon(0)
+                 ELSE StepOverheatedWeapon
+               ELSE \E w \in After(weaponHeat, -WeaponCool, WeaponEdges) : StepReadyWeapon(w)
     /\ UNCHANGED <<projection, combat>>
 
 (* Hostile bolts or collisions can hit after a flight update, resetting shield regen delay
@@ -151,32 +139,32 @@ ShieldHit ==
          /\ shieldCharge' = s
          /\ overdrive' = IF s = 0 THEN FALSE ELSE overdrive
     /\ shieldDelay' = ShieldRegenDelayTicks
-    /\ UNCHANGED <<projection, primaryCooldown, weaponState, weaponHeat, overheatTicks, cannonFired, combat, recharging>>
+    /\ UNCHANGED <<projection, primaryCooldown, weaponState, weaponHeat, overheatTicks, cannonFired, combat>>
 
 (* Supply drops and near misses: a heat flush ends any lockout cold, a heat vent only cools a ready gun,
    and shield surges or near-miss restores add charge. *)
 HeatFlush ==
     /\ projection = "flight"
     /\ weaponState' = "ready" /\ weaponHeat' = 0 /\ overheatTicks' = 0
-    /\ UNCHANGED <<projection, primaryCooldown, overdrive, shieldCharge, shieldDelay, cannonFired, combat, recharging>>
+    /\ UNCHANGED <<projection, primaryCooldown, overdrive, shieldCharge, shieldDelay, cannonFired, combat>>
 
 HeatVent ==
     /\ projection = "flight"
     /\ weaponState = "ready"
     /\ \E w \in After(weaponHeat, -VentHeat, WeaponEdges) : weaponHeat' = w
-    /\ UNCHANGED <<projection, primaryCooldown, overdrive, weaponState, overheatTicks, shieldCharge, shieldDelay, cannonFired, combat, recharging>>
+    /\ UNCHANGED <<projection, primaryCooldown, overdrive, weaponState, overheatTicks, shieldCharge, shieldDelay, cannonFired, combat>>
 
 ShieldGain ==
     /\ projection = "flight"
     /\ \E gain \in {ShieldRestore, ShieldSurge} : \E s \in After(shieldCharge, gain, ShieldEdges) : shieldCharge' = s
-    /\ UNCHANGED <<projection, primaryCooldown, overdrive, weaponState, weaponHeat, overheatTicks, shieldDelay, cannonFired, combat, recharging>>
+    /\ UNCHANGED <<projection, primaryCooldown, overdrive, weaponState, weaponHeat, overheatTicks, shieldDelay, cannonFired, combat>>
 
 Resupply ==
     /\ projection = "combat"
     /\ missilesReady < MaxMissiles
     /\ missilesReady' = missilesReady + 1
     /\ launchStock' = -1
-    /\ UNCHANGED <<projection, flight, targetAlive, lockTicks, rearmTicks, rearmPeriod, missileCooldown, recharging>>
+    /\ UNCHANGED <<projection, flight, targetAlive, lockTicks, rearmTicks, rearmPeriod, missileCooldown>>
 
 Scan(stock) ==
     IF stock = 0 THEN {0}
@@ -187,7 +175,6 @@ AfterImpact(progress, alive) == IF alive THEN progress ELSE 0
 
 CombatFrame ==
     /\ projection = "combat"
-    /\ \E recharge \in BOOLEAN : recharging' = recharge
     /\ LET full == missilesReady = MaxMissiles
            reload == ~full /\ rearmTicks + 1 = rearmPeriod
            stock == IF reload THEN missilesReady + 1 ELSE missilesReady
@@ -196,7 +183,7 @@ CombatFrame ==
                              ELSE IF rearmPeriod = FreshRearm THEN {CarriedRearm}
                              ELSE {CarriedRearm, FreshRearm}
           /\ rearmTicks' = IF full \/ reload THEN 0 ELSE rearmTicks + 1
-          /\ \E fired \in (IF stock > 0 /\ missileCooldown <= 1 /\ CanFireWhile(recharging') THEN BOOLEAN ELSE {FALSE}) :
+          /\ \E fired \in (IF stock > 0 /\ missileCooldown <= 1 THEN BOOLEAN ELSE {FALSE}) :
                /\ missilesReady' = IF fired THEN stock - 1 ELSE stock
                /\ launchStock' = IF fired THEN stock ELSE -1
                /\ missileCooldown' = IF fired THEN MissileCooldown
@@ -215,8 +202,6 @@ ChargesBounded == weaponHeat \in 0..FullHeat /\ shieldCharge \in 0..3
 HotZone == weaponState = "ready" /\ weaponHeat = HotBand
 (* Only a lockout ever sits at Full heat. *)
 FullHeatIsOverheat == weaponHeat = FullHeat => weaponState = "overheated"
-RechargeExclusive ==
-    recharging => (~overdrive /\ ~cannonFired /\ launchStock = -1)
 WeaponStateValid == weaponState \in {"ready", "overheated"}
 OverdriveHasShield == overdrive => shieldCharge > 0
 AmmoBounded == missilesReady \in 0..MaxMissiles
@@ -240,7 +225,6 @@ OverheatCompletes == (weaponState = "overheated") ~> (weaponState = "ready")
 
 NeverOverheated == weaponState # "overheated"
 NeverHotZone == ~HotZone
-NeverRecharging == ~recharging
 NeverOverdrive == ~overdrive
 NeverFiredOnReload == ~(rearmPeriod = CarriedRearm /\ rearmTicks = 0 /\ launchStock = 1)
 NeverLocked == LockState # "locked"

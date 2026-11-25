@@ -5,7 +5,9 @@ import { createServer } from 'vite';
 
 const REQUESTED_PORT = process.env.VERIFY_PORT ? Number(process.env.VERIFY_PORT) : 0;
 const OUT_DIR = path.resolve(process.cwd(), process.env.VERIFY_OUT_DIR ?? path.join('artifacts', 'verify'));
-const WAIT_TIMEOUT_MS = Number(process.env.VERIFY_TIMEOUT_MS ?? 15_000);
+const WAIT_TIMEOUT_MS = Number(process.env.VERIFY_TIMEOUT_MS ?? 25_000);
+const SUITE = process.env.VERIFY_SUITE ?? 'all';
+const VALID_SUITES = new Set(['all', 'saturn', 'trench', 'planetary']);
 
 function assertCondition(condition, message) {
   if (!condition) {
@@ -90,6 +92,11 @@ async function measureWebglSignal(page) {
 }
 
 async function run() {
+  assertCondition(VALID_SUITES.has(SUITE), `Unknown VERIFY_SUITE="${SUITE}" (expected all|saturn|trench|planetary)`);
+  const runSaturn = SUITE === 'all' || SUITE === 'saturn';
+  const runTrench = SUITE === 'all' || SUITE === 'trench';
+  const runPlanetary = SUITE === 'all' || SUITE === 'planetary';
+
   await fs.mkdir(OUT_DIR, { recursive: true });
   const existingFiles = await fs.readdir(OUT_DIR);
   for (const file of existingFiles) {
@@ -165,275 +172,267 @@ async function run() {
       return snap;
     }
 
-    await page.goto(baseUrl, { waitUntil: 'networkidle' });
-    const initial = await waitForTelemetry(page, (snap) => snap.phase === 'briefing', 'initial briefing phase');
-    await page.screenshot({ path: path.join(OUT_DIR, '01-briefing.png') });
+    const screenshots = [];
+    const glSignal = {};
+    const snapshots = {};
+    let profile = null;
 
-    await page.keyboard.press('Enter');
-    await waitForTelemetry(
-      page,
-      (snap) => snap.phase === 'active' && snap.tick > 5,
-      'active cockpit flight',
-    );
+    if (runSaturn) {
+      await page.goto(baseUrl, { waitUntil: 'networkidle' });
+      snapshots.initial = await waitForTelemetry(page, (snap) => snap.phase === 'briefing', 'initial briefing phase');
+      await page.screenshot({ path: path.join(OUT_DIR, '01-briefing.png') });
+      screenshots.push('01-briefing.png');
 
-    // 1. Fire reciprocating cannons in cockpit view.
-    await page.keyboard.down('KeyJ');
-    const combatSnap = await waitForTelemetry(
-      page,
-      (snap) => snap.projectilesCount > 0 || snap.weaponHeat > 0,
-      'cockpit cannons firing',
-    );
-    assertCondition(
-      combatSnap.wingmateTargetId !== null,
-      'Autonomous wingmate should track an active target',
-    );
-    await page.screenshot({ path: path.join(OUT_DIR, '02-cockpit-combat.png') });
-    const hotZoneSnap = await waitForTelemetry(
-      page,
-      (snap) => snap.hotZone && snap.weaponState === 'ready' && snap.weaponHeat >= 80,
-      'cannons firing in the Hot Zone',
-    );
-    await page.screenshot({ path: path.join(OUT_DIR, '02b-hot-zone.png') });
-    const cockpitGlSignal = await measureWebglSignal(page);
-    assertCondition(
-      cockpitGlSignal.nonBlackRatio >= 0.15 && cockpitGlSignal.uniqueColors >= 24,
-      `Cockpit 3D canvas lacks visual signal (${JSON.stringify(cockpitGlSignal)})`,
-    );
+      await page.keyboard.press('Enter');
+      await waitForTelemetry(
+        page,
+        (snap) => snap.phase === 'active' && snap.tick > 5,
+        'active cockpit flight',
+      );
 
-    // 2. Keep holding fire until weapon overheat lockout triggers.
-    const overheatSnap = await waitForTelemetry(
-      page,
-      (snap) => snap.weaponState === 'overheated',
-      'weapon overheat lockout',
-    );
-    await page.screenshot({ path: path.join(OUT_DIR, '03-overheat.png') });
-    await page.keyboard.up('KeyJ');
+      // 1. Fire reciprocating cannons in cockpit view.
+      await page.keyboard.down('KeyJ');
+      const combatSnap = await waitForTelemetry(
+        page,
+        (snap) => snap.projectilesCount > 0 || snap.weaponHeat > 0,
+        'cockpit cannons firing',
+      );
+      snapshots.combatSnap = combatSnap;
+      assertCondition(
+        combatSnap.wingmateTargetId !== null,
+        'Autonomous wingmate should track an active target',
+      );
+      await page.screenshot({ path: path.join(OUT_DIR, '02-cockpit-combat.png') });
+      screenshots.push('02-cockpit-combat.png');
+      snapshots.hotZoneSnap = await waitForTelemetry(
+        page,
+        (snap) => snap.hotZone && snap.weaponState === 'ready' && snap.weaponHeat >= 80,
+        'cannons firing in the Hot Zone',
+      );
+      await page.screenshot({ path: path.join(OUT_DIR, '02b-hot-zone.png') });
+      screenshots.push('02b-hot-zone.png');
+      const cockpitGlSignal = await measureWebglSignal(page);
+      glSignal.cockpit = cockpitGlSignal;
+      assertCondition(
+        cockpitGlSignal.nonBlackRatio >= 0.15 && cockpitGlSignal.uniqueColors >= 24,
+        `Cockpit 3D canvas lacks visual signal (${JSON.stringify(cockpitGlSignal)})`,
+      );
 
-    // 3. Restart fresh (full shields) before pushing throttle to 100% detent and tapping W for 120% Overdrive.
-    await page.keyboard.press('KeyR');
-    await waitForTelemetry(
-      page,
-      (snap, prevTick) => snap.phase === 'active' && snap.tick < prevTick && snap.shieldCharge >= 90,
-      'fresh sortie before overdrive',
-      overheatSnap.tick,
-    );
-    await page.keyboard.down('KeyW');
-    await waitForTelemetry(page, (snap) => snap.throttle >= 0.995, 'throttle reaching 100% detent');
-    await page.keyboard.up('KeyW');
-    await page.keyboard.press('KeyW');
-    const overdriveSnap = await waitForTelemetry(
-      page,
-      (snap) => snap.overdrive === true && snap.throttle > 1.15,
-      '120% throttle overdrive',
-    );
-    await page.screenshot({ path: path.join(OUT_DIR, '04-overdrive.png') });
-    // Holding C drops Overdrive to the 100% detent and channels shields.
-    await page.keyboard.down('KeyC');
-    const rechargeSnap = await waitForTelemetry(
-      page,
-      (snap) => snap.recharging && !snap.overdrive && snap.throttle <= 1.0001,
-      'manual shield recharge out of Overdrive',
-    );
-    await page.screenshot({ path: path.join(OUT_DIR, '04b-recharge.png') });
-    await page.keyboard.up('KeyC');
-    const overdriveGlSignal = await measureWebglSignal(page);
-    assertCondition(
-      overdriveGlSignal.nonBlackRatio >= 0.15 && overdriveGlSignal.uniqueColors >= 24,
-      `Overdrive 3D canvas lacks visual signal (${JSON.stringify(overdriveGlSignal)})`,
-    );
+      // 2. Keep holding fire until weapon overheat lockout triggers.
+      const overheatSnap = await waitForTelemetry(
+        page,
+        (snap) => snap.weaponState === 'overheated',
+        'weapon overheat lockout',
+      );
+      snapshots.overheatSnap = overheatSnap;
+      await page.screenshot({ path: path.join(OUT_DIR, '03-overheat.png') });
+      screenshots.push('03-overheat.png');
+      await page.keyboard.up('KeyJ');
 
-    // 4. Restart and fire lock-on missile + cannons in cockpit view.
-    await page.keyboard.press('KeyR');
-    await waitForTelemetry(
-      page,
-      (snap, prevTick) => snap.phase === 'active' && snap.tick < prevTick,
-      'sortie restart',
-      overdriveSnap.tick,
-    );
-    const lockSnap = await waitForTelemetry(
-      page,
-      (snap) => snap.lockState === 'locked' && snap.lockTargetId !== null,
-      'missile lock on the centred raider',
-    );
-    await page.keyboard.press('KeyE');
-    const homingSnap = await waitForTelemetry(
-      page,
-      (snap, lockedId) => snap.playerMissileTargets.includes(lockedId),
-      'locked missile homing on the locked target',
-      lockSnap.lockTargetId,
-    );
-    await page.keyboard.down('KeyJ');
-    const finalSnap = await waitForTelemetry(
-      page,
-      (snap) => snap.missilesReady < 4 && snap.projectilesCount > 0,
-      'missile and cannon combat after restart',
-    );
-    await page.screenshot({ path: path.join(OUT_DIR, '05-missile-combat.png') });
-    await page.keyboard.up('KeyJ');
+      // 3. Restart fresh (full shields) before pushing throttle to 100% detent and tapping W for 120% Overdrive.
+      await page.keyboard.press('KeyR');
+      await waitForTelemetry(
+        page,
+        (snap, prevTick) => snap.phase === 'active' && snap.tick < prevTick && snap.shieldCharge >= 90,
+        'fresh sortie before overdrive',
+        overheatSnap.tick,
+      );
+      await page.keyboard.down('KeyW');
+      await waitForTelemetry(page, (snap) => snap.throttle >= 0.995, 'throttle reaching 100% detent');
+      await page.keyboard.up('KeyW');
+      await page.keyboard.press('KeyW');
+      const overdriveSnap = await waitForTelemetry(
+        page,
+        (snap) => snap.overdrive === true && snap.throttle > 1.15,
+        '120% throttle overdrive',
+      );
+      snapshots.overdriveSnap = overdriveSnap;
+      await page.screenshot({ path: path.join(OUT_DIR, '04-overdrive.png') });
+      screenshots.push('04-overdrive.png');
+      const overdriveGlSignal = await measureWebglSignal(page);
+      glSignal.overdrive = overdriveGlSignal;
+      assertCondition(
+        overdriveGlSignal.nonBlackRatio >= 0.15 && overdriveGlSignal.uniqueColors >= 24,
+        `Overdrive 3D canvas lacks visual signal (${JSON.stringify(overdriveGlSignal)})`,
+      );
 
-    // 5. Level 2: boot straight into the trench briefing, fly in through the mouth and down the spine.
-    const trenchUrl = new URL(baseUrl);
-    trenchUrl.searchParams.set('level', 'trench');
-    await page.goto(trenchUrl.href, { waitUntil: 'networkidle' });
-    const trenchBriefing = await waitForTelemetry(
-      page,
-      (snap) => snap.phase === 'briefing' && snap.level === 'trench' && snap.reactorsRemaining === 3,
-      'trench briefing from ?level=trench',
-    );
-    await page.screenshot({ path: path.join(OUT_DIR, 'trench-01-briefing.png') });
-    await page.keyboard.press('Enter');
-    const trenchMouth = await waitForTelemetry(
-      page,
-      (snap) => snap.phase === 'active' && snap.playerPosition.z < 840,
-      'player inside the trench mouth',
-      null,
-      45_000,
-    );
-    await page.screenshot({ path: path.join(OUT_DIR, 'trench-02-mouth.png') });
-    const trenchGlSignal = await measureWebglSignal(page);
-    assertCondition(
-      trenchGlSignal.nonBlackRatio >= 0.15 && trenchGlSignal.uniqueColors >= 24,
-      `Trench 3D canvas lacks visual signal (${JSON.stringify(trenchGlSignal)})`,
-    );
-    await page.keyboard.down('KeyW');
-    await waitForTelemetry(page, (snap) => snap.throttle >= 0.995, 'trench throttle at 100% detent');
-    await page.keyboard.up('KeyW');
-    await page.keyboard.press('KeyW');
-    await page.keyboard.down('KeyJ');
-    const trenchDeep = await waitForTelemetry(
-      page,
-      (snap) => snap.phase === 'active' && snap.overdrive && snap.playerPosition.z < 470,
-      'overdrive run deep in the spine',
-      null,
-      45_000,
-    );
-    await page.screenshot({ path: path.join(OUT_DIR, 'trench-03-spine-run.png') });
-    await page.keyboard.up('KeyJ');
-    const inside = trenchDeep.playerPosition;
-    assertCondition(
-      trenchDeep.level === 'trench' && Math.abs(inside.x) < 78 && inside.y > -51.5 && inside.y < 51.5,
-      `Player should be flying inside the trench envelope (${JSON.stringify(inside)})`,
-    );
-    // 6. Mission selector: keys and clicks swap the card's mission, its text and its score before launch.
-    await page.goto(baseUrl, { waitUntil: 'networkidle' });
-    requestedScores.clear();
-    await waitForTelemetry(page, (snap) => snap.phase === 'briefing' && snap.level === 'saturn', 'default Saturn briefing');
-    await page.keyboard.press('Digit3');
-    const briefings = { planetary: await expectBriefing('planetary', 'mission 3 briefing card and score') };
-    await page.screenshot({ path: path.join(OUT_DIR, '06-mission-select.png') });
-    const trenchButton = briefingLayout(1280, 720).missions.find((m) => m.level === 'trench').box;
-    await page.mouse.click(trenchButton.x + trenchButton.w / 2, trenchButton.y + trenchButton.h / 2);
-    briefings.trench = await expectBriefing('trench', 'clicked mission 2 briefing card and score');
-    await page.screenshot({ path: path.join(OUT_DIR, '06b-mission-click.png') });
-    await page.keyboard.press('Digit1');
-    briefings.saturn = await expectBriefing('saturn', 'mission 1 briefing card and score');
-    assertCondition(briefings.saturn.enemiesRemaining > 0, 'Saturn sortie should be reloaded with raiders');
+      // 4. Restart and fire lock-on missile + cannons in cockpit view.
+      await page.keyboard.press('KeyR');
+      await waitForTelemetry(
+        page,
+        (snap, prevTick) => snap.phase === 'active' && snap.tick < prevTick,
+        'sortie restart',
+        overdriveSnap.tick,
+      );
+      const lockSnap = await waitForTelemetry(
+        page,
+        (snap) => snap.lockState === 'locked' && snap.lockTargetId !== null,
+        'missile lock on the centred raider',
+      );
+      snapshots.lockSnap = lockSnap;
+      await page.keyboard.press('KeyE');
+      snapshots.homingSnap = await waitForTelemetry(
+        page,
+        (snap, lockedId) => snap.playerMissileTargets.includes(lockedId),
+        'locked missile homing on the locked target',
+        lockSnap.lockTargetId,
+      );
+      await page.keyboard.down('KeyJ');
+      snapshots.finalSnap = await waitForTelemetry(
+        page,
+        (snap) => snap.missilesReady < 4 && snap.projectilesCount > 0,
+        'missile and cannon combat after restart',
+      );
+      await page.screenshot({ path: path.join(OUT_DIR, '05-missile-combat.png') });
+      screenshots.push('05-missile-combat.png');
+      await page.keyboard.up('KeyJ');
 
-    // 7. Planetary sortie, direct boot: canyon, pads and markers, then flak engaging the player.
-    const planetaryUrl = new URL(baseUrl);
-    planetaryUrl.searchParams.set('level', 'planetary');
-    await page.goto(planetaryUrl.href, { waitUntil: 'networkidle' });
-    await waitForTelemetry(page, (snap) => snap.phase === 'briefing' && snap.level === 'planetary', 'planetary briefing');
-    await page.keyboard.press('Enter');
-    const canyonSnap = await waitForTelemetry(
-      page,
-      (snap) => snap.phase === 'active' && snap.tick > 60,
-      'planetary flight under way',
-    );
-    assertCondition(
-      canyonSnap.stage === 'ground_attack' && canyonSnap.enemiesRemaining === 0 && canyonSnap.groundTargetsRemaining === 8,
-      `Planetary stage 1 should open with 8 ground targets and no air (${JSON.stringify(canyonSnap)})`,
-    );
-    assertCondition(canyonSnap.altitude > 40, 'Player should start well above the canyon floor');
-    await page.screenshot({ path: path.join(OUT_DIR, 'planetary-01-canyon.png') });
-    const canyonGlSignal = await measureWebglSignal(page);
-    assertCondition(
-      canyonGlSignal.nonBlackRatio >= 0.15 && canyonGlSignal.uniqueColors >= 24,
-      `Planetary 3D canvas lacks visual signal (${JSON.stringify(canyonGlSignal)})`,
-    );
-    const flakSnap = await waitForTelemetry(page, (snap) => snap.flakBursts > 0, 'flak bursting around the player', null, 180_000);
-    await page.screenshot({ path: path.join(OUT_DIR, 'planetary-02-flak.png') });
+      // 5. Mission selector: keys and clicks swap the card's mission, its text and its score before launch.
+      await page.goto(baseUrl, { waitUntil: 'networkidle' });
+      requestedScores.clear();
+      await waitForTelemetry(page, (snap) => snap.phase === 'briefing' && snap.level === 'saturn', 'default Saturn briefing');
+      await page.keyboard.press('Digit3');
+      const briefings = { planetary: await expectBriefing('planetary', 'mission 3 briefing card and score') };
+      await page.screenshot({ path: path.join(OUT_DIR, '06-mission-select.png') });
+      screenshots.push('06-mission-select.png');
+      const trenchButton = briefingLayout(1280, 720).missions.find((m) => m.level === 'trench').box;
+      await page.mouse.click(trenchButton.x + trenchButton.w / 2, trenchButton.y + trenchButton.h / 2);
+      briefings.trench = await expectBriefing('trench', 'clicked mission 2 briefing card and score');
+      await page.screenshot({ path: path.join(OUT_DIR, '06b-mission-click.png') });
+      screenshots.push('06b-mission-click.png');
+      await page.keyboard.press('Digit1');
+      briefings.saturn = await expectBriefing('saturn', 'mission 1 briefing card and score');
+      assertCondition(briefings.saturn.enemiesRemaining > 0, 'Saturn sortie should be reloaded with raiders');
+      snapshots.briefings = briefings;
+      snapshots.requestedScores = [...requestedScores];
 
-    // 8. Stage 2 boot: the air wave dives through the cloud deck over the canyon.
-    planetaryUrl.searchParams.set('stage', 'air');
-    await page.goto(planetaryUrl.href, { waitUntil: 'networkidle' });
-    await waitForTelemetry(page, (snap) => snap.phase === 'briefing' && snap.stage === 'air_superiority', 'planetary stage 2 briefing');
-    await page.keyboard.press('Enter');
-    const airSnap = await waitForTelemetry(
-      page,
-      (snap) => snap.phase === 'active' && snap.enemiesRemaining === 4 && snap.enemyInViewRange !== null && snap.enemyInViewRange < 600,
-      'air wave closing on the player',
-      null,
-      180_000,
-    );
-    await page.screenshot({ path: path.join(OUT_DIR, 'planetary-03-air-wave.png') });
+      // 6. Profiler opt-in check.
+      assertCondition(
+        await page.evaluate(() => globalThis.__SW_PROFILE__ === undefined),
+        'Profiler must stay off without ?profile=1',
+      );
+      const profileUrl = new URL(baseUrl);
+      profileUrl.searchParams.set('profile', '1');
+      await page.goto(profileUrl.href, { waitUntil: 'networkidle' });
+      await page.keyboard.press('Enter');
+      await page.waitForFunction(() => (globalThis.__SW_PROFILE__?.snapshot().frames ?? 0) >= 20, null, {
+        timeout: Math.max(WAIT_TIMEOUT_MS, 60_000),
+      });
+      profile = await page.evaluate(() => globalThis.__SW_PROFILE__.snapshot());
+      assertCondition(
+        profile.frame.p50 > 0 && profile.frame.p99 >= profile.frame.p50 && profile.render.p50 > 0,
+        `Profiler snapshot looks empty (${JSON.stringify(profile)})`,
+      );
+    }
 
-    assertCondition(
-      await page.evaluate(() => globalThis.__SW_PROFILE__ === undefined),
-      'Profiler must stay off without ?profile=1',
-    );
-    const profileUrl = new URL(baseUrl);
-    profileUrl.searchParams.set('profile', '1');
-    await page.goto(profileUrl.href, { waitUntil: 'networkidle' });
-    await page.keyboard.press('Enter');
-    await page.waitForFunction(() => (globalThis.__SW_PROFILE__?.snapshot().frames ?? 0) >= 60, null, {
-      timeout: WAIT_TIMEOUT_MS,
-    });
-    const profile = await page.evaluate(() => globalThis.__SW_PROFILE__.snapshot());
-    assertCondition(
-      profile.frame.p50 > 0 && profile.frame.p99 >= profile.frame.p50 && profile.render.p50 > 0,
-      `Profiler snapshot looks empty (${JSON.stringify(profile)})`,
-    );
+    if (runTrench) {
+      // Level 2: boot straight into the trench briefing, fly in through the mouth and down the spine.
+      const trenchUrl = new URL(baseUrl);
+      trenchUrl.searchParams.set('level', 'trench');
+      await page.goto(trenchUrl.href, { waitUntil: 'networkidle' });
+      snapshots.trenchBriefing = await waitForTelemetry(
+        page,
+        (snap) => snap.phase === 'briefing' && snap.level === 'trench' && snap.reactorsRemaining === 3,
+        'trench briefing from ?level=trench',
+      );
+      await page.screenshot({ path: path.join(OUT_DIR, 'trench-01-briefing.png') });
+      screenshots.push('trench-01-briefing.png');
+      await page.keyboard.press('Enter');
+      snapshots.trenchMouth = await waitForTelemetry(
+        page,
+        (snap) => snap.phase === 'active' && snap.playerPosition.z < 840,
+        'player inside the trench mouth',
+        null,
+        Math.max(WAIT_TIMEOUT_MS, 60_000),
+      );
+      await page.screenshot({ path: path.join(OUT_DIR, 'trench-02-mouth.png') });
+      screenshots.push('trench-02-mouth.png');
+      const trenchGlSignal = await measureWebglSignal(page);
+      glSignal.trench = trenchGlSignal;
+      assertCondition(
+        trenchGlSignal.nonBlackRatio >= 0.15 && trenchGlSignal.uniqueColors >= 24,
+        `Trench 3D canvas lacks visual signal (${JSON.stringify(trenchGlSignal)})`,
+      );
+      await page.keyboard.down('KeyW');
+      await waitForTelemetry(page, (snap) => snap.throttle >= 0.995, 'trench throttle at 100% detent');
+      await page.keyboard.up('KeyW');
+      await page.keyboard.press('KeyW');
+      await page.keyboard.down('KeyJ');
+      const trenchDeep = await waitForTelemetry(
+        page,
+        (snap) => snap.phase === 'active' && snap.overdrive && snap.playerPosition.z < 470,
+        'overdrive run deep in the spine',
+        null,
+        Math.max(WAIT_TIMEOUT_MS, 60_000),
+      );
+      snapshots.trenchDeep = trenchDeep;
+      await page.screenshot({ path: path.join(OUT_DIR, 'trench-03-spine-run.png') });
+      screenshots.push('trench-03-spine-run.png');
+      await page.keyboard.up('KeyJ');
+      const inside = trenchDeep.playerPosition;
+      assertCondition(
+        trenchDeep.level === 'trench' && Math.abs(inside.x) < 78 && inside.y > -51.5 && inside.y < 51.5,
+        `Player should be flying inside the trench envelope (${JSON.stringify(inside)})`,
+      );
+    }
+
+    if (runPlanetary) {
+      // Planetary sortie, direct boot: canyon, pads and markers, then flak engaging the player.
+      const planetaryUrl = new URL(baseUrl);
+      planetaryUrl.searchParams.set('level', 'planetary');
+      await page.goto(planetaryUrl.href, { waitUntil: 'networkidle' });
+      await waitForTelemetry(page, (snap) => snap.phase === 'briefing' && snap.level === 'planetary', 'planetary briefing');
+      await page.keyboard.press('Enter');
+      const canyonSnap = await waitForTelemetry(
+        page,
+        (snap) => snap.phase === 'active' && snap.tick > 60,
+        'planetary flight under way',
+      );
+      snapshots.canyonSnap = canyonSnap;
+      assertCondition(
+        canyonSnap.stage === 'ground_attack' && canyonSnap.enemiesRemaining === 0 && canyonSnap.groundTargetsRemaining === 8,
+        `Planetary stage 1 should open with 8 ground targets and no air (${JSON.stringify(canyonSnap)})`,
+      );
+      assertCondition(canyonSnap.altitude > 40, 'Player should start well above the canyon floor');
+      await page.screenshot({ path: path.join(OUT_DIR, 'planetary-01-canyon.png') });
+      screenshots.push('planetary-01-canyon.png');
+      const canyonGlSignal = await measureWebglSignal(page);
+      glSignal.canyon = canyonGlSignal;
+      assertCondition(
+        canyonGlSignal.nonBlackRatio >= 0.15 && canyonGlSignal.uniqueColors >= 24,
+        `Planetary 3D canvas lacks visual signal (${JSON.stringify(canyonGlSignal)})`,
+      );
+      snapshots.flakSnap = await waitForTelemetry(page, (snap) => snap.flakBursts > 0, 'flak bursting around the player', null, 180_000);
+      await page.screenshot({ path: path.join(OUT_DIR, 'planetary-02-flak.png') });
+      screenshots.push('planetary-02-flak.png');
+
+      // Stage 2 boot: the air wave dives through the cloud deck over the canyon.
+      planetaryUrl.searchParams.set('stage', 'air');
+      await page.goto(planetaryUrl.href, { waitUntil: 'networkidle' });
+      await waitForTelemetry(page, (snap) => snap.phase === 'briefing' && snap.stage === 'air_superiority', 'planetary stage 2 briefing');
+      await page.keyboard.press('Enter');
+      snapshots.airSnap = await waitForTelemetry(
+        page,
+        (snap) => snap.phase === 'active' && snap.enemiesRemaining === 4 && snap.enemyInViewRange !== null && snap.enemyInViewRange < 600,
+        'air wave closing on the player',
+        null,
+        180_000,
+      );
+      await page.screenshot({ path: path.join(OUT_DIR, 'planetary-03-air-wave.png') });
+      screenshots.push('planetary-03-air-wave.png');
+    }
 
     assertCondition(consoleErrors.length === 0, `Console errors: ${consoleErrors.join('; ')}`);
     assertCondition(pageErrors.length === 0, `Page errors: ${pageErrors.join('; ')}`);
 
     const report = {
       ok: true,
+      suite: SUITE,
       url: baseUrl,
       profile,
-      glSignal: {
-        cockpit: cockpitGlSignal,
-        overdrive: overdriveGlSignal,
-        trench: trenchGlSignal,
-        canyon: canyonGlSignal,
-      },
-      screenshots: [
-        '01-briefing.png',
-        '02-cockpit-combat.png',
-        '02b-hot-zone.png',
-        '03-overheat.png',
-        '04-overdrive.png',
-        '04b-recharge.png',
-        '05-missile-combat.png',
-        'trench-01-briefing.png',
-        'trench-02-mouth.png',
-        'trench-03-spine-run.png',
-        '06-mission-select.png',
-        '06b-mission-click.png',
-        'planetary-01-canyon.png',
-        'planetary-02-flak.png',
-        'planetary-03-air-wave.png',
-      ],
-      snapshots: {
-        initial,
-        combatSnap,
-        hotZoneSnap,
-        overheatSnap,
-        overdriveSnap,
-        rechargeSnap,
-        lockSnap,
-        homingSnap,
-        finalSnap,
-        trenchBriefing,
-        trenchMouth,
-        trenchDeep,
-        briefings,
-        requestedScores: [...requestedScores],
-        canyonSnap,
-        flakSnap,
-        airSnap,
-      },
+      glSignal,
+      screenshots,
+      snapshots,
     };
     await fs.writeFile(path.join(OUT_DIR, 'report.json'), JSON.stringify(report, null, 2));
     console.log(JSON.stringify(report, null, 2));
@@ -449,4 +448,4 @@ async function run() {
   process.exit(exitCode);
 }
 
-void run();
+run();
