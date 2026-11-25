@@ -1,5 +1,6 @@
 import { ENERGY_RULES, flushWeaponHeat, spendWeaponCharge } from './energy';
 import { damagePlayer, FLIGHT_TUNING } from './flight';
+import { GROUND_TARGET_SPECS } from './planetaryLayout';
 import { absorbIntoShield, regenShield, SHIP_STATS } from './ships';
 import {
   add,
@@ -33,6 +34,7 @@ import type {
   EnemyShipState,
   ExplosionState,
   FlightInput,
+  GroundTargetState,
   LockState,
   PlayerShipState,
   ProjectileState,
@@ -121,8 +123,11 @@ export interface TargetContact {
   readonly label: string;
   readonly position: Vec3;
   readonly velocity: Vec3;
-  readonly kind: 'enemy' | 'subsystem';
+  readonly kind: 'enemy' | 'subsystem' | 'ground';
 }
+
+/** Earliest fraction along a swept segment where it enters solid ground, or null; absent off-planet. */
+export type TerrainEntry = (a: Vec3, b: Vec3) => number | null;
 
 export interface CombatStepInput {
   readonly tick: number;
@@ -138,6 +143,10 @@ export interface CombatStepInput {
   readonly radio: RadioMessage | null;
   readonly input: FlightInput;
   readonly dt: number;
+  readonly groundTargets?: readonly GroundTargetState[];
+  readonly terrainEntry?: TerrainEntry;
+  /** Who calls out ground kills on the radio. */
+  readonly groundSpeaker?: string;
 }
 
 export interface CombatStepOutput {
@@ -152,6 +161,8 @@ export interface CombatStepOutput {
   readonly radio: RadioMessage | null;
   readonly enemiesDestroyedDelta: number;
   readonly subsystemsDestroyedDelta: number;
+  readonly groundTargets: readonly GroundTargetState[];
+  readonly groundTargetsDestroyedDelta: number;
   readonly rngState: number;
   readonly events: readonly SimEvent[];
 }
@@ -163,6 +174,7 @@ export function subsystemWorldPosition(ship: CapitalShipState, subsys: Subsystem
 export function listHostileContacts(
   enemies: readonly EnemyShipState[],
   hostileFrigate: CapitalShipState,
+  groundTargets: readonly GroundTargetState[] = [],
 ): readonly TargetContact[] {
   const contacts: TargetContact[] = [];
   for (const enemy of enemies) {
@@ -185,6 +197,11 @@ export function listHostileContacts(
       });
     }
   }
+  for (const target of groundTargets) {
+    if (target.hull > 0) {
+      contacts.push({ id: target.id, label: target.label, position: target.position, velocity: { x: 0, y: 0, z: 0 }, kind: 'ground' });
+    }
+  }
   return contacts;
 }
 
@@ -192,11 +209,12 @@ export function findTargetContact(
   targetId: string | null,
   enemies: readonly EnemyShipState[],
   hostileFrigate: CapitalShipState,
+  groundTargets: readonly GroundTargetState[] = [],
 ): TargetContact | null {
   if (targetId === null) {
     return null;
   }
-  const contacts = listHostileContacts(enemies, hostileFrigate);
+  const contacts = listHostileContacts(enemies, hostileFrigate, groundTargets);
   return contacts.find((c) => c.id === targetId) ?? null;
 }
 
@@ -365,6 +383,7 @@ function stepPlayerWeapons(
   player: PlayerShipState,
   enemies: readonly EnemyShipState[],
   hostileFrigate: CapitalShipState,
+  groundTargets: readonly GroundTargetState[],
   input: FlightInput,
   dt: number,
 ): {
@@ -375,7 +394,7 @@ function stepPlayerWeapons(
   const events: SimEvent[] = [];
   const spawned: ProjectileState[] = [];
   const playerForward = forwardOf(player.orientation);
-  const contacts = listHostileContacts(enemies, hostileFrigate);
+  const contacts = listHostileContacts(enemies, hostileFrigate, groundTargets);
   const selection = resolveTargetSelection(
     { targetId: player.selectedTargetId, pinned: player.targetPinned },
     player.position,
@@ -383,7 +402,7 @@ function stepPlayerWeapons(
     contacts,
     input.cycleTarget,
   );
-  const selectedContact = findTargetContact(selection.targetId, enemies, hostileFrigate);
+  const selectedContact = contacts.find((c) => c.id === selection.targetId) ?? null;
 
   let missilesReady = player.missilesReady;
   let missileRearmTimer = player.missileRearmTimer;
@@ -669,7 +688,9 @@ type FriendlyHit =
   | { readonly kind: 'hull'; readonly t: number }
   | { readonly kind: 'enemy'; readonly t: number; readonly id: string; readonly precision: number }
   | { readonly kind: 'subsystem'; readonly t: number; readonly index: number; readonly precision: number }
-  | { readonly kind: 'asteroid'; readonly t: number; readonly id: string };
+  | { readonly kind: 'asteroid'; readonly t: number; readonly id: string }
+  | { readonly kind: 'ground'; readonly t: number; readonly index: number; readonly precision: number }
+  | { readonly kind: 'terrain'; readonly t: number };
 
 /** Miss distance of the bolt's line of flight, so precision doesn't depend on where the tick boundary fell. */
 function precisionOf(a: Vec3, b: Vec3, center: Vec3, radius: number): number {
@@ -685,6 +706,8 @@ function findFriendlyHit(
   frigate: CapitalShipState,
   subsystems: readonly SubsystemState[],
   asteroids: ReadonlyMap<string, AsteroidState>,
+  groundTargets: readonly GroundTargetState[],
+  terrainEntry: TerrainEntry | null,
 ): FriendlyHit | null {
   let best: FriendlyHit | null = null;
   const consider = (hit: FriendlyHit): void => {
@@ -709,6 +732,15 @@ function findFriendlyHit(
     const t = segmentSphereEntry(a, b, rock.position, rock.radius + COMBAT_TUNING.asteroidHitTolerance);
     if (t !== null) consider({ kind: 'asteroid', t, id });
   }
+  groundTargets.forEach((target, index) => {
+    if (target.hull <= 0) return;
+    const t = segmentSphereEntry(a, b, target.position, target.hitRadius);
+    if (t !== null) consider({ kind: 'ground', t, index, precision: precisionOf(a, b, target.position, target.hitRadius) });
+  });
+  if (terrainEntry !== null) {
+    const t = terrainEntry(a, b);
+    if (t !== null) consider({ kind: 'terrain', t });
+  }
   return best;
 }
 
@@ -724,21 +756,11 @@ function stepProjectilesAndHits(
   projectilesInput: readonly ProjectileState[],
   explosionsInput: readonly ExplosionState[],
   radioInput: RadioMessage | null,
+  groundTargetsInput: readonly GroundTargetState[],
+  terrainEntry: TerrainEntry | null,
+  groundSpeaker: string,
   dt: number,
-): {
-  readonly player: PlayerShipState;
-  readonly enemies: readonly EnemyShipState[];
-  readonly friendlyCarrier: CapitalShipState;
-  readonly hostileFrigate: CapitalShipState;
-  readonly asteroids: readonly AsteroidState[];
-  readonly projectiles: readonly ProjectileState[];
-  readonly explosions: readonly ExplosionState[];
-  readonly radio: RadioMessage | null;
-  readonly enemiesDestroyedDelta: number;
-  readonly subsystemsDestroyedDelta: number;
-  readonly rngState: number;
-  readonly events: readonly SimEvent[];
-} {
+): Omit<CombatStepOutput, 'wingmate'> {
   let rng = rngState;
   const roll = (): number => {
     const r = nextRandom(rng);
@@ -766,9 +788,11 @@ function stepProjectilesAndHits(
     asteroidMap.set(ast.id, ast);
   }
   const subsystems = hostileFrigateInput.subsystems.map((s) => ({ ...s }));
+  const groundTargets = groundTargetsInput.map((g) => ({ ...g }));
 
   let enemiesDestroyedDelta = 0;
   let subsystemsDestroyedDelta = 0;
+  let groundTargetsDestroyedDelta = 0;
 
   const rollCannonDamage = (proj: ProjectileState, precision: number, position: Vec3): number => {
     if (proj.owner !== 'player' || proj.kind !== 'bolt') {
@@ -791,7 +815,7 @@ function stepProjectilesAndHits(
 
     let velocity = proj.velocity;
     if (proj.kind === 'missile' && proj.targetId !== null) {
-      const targetPos = resolveTargetPosition(proj.targetId, enemyMap, hostileFrigateInput, subsystems);
+      const targetPos = resolveTargetPosition(proj.targetId, enemyMap, hostileFrigateInput, subsystems, groundTargets);
       if (targetPos !== null) {
         const desiredDir = normalize(sub(targetPos, proj.position));
         const currentDir = normalize(velocity);
@@ -806,7 +830,9 @@ function stepProjectilesAndHits(
     let hit = false;
 
     if (proj.faction === 'friendly') {
-      const found = findFriendlyHit(proj.position, nextPos, enemyMap, hostileFrigateInput, subsystems, asteroidMap);
+      const found = findFriendlyHit(
+        proj.position, nextPos, enemyMap, hostileFrigateInput, subsystems, asteroidMap, groundTargets, terrainEntry,
+      );
       hit = found !== null;
       const impact = found === null ? nextPos : lerpVec3(proj.position, nextPos, found.t);
 
@@ -929,6 +955,43 @@ function stepProjectilesAndHits(
             });
           }
         }
+      } else if (found?.kind === 'ground') {
+        const target = groundTargets[found.index];
+        if (target !== undefined) {
+          const shielded = target.shieldedBy !== null && groundTargets.some((g) => g.id === target.shieldedBy && g.hull > 0);
+          if (shielded) {
+            groundTargets[found.index] = { ...target, shieldHitFlash: 1 };
+            if (proj.owner === 'player') {
+              events.push({ kind: 'hit_confirmed', isKill: false, shieldHit: true });
+            }
+            nextExplosions.push({ id: `gshd-${tick}-${proj.id}`, position: impact, radius: 8.5, elapsed: 0, duration: 0.28, tint: 'cyan' });
+          } else {
+            const damage = rollCannonDamage(proj, found.precision, impact);
+            const nextHull = Math.max(0, target.hull - damage);
+            groundTargets[found.index] = { ...target, hull: nextHull };
+            const destroyed = nextHull <= 0;
+            if (proj.owner === 'player') {
+              events.push({ kind: 'hit_confirmed', isKill: destroyed });
+            }
+            if (destroyed) {
+              groundTargetsDestroyedDelta += 1;
+              events.push({ kind: 'ground_target_destroyed', label: target.label, position: target.position });
+              nextExplosions.push({
+                id: `gnd-${tick}-${target.id}`,
+                position: target.position,
+                radius: target.kind === 'artillery' ? 40 : 26,
+                elapsed: 0,
+                duration: 1.2,
+                tint: 'amber',
+              });
+              radio = { speaker: groundSpeaker, text: GROUND_TARGET_SPECS[target.kind].killCall, remainingSeconds: 3.4 };
+            } else {
+              nextExplosions.push({ id: `ghit-${tick}-${proj.id}`, position: impact, radius: 6.5, elapsed: 0, duration: 0.28, tint: 'amber' });
+            }
+          }
+        }
+      } else if (found?.kind === 'terrain') {
+        nextExplosions.push({ id: `dirt-${tick}-${proj.id}`, position: impact, radius: proj.kind === 'missile' ? 12 : 4, elapsed: 0, duration: 0.3, tint: 'amber' });
       } else if (found?.kind === 'asteroid') {
         const ast = asteroidMap.get(found.id);
         if (ast !== undefined) {
@@ -969,11 +1032,13 @@ function stepProjectilesAndHits(
         friendlyCarrier.orientation,
         add(friendlyCarrier.halfExtents, carrierPad),
       );
-      if (playerT !== null && (carrierT === null || playerT <= carrierT)) {
+      const terrainT = terrainEntry === null ? null : terrainEntry(proj.position, nextPos);
+      const blockedBefore = (t: number): boolean => terrainT !== null && terrainT < t;
+      if (playerT !== null && (carrierT === null || playerT <= carrierT) && !blockedBefore(playerT)) {
         hit = true;
         player = damagePlayer(player, proj.damage);
         events.push({ kind: 'player_damaged' });
-      } else if (carrierT !== null) {
+      } else if (carrierT !== null && !blockedBefore(carrierT)) {
         hit = true;
         friendlyCarrier = {
           ...friendlyCarrier,
@@ -986,6 +1051,16 @@ function stepProjectilesAndHits(
           elapsed: 0,
           duration: 0.36,
           tint: 'amber',
+        });
+      } else if (terrainT !== null) {
+        hit = true;
+        nextExplosions.push({
+          id: `dirt-${tick}-${proj.id}`,
+          position: lerpVec3(proj.position, nextPos, terrainT),
+          radius: proj.kind === 'flak' ? 10 : 4,
+          elapsed: 0,
+          duration: 0.3,
+          tint: proj.kind === 'flak' ? 'emerald' : 'amber',
         });
       } else if (proj.kind === 'bolt' && flyingDaringly(player)) {
         // The closest point falls strictly inside one segment per pass, so each bolt pays out once.
@@ -1031,6 +1106,8 @@ function stepProjectilesAndHits(
     radio,
     enemiesDestroyedDelta,
     subsystemsDestroyedDelta,
+    groundTargets,
+    groundTargetsDestroyedDelta,
     rngState: rng,
     events,
   };
@@ -1042,11 +1119,13 @@ export function stepCombat(ctx: CombatStepInput): CombatStepOutput {
       ? { ...ctx.radio, remainingSeconds: ctx.radio.remainingSeconds - ctx.dt }
       : null;
 
+  const groundTargets = ctx.groundTargets ?? [];
   const weaponStep = stepPlayerWeapons(
     ctx.tick,
     ctx.player,
     ctx.enemies,
     ctx.hostileFrigate,
+    groundTargets,
     ctx.input,
     ctx.dt,
   );
@@ -1075,15 +1154,18 @@ export function stepCombat(ctx: CombatStepInput): CombatStepOutput {
     [...ctx.projectiles, ...weaponStep.spawned, ...agentStep.spawned],
     ctx.explosions,
     agentStep.radio,
+    groundTargets,
+    ctx.terrainEntry ?? null,
+    ctx.groundSpeaker ?? 'GROUND',
     ctx.dt,
   );
 
   let player = hitStep.player;
   const finalTargetValid =
     player.selectedTargetId !== null &&
-    findTargetContact(player.selectedTargetId, hitStep.enemies, hitStep.hostileFrigate) !== null;
+    findTargetContact(player.selectedTargetId, hitStep.enemies, hitStep.hostileFrigate, hitStep.groundTargets) !== null;
   if (!finalTargetValid) {
-    const remainingContacts = listHostileContacts(hitStep.enemies, hitStep.hostileFrigate);
+    const remainingContacts = listHostileContacts(hitStep.enemies, hitStep.hostileFrigate, hitStep.groundTargets);
     const nextSelectedId = selectNextTarget(
       null,
       player.position,
@@ -1119,6 +1201,8 @@ export function stepCombat(ctx: CombatStepInput): CombatStepOutput {
     radio: hitStep.radio,
     enemiesDestroyedDelta: hitStep.enemiesDestroyedDelta,
     subsystemsDestroyedDelta: hitStep.subsystemsDestroyedDelta,
+    groundTargets: hitStep.groundTargets,
+    groundTargetsDestroyedDelta: hitStep.groundTargetsDestroyedDelta,
     rngState: hitStep.rngState,
     events: [...weaponStep.events, ...agentStep.events, ...hitStep.events],
   };
@@ -1184,6 +1268,7 @@ function resolveTargetPosition(
   enemyMap: ReadonlyMap<string, EnemyShipState>,
   hostileFrigate: CapitalShipState,
   subsystems: readonly SubsystemState[],
+  groundTargets: readonly GroundTargetState[],
 ): Vec3 | null {
   const enemy = enemyMap.get(targetId);
   if (enemy !== undefined) {
@@ -1193,7 +1278,7 @@ function resolveTargetPosition(
   if (subsys !== undefined) {
     return subsystemWorldPosition(hostileFrigate, subsys);
   }
-  return null;
+  return groundTargets.find((g) => g.id === targetId && g.hull > 0)?.position ?? null;
 }
 
 function pickWingmateTarget(

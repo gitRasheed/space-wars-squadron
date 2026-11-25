@@ -2,6 +2,8 @@ import { stepCombat } from './combat';
 import { createInitialEnergy } from './energy';
 import { stepPlayerFlight } from './flight';
 import { IDENTITY_QUAT, quatLookAt, vec3 } from './math';
+import { applyTerrainToPlayer, burstFlak, GROUND_SPEAKER, OUTPOST_LOST_REASON, remainingPlanetaryHostiles, stepGroundBattle } from './planetary';
+import { segmentTerrainEntry } from './planetaryLayout';
 import { SHIP_STATS } from './ships';
 import type {
   AsteroidState,
@@ -241,6 +243,7 @@ export function createInitialWorld(
     radio: config.openingRadio,
     enemiesDestroyed: 0,
     subsystemsDestroyed: 0,
+    planetary: config.planetary ?? null,
     events: [],
   };
 }
@@ -249,6 +252,7 @@ function evaluatePhase(
   currentPhase: SortiePhase,
   playerHull: number,
   carrierHull: number,
+  carrierLostReason: string,
   remainingEnemies: number,
   remainingSubsystems: number,
   enemiesDestroyed: number,
@@ -263,7 +267,7 @@ function evaluatePhase(
     return { kind: 'failed', elapsedSeconds, reason: 'FIGHTER DESTROYED' };
   }
   if (carrierHull <= 0) {
-    return { kind: 'failed', elapsedSeconds, reason: 'CARRIER HEARTHSTONE LOST' };
+    return { kind: 'failed', elapsedSeconds, reason: carrierLostReason };
   }
   if (remainingEnemies === 0 && remainingSubsystems === 0) {
     return {
@@ -332,22 +336,61 @@ export function stepWorld(
     world.asteroids,
     dt,
   );
+  const planetary = world.planetary;
+  const tick = world.tick + 1;
+  let player = flightStep.player;
+  let projectiles = world.projectiles;
+  let explosions = world.explosions;
+  const preEvents: SimEvent[] = [...flightStep.events];
+  let terrainWarning = false;
+  if (planetary !== null) {
+    const terrain = applyTerrainToPlayer(player);
+    terrainWarning = terrain.warning;
+    preEvents.push(...terrain.events);
+    const flak = burstFlak(tick, projectiles, terrain.player, dt);
+    player = flak.player;
+    projectiles = flak.projectiles;
+    explosions = [...explosions, ...flak.explosions];
+    preEvents.push(...flak.events);
+  }
+
   const combatStep = stepCombat({
-    tick: world.tick + 1,
+    tick,
     rngState: world.rngState,
-    player: flightStep.player,
+    player,
     wingmate: world.wingmate,
     enemies: world.enemies,
     friendlyCarrier: world.friendlyCarrier,
     hostileFrigate: world.hostileFrigate,
     asteroids: world.asteroids,
-    projectiles: world.projectiles,
-    explosions: world.explosions,
+    projectiles,
+    explosions,
     radio: world.radio,
     input,
     dt,
+    ...(planetary === null
+      ? {}
+      : { groundTargets: planetary.groundTargets, terrainEntry: segmentTerrainEntry, groundSpeaker: GROUND_SPEAKER }),
   });
 
+  const battle =
+    planetary === null
+      ? null
+      : stepGroundBattle({
+          tick,
+          planetary,
+          groundTargets: combatStep.groundTargets,
+          groundTargetsDestroyedDelta: combatStep.groundTargetsDestroyedDelta,
+          terrainWarning,
+          player: combatStep.player,
+          wingmate: combatStep.wingmate,
+          enemies: combatStep.enemies,
+          outpost: combatStep.friendlyCarrier,
+          radio: combatStep.radio,
+          dt,
+        });
+
+  const enemies = battle?.enemies ?? combatStep.enemies;
   const enemiesDestroyed = world.enemiesDestroyed + combatStep.enemiesDestroyedDelta;
   const subsystemsDestroyed = world.subsystemsDestroyed + combatStep.subsystemsDestroyedDelta;
   const remainingSubsystems = combatStep.hostileFrigate.subsystems.filter((s) => s.hull > 0).length;
@@ -356,31 +399,33 @@ export function stepWorld(
     world.phase,
     combatStep.player.hull,
     combatStep.friendlyCarrier.hull,
-    combatStep.enemies.length,
+    planetary === null ? 'CARRIER HEARTHSTONE LOST' : OUTPOST_LOST_REASON,
+    battle === null ? enemies.length : remainingPlanetaryHostiles(battle.planetary, enemies),
     remainingSubsystems,
     enemiesDestroyed,
-    subsystemsDestroyed,
+    battle === null ? subsystemsDestroyed : battle.planetary.groundTargetsDestroyed,
     dt,
   );
 
   return {
-    tick: world.tick + 1,
+    tick,
     rngState: combatStep.rngState,
     sortie: world.sortie,
     phase,
     cameraMode: 'cockpit',
     player: combatStep.player,
-    wingmate: combatStep.wingmate,
-    enemies: combatStep.enemies,
+    wingmate: battle?.wingmate ?? combatStep.wingmate,
+    enemies,
     friendlyCarrier: combatStep.friendlyCarrier,
     hostileFrigate: combatStep.hostileFrigate,
     asteroids: combatStep.asteroids,
-    projectiles: combatStep.projectiles,
+    projectiles: battle === null ? combatStep.projectiles : [...combatStep.projectiles, ...battle.spawned],
     explosions: combatStep.explosions,
-    radio: combatStep.radio,
+    radio: battle?.radio ?? combatStep.radio,
     enemiesDestroyed,
     subsystemsDestroyed,
-    events: [...flightStep.events, ...combatStep.events],
+    planetary: battle?.planetary ?? null,
+    events: [...preEvents, ...combatStep.events, ...(battle?.events ?? [])],
   };
 }
 

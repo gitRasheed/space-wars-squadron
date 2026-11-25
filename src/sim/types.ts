@@ -169,7 +169,8 @@ export interface AsteroidState {
 
 export interface ProjectileState {
   readonly id: string;
-  readonly kind: 'bolt' | 'missile';
+  /** `flak` is an AA shell that bursts on its fuse; it flies like a hostile bolt until then. */
+  readonly kind: 'bolt' | 'missile' | 'flak';
   readonly faction: 'friendly' | 'hostile';
   readonly owner: 'player' | 'wingmate' | 'hostile';
   readonly position: Vec3;
@@ -210,7 +211,43 @@ export type SimEvent =
   | { readonly kind: 'near_miss'; readonly source: 'bolt' | 'buzz'; readonly reward: 'heat_vent' | 'shield' }
   | { readonly kind: 'supply_drop'; readonly drop: SupplyDrop }
   | { readonly kind: 'weapon_ready' }
-  | { readonly kind: 'incoming_fire'; readonly position: Vec3 };
+  | { readonly kind: 'incoming_fire'; readonly position: Vec3 }
+  | { readonly kind: 'ground_target_destroyed'; readonly label: string; readonly position: Vec3 }
+  | { readonly kind: 'flak_burst'; readonly position: Vec3 }
+  | { readonly kind: 'air_wave_inbound' };
+
+export type GroundTargetKind = 'flak' | 'walker' | 'relay' | 'artillery';
+
+export interface GroundTargetState {
+  readonly id: string;
+  readonly kind: GroundTargetKind;
+  readonly label: string;
+  /** Centre of the hit sphere; the pad sits directly below it at ground level. */
+  readonly position: Vec3;
+  readonly hull: number;
+  readonly maxHull: number;
+  readonly hitRadius: number;
+  /** Takes no damage while this target is still standing. */
+  readonly shieldedBy: string | null;
+  readonly shieldHitFlash: number;
+  readonly fireCooldown: number;
+  /** 0..1 telegraph before a shot, so the renderer can glow the muzzle. */
+  readonly charge: number;
+  readonly heading: number;
+}
+
+export type PlanetaryStage =
+  | { readonly kind: 'ground_attack' }
+  | { readonly kind: 'air_superiority'; readonly elapsedSeconds: number };
+
+export interface PlanetaryState {
+  readonly stage: PlanetaryStage;
+  readonly groundTargets: readonly GroundTargetState[];
+  readonly groundTargetsDestroyed: number;
+  /** How far (m) the friendly convoy has rolled forward from the outpost. */
+  readonly convoyAdvance: number;
+  readonly terrainWarning: boolean;
+}
 
 export interface WorldState {
   readonly tick: number;
@@ -229,6 +266,8 @@ export interface WorldState {
   readonly radio: RadioMessage | null;
   readonly enemiesDestroyed: number;
   readonly subsystemsDestroyed: number;
+  /** Null for orbital sorties; set for the planetary ground-support level. */
+  readonly planetary: PlanetaryState | null;
   readonly events: readonly SimEvent[];
 }
 
@@ -241,6 +280,7 @@ export interface SortieConfig {
   readonly friendlyCarrier: CapitalShipState;
   readonly hostileFrigate: CapitalShipState;
   readonly asteroids: readonly AsteroidState[];
+  readonly planetary?: PlanetaryState;
 }
 
 export const FIXED_DT = 1 / 60;
