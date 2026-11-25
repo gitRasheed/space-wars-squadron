@@ -17,7 +17,7 @@
 | 2 | Input Steering & Focus / Pointer Lock | Implicit 2-flag product (`pointerLocked` × `cursorActive` × held keys) | Traced | Medium (Common) | `src/input/keyboardMouse.ts:14-40,102-129,154-164` | 2 |
 | 3 | Throttle Overdrive & Weapon Heat | `overdrive` × `WeaponState` (`ready`/`overheated`) × charges | Traced (pass 3) | Medium (Common) | `src/sim/energy.ts`, `src/sim/flight.ts` | 1 |
 | 4 | Target Selection, Pin & Missile Lock | Sum (`LockState`) × `selectedTargetId` × `targetPinned` × `missileTriggerHeld` × `missilesReady` | Traced (pass 3) | Medium (Common) | `src/sim/combat.ts` (`resolveTargetSelection`, `stepPlayerWeapons`) | 1 |
-| 6 | Enemy Maneuver | Sum (`EnemyManeuver`: `approach`/`break_away`) | Traced (pass 3) | Medium (Common) | `src/sim/combat.ts` (`stepEnemyAi`) | 1 |
+| 6 | Enemy Maneuver | Sum (`EnemyManeuver`: `patrol`/`approach`/`break_away`) | Traced (pass 3) | Medium (Common) | `src/sim/combat.ts` (`stepEnemyAi`) | 1 |
 | 5 | Web Audio Engine Lifecycle | Implicit (`muted` × `ctx` × `document.hidden`) | Traced | Low (Edge) | `src/audio/synthAudio.ts:13-57,125-138` | 0 |
 
 ## 3. Detailed Sections (`Traced` Only)
@@ -87,3 +87,7 @@
 - **Machine 6, raider attack run.** The approach timer was clamped at 0.4 s, so the timed break-away never fired, and the tail check had its sign reversed. The timer now reaches 0, and a raider holds the run only while it is actually behind the player.
 - **Machine 2, pause ordering.** On `P` during locked flight, `main.ts` released pointer lock after the sim paused, so `pointerlockchange` saw the overlay open and never recorded `lockedBeforePause`; the resume click then resumed into cursor steering. `InputChannel.releasePointerForPause()` records the lock before releasing it.
 
+## 7. Level 2 additions (2026-11-25, megastructure trench)
+
+- **Machine 1, briefing.** `briefing` + `selectLevel` for a different level rebuilds the world from that level's config and stays in `briefing`. Every other phase ignores `selectLevel`, and restart keeps `world.sortie`, so a restart never changes level.
+- **Machine 6, `patrol`.** Trench guards start in `patrol` around a post. `patrol` → `approach` when the player is inside 520 m or the guard has lost any shield or hull. Nothing returns to `patrol`. Raiders on `patrol` hold no attack token. Saturn spawns no guards, so its machine is unchanged.

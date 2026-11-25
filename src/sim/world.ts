@@ -3,12 +3,14 @@ import { createInitialEnergy } from './energy';
 import { stepPlayerFlight } from './flight';
 import { IDENTITY_QUAT, quatLookAt, vec3 } from './math';
 import { SHIP_STATS } from './ships';
+import { TRENCH_ARENA, TRENCH_PATROL_POSTS, TRENCH_REACTORS } from './trenchLayout';
 import type {
   AsteroidState,
   CapitalShipState,
   EnemyKind,
   EnemyShipState,
   FlightInput,
+  LevelId,
   PlayerShipState,
   SimEvent,
   SortieConfig,
@@ -206,6 +208,9 @@ function createInitialWingmate(): WingmateState {
 
 export const DEFAULT_SORTIE_CONFIG: SortieConfig = {
   id: 'sortie-01-hearthstone',
+  level: 'saturn',
+  arena: [],
+  reactors: [],
   openingRadio: {
     speaker: 'VALKYRIE-2',
     text: 'Shielded raiders inbound on Hearthstone—watch your heat, cleared hot!',
@@ -217,6 +222,78 @@ export const DEFAULT_SORTIE_CONFIG: SortieConfig = {
   friendlyCarrier: createFriendlyCarrier(),
   hostileFrigate: createHostileFrigate(),
   asteroids: createRingAsteroids(),
+};
+
+function createTrenchEnemies(): readonly EnemyShipState[] {
+  const guards: EnemyShipState[] = TRENCH_PATROL_POSTS.map((post, i) => ({
+    id: `raider-${i + 1}`,
+    callsign: `SPINE-${i + 1}`,
+    kind: 'raider',
+    position: post,
+    velocity: vec3(0, 0, 40),
+    orientation: quatLookAt(vec3(0, 0, 1)),
+    maneuver: { kind: 'patrol', post },
+    ...enemyDurability('raider'),
+    shieldRegenDelay: 0,
+    shieldHitFlash: 0,
+    fireCooldown: 1.2 + i * 0.3,
+    phaseOffset: i * 1.7,
+  }));
+  const strikers: EnemyShipState[] = [
+    {
+      id: 'striker-1',
+      callsign: 'STRIKER-4',
+      kind: 'striker',
+      position: vec3(120, -150, 1150),
+      velocity: vec3(-20, 10, 40),
+      orientation: quatLookAt(vec3(-0.5, 0.2, 0.84)),
+      maneuver: { kind: 'approach', remainingSeconds: 7.5 },
+      ...enemyDurability('striker'),
+      shieldRegenDelay: 0,
+      shieldHitFlash: 0,
+      fireCooldown: 1.5,
+      phaseOffset: 5.3,
+    },
+    {
+      id: 'striker-2',
+      callsign: 'STRIKER-5',
+      kind: 'striker',
+      position: vec3(-60, 160, 1250),
+      velocity: vec3(-10, -12, 40),
+      orientation: quatLookAt(vec3(-0.3, -0.4, 0.86)),
+      maneuver: { kind: 'approach', remainingSeconds: 8.5 },
+      ...enemyDurability('striker'),
+      shieldRegenDelay: 0,
+      shieldHitFlash: 0,
+      fireCooldown: 2.1,
+      phaseOffset: 1.9,
+    },
+  ];
+  return [...guards, ...strikers];
+}
+
+/** Level 2: Hearthstone holds at the asteroid's mouth while you run the spine and kill its three conduit cores. */
+export const TRENCH_SORTIE_CONFIG: SortieConfig = {
+  id: 'sortie-02-spine',
+  level: 'trench',
+  arena: TRENCH_ARENA,
+  reactors: TRENCH_REACTORS,
+  openingRadio: {
+    speaker: 'VALKYRIE-2',
+    text: 'Three conduit cores inside the spine. Thread the ribs, light them up, exit cold.',
+    remainingSeconds: 5,
+  },
+  player: { ...createInitialPlayer(), position: vec3(0, 0, 1120), selectedTargetId: null },
+  wingmate: { ...createInitialWingmate(), position: vec3(-32, 10, 1142), targetId: null },
+  enemies: createTrenchEnemies(),
+  friendlyCarrier: { ...createFriendlyCarrier(), position: vec3(-110, -20, 1350) },
+  hostileFrigate: null,
+  asteroids: [],
+};
+
+export const SORTIE_CONFIGS: Readonly<Record<LevelId, SortieConfig>> = {
+  saturn: DEFAULT_SORTIE_CONFIG,
+  trench: TRENCH_SORTIE_CONFIG,
 };
 
 export function createInitialWorld(
@@ -235,43 +312,46 @@ export function createInitialWorld(
     enemies: config.enemies,
     friendlyCarrier: config.friendlyCarrier,
     hostileFrigate: config.hostileFrigate,
+    reactors: config.reactors,
     asteroids: config.asteroids,
     projectiles: [],
     explosions: [],
     radio: config.openingRadio,
     enemiesDestroyed: 0,
     subsystemsDestroyed: 0,
+    reactorsDestroyed: 0,
     events: [],
   };
 }
 
+/** Whether the level's win condition is met; each level names its own objective. */
+function objectiveComplete(world: Pick<WorldState, 'sortie' | 'enemies' | 'hostileFrigate' | 'reactors'>): boolean {
+  switch (world.sortie.level) {
+    case 'saturn':
+      return world.enemies.length === 0 && (world.hostileFrigate?.subsystems.every((s) => s.hull <= 0) ?? true);
+    case 'trench':
+      return world.reactors.every((r) => r.hull <= 0);
+  }
+}
+
 function evaluatePhase(
   currentPhase: SortiePhase,
-  playerHull: number,
-  carrierHull: number,
-  remainingEnemies: number,
-  remainingSubsystems: number,
-  enemiesDestroyed: number,
-  subsystemsDestroyed: number,
+  next: Pick<WorldState, 'sortie' | 'enemies' | 'hostileFrigate' | 'reactors' | 'player' | 'friendlyCarrier'>,
+  tally: Pick<WorldState, 'enemiesDestroyed' | 'subsystemsDestroyed' | 'reactorsDestroyed'>,
   dt: number,
 ): SortiePhase {
   if (currentPhase.kind !== 'active') {
     return currentPhase;
   }
   const elapsedSeconds = currentPhase.elapsedSeconds + dt;
-  if (playerHull <= 0) {
+  if (next.player.hull <= 0) {
     return { kind: 'failed', elapsedSeconds, reason: 'FIGHTER DESTROYED' };
   }
-  if (carrierHull <= 0) {
+  if (next.friendlyCarrier.hull <= 0) {
     return { kind: 'failed', elapsedSeconds, reason: 'CARRIER HEARTHSTONE LOST' };
   }
-  if (remainingEnemies === 0 && remainingSubsystems === 0) {
-    return {
-      kind: 'victory',
-      elapsedSeconds,
-      enemiesDestroyed,
-      subsystemsDestroyed,
-    };
+  if (objectiveComplete(next)) {
+    return { kind: 'victory', elapsedSeconds, ...tally };
   }
   return { kind: 'active', elapsedSeconds };
 }
@@ -282,6 +362,9 @@ export function stepWorld(
   dt: number,
 ): WorldState {
   if (world.phase.kind === 'briefing') {
+    if (input.selectLevel !== null && input.selectLevel !== world.sortie.level) {
+      return createInitialWorld(world.rngState, false, SORTIE_CONFIGS[input.selectLevel]);
+    }
     if (input.launchBriefing || input.restartSortie) {
       return {
         ...world,
@@ -328,8 +411,9 @@ export function stepWorld(
   const flightStep = stepPlayerFlight(
     world.player,
     input,
-    [world.friendlyCarrier, world.hostileFrigate],
+    world.hostileFrigate === null ? [world.friendlyCarrier] : [world.friendlyCarrier, world.hostileFrigate],
     world.asteroids,
+    world.sortie.arena,
     dt,
   );
   const combatStep = stepCombat({
@@ -340,6 +424,8 @@ export function stepWorld(
     enemies: world.enemies,
     friendlyCarrier: world.friendlyCarrier,
     hostileFrigate: world.hostileFrigate,
+    reactors: world.reactors,
+    arena: world.sortie.arena,
     asteroids: world.asteroids,
     projectiles: world.projectiles,
     explosions: world.explosions,
@@ -348,20 +434,12 @@ export function stepWorld(
     dt,
   });
 
-  const enemiesDestroyed = world.enemiesDestroyed + combatStep.enemiesDestroyedDelta;
-  const subsystemsDestroyed = world.subsystemsDestroyed + combatStep.subsystemsDestroyedDelta;
-  const remainingSubsystems = combatStep.hostileFrigate.subsystems.filter((s) => s.hull > 0).length;
-
-  const phase = evaluatePhase(
-    world.phase,
-    combatStep.player.hull,
-    combatStep.friendlyCarrier.hull,
-    combatStep.enemies.length,
-    remainingSubsystems,
-    enemiesDestroyed,
-    subsystemsDestroyed,
-    dt,
-  );
+  const tally = {
+    enemiesDestroyed: world.enemiesDestroyed + combatStep.enemiesDestroyedDelta,
+    subsystemsDestroyed: world.subsystemsDestroyed + combatStep.subsystemsDestroyedDelta,
+    reactorsDestroyed: world.reactorsDestroyed + combatStep.reactorsDestroyedDelta,
+  };
+  const phase = evaluatePhase(world.phase, { ...combatStep, sortie: world.sortie }, tally, dt);
 
   return {
     tick: world.tick + 1,
@@ -374,12 +452,12 @@ export function stepWorld(
     enemies: combatStep.enemies,
     friendlyCarrier: combatStep.friendlyCarrier,
     hostileFrigate: combatStep.hostileFrigate,
+    reactors: combatStep.reactors,
     asteroids: combatStep.asteroids,
     projectiles: combatStep.projectiles,
     explosions: combatStep.explosions,
     radio: combatStep.radio,
-    enemiesDestroyed,
-    subsystemsDestroyed,
+    ...tally,
     events: [...flightStep.events, ...combatStep.events],
   };
 }

@@ -32,6 +32,52 @@ export const INK_PALETTE = {
   keep: 0.1,
 } as const;
 
+type Rgb = readonly [number, number, number];
+
+/** Everything a biome may change: the hue of each cel step, the ink tint and the print grade. */
+export interface BiomeCard {
+  readonly bands: { readonly highlight: Rgb; readonly base: Rgb; readonly shadow: Rgb; readonly bounce: Rgb };
+  readonly inkTint: Rgb;
+  readonly vignetteTint: Rgb;
+  readonly gradeShadowMul: Rgb;
+  readonly gradeShadowLift: Rgb;
+  readonly gradeHighlightMul: Rgb;
+}
+
+export const BIOME_CARDS: Readonly<Record<'saturn' | 'trench', BiomeCard>> = {
+  saturn: {
+    bands: { highlight: CEL_SHADING.highlight, base: CEL_SHADING.base, shadow: CEL_SHADING.shadow, bounce: CEL_SHADING.bounce },
+    inkTint: INK_PALETTE.tint,
+    vignetteTint: [0.78, 0.74, 1.0],
+    gradeShadowMul: [0.92, 0.97, 1.12],
+    gradeShadowLift: [0.008, 0.004, 0.024],
+    gradeHighlightMul: [1.05, 1.0, 0.93],
+  },
+  // Sodium key (0xffc070) on lit faces, teal-black in the shadows.
+  trench: {
+    bands: { highlight: [1.0, 0.75, 0.44], base: [0.5, 0.38, 0.3], shadow: [0.1, 0.13, 0.2], bounce: [0.19, 0.22, 0.3] },
+    inkTint: [0.004, 0.01, 0.014],
+    vignetteTint: [0.72, 0.84, 0.88],
+    gradeShadowMul: [0.9, 1.02, 1.08],
+    gradeShadowLift: [0.002, 0.01, 0.016],
+    gradeHighlightMul: [1.06, 0.99, 0.88],
+  },
+};
+
+/** Biome B surfaces. Walls stay matte and under 0.45 luma; the guide ribs are the one cold light inside. */
+export const TRENCH_PALETTE = {
+  wallDeep: 0x33262a,
+  wall: 0x6e4a3c,
+  wallLit: 0x8a6650,
+  void: 0x05070f,
+  guideRib: 0xaab8ff,
+  coldGap: 0xaab8ff,
+  coldGapCore: 0xe4e9ff,
+  pylon: 0x3b314d,
+  pylonTrim: 0x67647c,
+  reactorCore: 0xff5ec0,
+} as const;
+
 export const SCENE_PALETTE = {
   playerStripe: 0xe88332,
   wingmateStripe: 0x4bc5e8,

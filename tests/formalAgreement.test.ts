@@ -51,6 +51,8 @@ describe('formal TLA+ timing agreement at 60 Hz', () => {
         enemies: [],
         friendlyCarrier: world.friendlyCarrier,
         hostileFrigate: world.hostileFrigate,
+        reactors: world.reactors,
+        arena: world.sortie.arena,
         asteroids: [],
         projectiles: [],
         explosions: [],

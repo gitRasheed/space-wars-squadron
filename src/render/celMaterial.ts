@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CEL_SHADING, RIM_PALETTE, SUN_DIRECTION } from './palette';
+import { BIOME_CARDS, CEL_SHADING, RIM_PALETTE, SUN_DIRECTION, type BiomeCard } from './palette';
 
 export function glslVec3(values: readonly [number, number, number]): string {
   return `vec3(${values.map((v) => v.toFixed(4)).join(', ')})`;
@@ -21,6 +21,21 @@ float celStep(float edge, float value) {
   return smoothstep(edge - w, edge + w, value);
 }
 `;
+
+// One set of band uniforms shared by every cel material, so a biome switch is four writes.
+const BAND_UNIFORMS = {
+  uBandHighlight: { value: new THREE.Vector3(...BIOME_CARDS.saturn.bands.highlight) },
+  uBandBase: { value: new THREE.Vector3(...BIOME_CARDS.saturn.bands.base) },
+  uBandShadow: { value: new THREE.Vector3(...BIOME_CARDS.saturn.bands.shadow) },
+  uBandBounce: { value: new THREE.Vector3(...BIOME_CARDS.saturn.bands.bounce) },
+} as const;
+
+export function setCelBiome(card: BiomeCard): void {
+  BAND_UNIFORMS.uBandHighlight.value.set(...card.bands.highlight);
+  BAND_UNIFORMS.uBandBase.value.set(...card.bands.base);
+  BAND_UNIFORMS.uBandShadow.value.set(...card.bands.shadow);
+  BAND_UNIFORMS.uBandBounce.value.set(...card.bands.bounce);
+}
 
 const CEL_VERTEX = `
 varying vec3 vNormal;
@@ -52,6 +67,10 @@ uniform vec3 uRimColor;
 uniform float uRimStrength;
 uniform float uPanelSize;
 uniform float uGloss;
+uniform vec3 uBandHighlight;
+uniform vec3 uBandBase;
+uniform vec3 uBandShadow;
+uniform vec3 uBandBounce;
 #ifdef USE_MAP
 uniform sampler2D uMap;
 #endif
@@ -118,9 +137,9 @@ void main() {
   albedo *= plate;
 
   float ndl = dot(n, sun);
-  vec3 band = mix(${glslVec3(CEL_SHADING.shadow)}, ${glslVec3(CEL_SHADING.bounce)}, celStep(${CEL_SHADING.bounceEdge.toFixed(3)}, dot(n, normalize(vBounceView))));
-  band = mix(band, ${glslVec3(CEL_SHADING.base)}, celStep(${CEL_SHADING.shadowEdge.toFixed(3)}, ndl));
-  band = mix(band, ${glslVec3(CEL_SHADING.highlight)}, celStep(${CEL_SHADING.highlightEdge.toFixed(3)}, ndl));
+  vec3 band = mix(uBandShadow, uBandBounce, celStep(${CEL_SHADING.bounceEdge.toFixed(3)}, dot(n, normalize(vBounceView))));
+  band = mix(band, uBandBase, celStep(${CEL_SHADING.shadowEdge.toFixed(3)}, ndl));
+  band = mix(band, uBandHighlight, celStep(${CEL_SHADING.highlightEdge.toFixed(3)}, ndl));
   vec3 color = albedo * band;
 
   float rim = celStep(${CEL_SHADING.rimEdge.toFixed(3)}, 1.0 - max(dot(n, v), 0.0));
@@ -175,6 +194,7 @@ export function celMat(color: number, options: CelOptions = {}): CelMaterial {
     uRimStrength: { value: options.rimStrength ?? 0.18 },
     uPanelSize: { value: options.panel ?? 0 },
     uGloss: { value: options.gloss ?? 0.1 },
+    ...BAND_UNIFORMS,
   };
   if (options.map !== undefined) {
     defines.USE_MAP = '';

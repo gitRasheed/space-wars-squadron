@@ -127,7 +127,7 @@ describe('combat audio', () => {
     tick();
     audio.sync({
       ...world,
-      phase: { kind: 'victory', elapsedSeconds: 42, enemiesDestroyed: 4, subsystemsDestroyed: 2 },
+      phase: { kind: 'victory', elapsedSeconds: 42, enemiesDestroyed: 4, subsystemsDestroyed: 2, reactorsDestroyed: 0 },
       events: [{ kind: 'hit_confirmed', isKill: true }, { kind: 'subsystem_destroyed', label: 'SHIELD DOME' }],
     });
     expect(ctx.music[0]?.stop).toHaveBeenCalledOnce();
