@@ -1,27 +1,36 @@
 import * as THREE from 'three';
-import { COCKPIT_GUN_LOCAL, COMBAT_TUNING } from '../sim/combat';
+import { COMBAT_TUNING } from '../sim/combat';
 import { add, forwardOf, scale } from '../sim/math';
-import { FIXED_DT, type Quat, type Vec3, type WorldState } from '../sim/types';
+import { FIXED_DT, type ExplosionState, type Quat, type Vec3, type WorldState } from '../sim/types';
 import { FRIGATE_SUBSYSTEM_LAYOUT } from '../sim/world';
 import { computeCameraPose } from './cameraPose';
+import { celMat } from './celMaterial';
 import {
   buildAsteroidMesh,
   buildCockpitRig,
   buildEnemyMesh,
   buildFriendlyCarrierMesh,
   buildHostileFrigateMesh,
+  buildMissileMesh,
   buildOrbitalBackdrop,
   buildPlayerFighterMesh,
   createSoftDotTexture,
+  ENEMY_SHIELD_BUBBLE,
   gaugeNeedleAngle,
-  SHARED_MODEL_MATERIALS,
   type CockpitRig,
   type FighterMeshRig,
   type HostileFrigateRig,
 } from './models';
-import { LIGHT_PALETTE, SCENE_PALETTE, SUN_DIRECTION } from './palette';
+import { SCENE_PALETTE } from './palette';
 import { CAMERA_CLIP, createStylizedPostPass } from './postProcess';
 import { createHullTextureSet } from './textures';
+import {
+  createBlastShellBatch,
+  createBoltBatch,
+  createShieldShatterBatch,
+  createShockRingBatch,
+  createSparkPool,
+} from './vfx';
 
 export interface ProjectedPoint {
   readonly x: number;
@@ -41,9 +50,41 @@ interface TrailLine {
   readonly maxPoints: number;
 }
 
-interface ExplosionVisual {
-  readonly sphere: THREE.Mesh;
-  readonly ring: THREE.Mesh;
+interface EnemyVisual {
+  readonly root: THREE.Group;
+  readonly shield: THREE.Mesh | null;
+  readonly shieldFlash: THREE.IUniform<number> | null;
+  readonly trail: TrailLine;
+}
+
+interface MissileVisual {
+  readonly root: THREE.Group;
+  readonly trail: TrailLine;
+}
+
+const BOLT_LENGTH = 15;
+// A cyan blast this large is a shield collapsing, not a shield hit.
+const SHIELD_BREAK_RADIUS = 14;
+
+const BOLT_TINTS = {
+  friendly: new THREE.Color(SCENE_PALETTE.friendlyBolt).multiplyScalar(2.1),
+  hostile: new THREE.Color(SCENE_PALETTE.hostileBolt).multiplyScalar(2.1),
+  flame: new THREE.Color(SCENE_PALETTE.missileTrail).multiplyScalar(2.2),
+} as const;
+
+const BLAST_TINTS: Record<ExplosionState['tint'], THREE.Color> = {
+  amber: new THREE.Color(SCENE_PALETTE.explosionAmber),
+  emerald: new THREE.Color(SCENE_PALETTE.explosionEmerald),
+  crimson: new THREE.Color(SCENE_PALETTE.explosionCrimson),
+  cyan: new THREE.Color(SCENE_PALETTE.enemyShield),
+};
+
+function seedFromId(id: string): number {
+  let hash = 0;
+  for (let i = 0; i < id.length; i += 1) {
+    hash = (Math.imul(hash, 31) + id.charCodeAt(i)) | 0;
+  }
+  return ((hash >>> 0) % 1024) / 1024;
 }
 
 function setPose(obj: THREE.Object3D, pos: Vec3, quat: Quat): void {
@@ -92,109 +133,7 @@ function clearTrail(trail: TrailLine): void {
   trail.line.geometry.setDrawRange(0, 0);
 }
 
-function createSparkPool() {
-  const capacity = 384;
-  const mesh = new THREE.InstancedMesh(
-    new THREE.OctahedronGeometry(1),
-    new THREE.MeshBasicMaterial({
-      blending: THREE.AdditiveBlending,
-      transparent: true,
-      depthWrite: false,
-    }),
-    capacity,
-  );
-  mesh.frustumCulled = false;
-  mesh.count = 0;
-  mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-  const slots = Array.from({ length: capacity }, () => ({
-    origin: new THREE.Vector3(),
-    velocity: new THREE.Vector3(),
-    rotation: new THREE.Quaternion(),
-    color: new THREE.Color(),
-    born: 0,
-    lifetime: 0,
-    width: 0,
-    length: 0,
-  }));
-  const pose = new THREE.Object3D();
-  const axis = new THREE.Vector3(0, 0, 1);
-  const direction = new THREE.Vector3();
-  const light = new THREE.Color();
-  const colors = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 3), 3);
-  mesh.instanceColor = colors.setUsage(THREE.DynamicDrawUsage);
-  let cursor = 0;
-
-  function emit(
-    origin: Vec3,
-    tick: number,
-    tint: number,
-    speed: number,
-    size: number,
-    lifetime: number,
-    drift?: Vec3,
-  ): void {
-    const spark = slots[cursor];
-    if (spark === undefined) throw new RangeError('Spark pool cursor outside capacity');
-    cursor = (cursor + 1) % capacity;
-    direction.randomDirection();
-    spark.origin.copy(origin);
-    spark.velocity.copy(direction).multiplyScalar(speed);
-    if (drift) spark.velocity.add(drift);
-    spark.rotation.setFromUnitVectors(axis, direction);
-    spark.color.setHex(tint).multiplyScalar(2 + Math.random());
-    spark.born = tick;
-    spark.lifetime = lifetime;
-    spark.width = size;
-    spark.length = size * (2 + 4 * Math.random());
-  }
-
-  function burst(origin: Vec3, tick: number, tint: number, radius: number, drift?: Vec3): void {
-    const count = Math.min(48, Math.round(6 + radius));
-    for (let i = 0; i < count; i++) {
-      const size = (0.18 + 0.038 * radius) * (0.6 + Math.random());
-      emit(
-        origin, tick, i % 3 === 0 ? SCENE_PALETTE.explosionShardHighlight : tint,
-        radius * (2 + 3 * Math.random()), size, 0.25 + size * 0.24 + Math.random() * 0.3, drift,
-      );
-    }
-  }
-
-  function update(tick: number): void {
-    let count = 0;
-    for (let i = 0; i < capacity; i++) {
-      const spark = slots[i];
-      if (spark === undefined) continue;
-      const age = (tick - spark.born) * FIXED_DT;
-      if (age < 0 || age >= spark.lifetime) continue;
-      const fade = 1 - age / spark.lifetime;
-      pose.position.copy(spark.origin).addScaledVector(spark.velocity, age);
-      pose.quaternion.copy(spark.rotation);
-      pose.scale.set(spark.width * fade, spark.width * fade, spark.length * fade);
-      pose.updateMatrix();
-      mesh.setMatrixAt(count, pose.matrix);
-      mesh.setColorAt(count, light.copy(spark.color).multiplyScalar(fade));
-      count++;
-    }
-    mesh.count = count;
-    if (count > 0) {
-      mesh.instanceMatrix.needsUpdate = true;
-      colors.needsUpdate = true;
-    }
-  }
-
-  function clear(): void {
-    for (const spark of slots) spark.lifetime = 0;
-    mesh.count = 0;
-  }
-
-  return { mesh, emit, burst, update, clear };
-}
-
-function disposeObject3D(
-  root: THREE.Object3D,
-  sharedGeometries: ReadonlySet<THREE.BufferGeometry>,
-  sharedMaterials: ReadonlySet<THREE.Material>,
-): void {
+function disposeObject3D(root: THREE.Object3D): void {
   const geometries = new Set<THREE.BufferGeometry>();
   const materials = new Set<THREE.Material>();
 
@@ -205,19 +144,10 @@ function disposeObject3D(
       node instanceof THREE.LineSegments ||
       node instanceof THREE.Points
     ) {
-      const geo = node.geometry as THREE.BufferGeometry;
-      if (!sharedGeometries.has(geo)) {
-        geometries.add(geo);
-      }
+      geometries.add(node.geometry as THREE.BufferGeometry);
       const mat = node.material as THREE.Material | THREE.Material[];
-      if (Array.isArray(mat)) {
-        for (const item of mat) {
-          if (!sharedMaterials.has(item)) {
-            materials.add(item);
-          }
-        }
-      } else if (!sharedMaterials.has(mat)) {
-        materials.add(mat);
+      for (const item of Array.isArray(mat) ? mat : [mat]) {
+        materials.add(item);
       }
     }
   });
@@ -244,30 +174,12 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   const camera = new THREE.PerspectiveCamera(68, 16 / 9, CAMERA_CLIP.near, CAMERA_CLIP.far);
   scene.add(camera);
 
-  const sunLight = new THREE.DirectionalLight(LIGHT_PALETTE.sunColor, LIGHT_PALETTE.sunIntensity);
-  sunLight.position.set(SUN_DIRECTION.x * 1000, SUN_DIRECTION.y * 1000, SUN_DIRECTION.z * 1000);
-  scene.add(sunLight);
-
-  const rimLight = new THREE.DirectionalLight(LIGHT_PALETTE.rimColor, LIGHT_PALETTE.rimIntensity);
-  rimLight.position.set(-520, 120, 480);
-  scene.add(rimLight);
-
-  const ambientLight = new THREE.HemisphereLight(
-    LIGHT_PALETTE.hemiSky,
-    LIGHT_PALETTE.hemiGround,
-    LIGHT_PALETTE.hemiIntensity,
-  );
-  scene.add(ambientLight);
-
   const dotTexture = createSoftDotTexture();
   const backdrop = buildOrbitalBackdrop(dotTexture, renderer);
   scene.add(backdrop);
 
   const cockpitRig: CockpitRig = buildCockpitRig();
   camera.add(cockpitRig.root);
-
-  const playerRig: FighterMeshRig = buildPlayerFighterMesh(SCENE_PALETTE.playerStripe, textures);
-  scene.add(playerRig.root);
 
   const wingmateRig: FighterMeshRig = buildPlayerFighterMesh(SCENE_PALETTE.wingmateStripe, textures);
   scene.add(wingmateRig.root);
@@ -279,36 +191,19 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   scene.add(frigateRig.root);
 
   const asteroidMeshes = new Map<string, THREE.Group>();
-  const enemyMeshes = new Map<string, THREE.Group>();
-  const enemyTrails = new Map<string, TrailLine>();
-  const projectileMeshes = new Map<string, THREE.Mesh>();
-  const missileTrails = new Map<string, TrailLine>();
-  const explosionVisuals = new Map<string, ExplosionVisual>();
+  const enemyVisuals = new Map<string, EnemyVisual>();
+  const missileVisuals = new Map<string, MissileVisual>();
+  const burstExplosions = new Set<string>();
 
-  const playerLeftTrail = createTrail(SCENE_PALETTE.friendlyTrail, 28, 0.72);
-  const playerRightTrail = createTrail(SCENE_PALETTE.friendlyTrail, 28, 0.72);
   const wingmateTrail = createTrail(SCENE_PALETTE.wingmateTrail, 34, 0.65);
-  scene.add(playerLeftTrail.line);
-  scene.add(playerRightTrail.line);
   scene.add(wingmateTrail.line);
 
-  const boltGeo = new THREE.BoxGeometry(0.45, 0.45, 13);
-  const missileGeo = new THREE.ConeGeometry(0.7, 5.8, 5);
-  missileGeo.rotateX(-Math.PI / 2);
-  const friendlyBoltMat = new THREE.MeshBasicMaterial({
-    color: new THREE.Color(SCENE_PALETTE.friendlyBolt).multiplyScalar(2.6),
-  });
-  const hostileBoltMat = new THREE.MeshBasicMaterial({
-    color: new THREE.Color(SCENE_PALETTE.hostileBolt).multiplyScalar(2.6),
-  });
-  const missileMat = new THREE.MeshBasicMaterial({
-    color: new THREE.Color(SCENE_PALETTE.missile).multiplyScalar(2.4),
-  });
-
-  const explosionGeo = new THREE.IcosahedronGeometry(1, 1);
-  const ringGeo = new THREE.RingGeometry(0.84, 1.08, 20);
+  const bolts = createBoltBatch();
+  const blastShells = createBlastShellBatch();
+  const shockRings = createShockRingBatch();
+  const shieldShatters = createShieldShatterBatch();
   const sparks = createSparkPool();
-  scene.add(sparks.mesh);
+  scene.add(bolts.mesh, blastShells.mesh, shockRings.mesh, shieldShatters.mesh, sparks.mesh);
 
   const dustCount = 150;
   const dustPositions = new Float32Array(dustCount * 3);
@@ -366,13 +261,15 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
 
   const scratchVec = new THREE.Vector3();
   const scratchDir = new THREE.Vector3();
+  const scratchTail = new THREE.Vector3();
+  const muzzleTipLeft = new THREE.Vector3();
+  const muzzleTipRight = new THREE.Vector3();
   const exhaustVelocity = new THREE.Vector3();
-  const exhaustOrigin = new THREE.Vector3();
   const scratchVelCam = new THREE.Vector3();
   const scratchCamInv = new THREE.Quaternion();
   const scratchRight = new THREE.Vector3();
   const scratchCamUp = new THREE.Vector3();
-  const destroyedSubMat = new THREE.MeshToonMaterial({ color: SCENE_PALETTE.destroyedSubsystem });
+  const destroyedSubMat = celMat(SCENE_PALETTE.destroyedSubsystem);
   const initialSubMaterials = new Map<string, THREE.Material>();
   for (const [id, mesh] of frigateRig.subsystemMeshes) {
     if (!Array.isArray(mesh.material)) {
@@ -380,26 +277,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     }
   }
 
-  const sharedGeometries = new Set<THREE.BufferGeometry>([
-    boltGeo,
-    missileGeo,
-    explosionGeo,
-    ringGeo,
-    dustGeo,
-    streakGeo,
-  ]);
-  const sharedMaterials = new Set<THREE.Material>([
-    ...SHARED_MODEL_MATERIALS,
-    friendlyBoltMat,
-    hostileBoltMat,
-    missileMat,
-    destroyedSubMat,
-    dustMat,
-    streakMat,
-  ]);
-
   let lastTick = -1;
-  let lastPlayerIntegrity = 0;
   let lastRenderTimeMs = 0;
   let shakeIntensity = 0;
   const charmSwing = { x: 0, z: 0, vx: 0, vz: 0 };
@@ -483,213 +361,180 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     for (const [id, mesh] of asteroidMeshes) {
       if (!activeIds.has(id)) {
         scene.remove(mesh);
-        disposeObject3D(mesh, sharedGeometries, sharedMaterials);
+        disposeObject3D(mesh);
         asteroidMeshes.delete(id);
       }
     }
+  }
+
+  function disposeTrail(trail: TrailLine): void {
+    scene.remove(trail.line);
+    trail.line.geometry.dispose();
+    (trail.line.material as THREE.Material).dispose();
   }
 
   function syncEnemies(world: WorldState, tickAdvanced: boolean): void {
     const activeIds = new Set<string>();
     for (const enemy of world.enemies) {
       activeIds.add(enemy.id);
-      let mesh = enemyMeshes.get(enemy.id);
-      if (mesh === undefined) {
-        mesh = buildEnemyMesh(enemy.kind, textures);
-        enemyMeshes.set(enemy.id, mesh);
-        scene.add(mesh);
+      let visual = enemyVisuals.get(enemy.id);
+      if (visual === undefined) {
+        const root = buildEnemyMesh(enemy.kind, textures);
+        const bubble = root.getObjectByName(ENEMY_SHIELD_BUBBLE);
+        const shield: THREE.Mesh | null = bubble instanceof THREE.Mesh ? bubble : null;
+        const shieldMat = shield?.material;
+        visual = {
+          root,
+          shield,
+          shieldFlash: shieldMat instanceof THREE.ShaderMaterial
+            ? ((shieldMat.uniforms.uFlash as THREE.IUniform<number> | undefined) ?? null)
+            : null,
+          trail: createTrail(SCENE_PALETTE.enemyTrail, 30, 0.55),
+        };
+        enemyVisuals.set(enemy.id, visual);
+        scene.add(root, visual.trail.line);
       }
-      setPose(mesh, enemy.position, enemy.orientation);
+      setPose(visual.root, enemy.position, enemy.orientation);
 
-      const shieldBubble = mesh.getObjectByName('enemy-shield-bubble');
-      if (shieldBubble instanceof THREE.Mesh) {
+      if (visual.shield !== null && visual.shieldFlash !== null) {
         const flash = enemy.shieldHitFlash;
-        shieldBubble.visible = flash > 0.02;
-        if (shieldBubble.visible) {
-          shieldBubble.rotation.y = world.tick * 0.06;
-          shieldBubble.scale.setScalar(1 + (1 - flash) * 0.08);
-          const shellMat = shieldBubble.material as THREE.MeshBasicMaterial;
-          shellMat.opacity = flash * 0.42;
-          const wireChild = shieldBubble.children[0];
-          if (wireChild instanceof THREE.LineSegments) {
-            (wireChild.material as THREE.LineBasicMaterial).opacity = flash * 0.85;
-          }
-        }
+        visual.shield.visible = flash > 0.02;
+        visual.shield.rotation.y = world.tick * 0.06;
+        visual.shield.scale.setScalar(1 + (1 - flash) * 0.08);
+        visual.shieldFlash.value = flash;
       }
 
-      let trail = enemyTrails.get(enemy.id);
-      if (trail === undefined) {
-        trail = createTrail(SCENE_PALETTE.enemyTrail, 30, 0.55);
-        enemyTrails.set(enemy.id, trail);
-        scene.add(trail.line);
-      }
       if (tickAdvanced) {
-        const tail = add(enemy.position, scale(forwardOf(enemy.orientation), -3.2));
-        pushTrailPoint(trail, tail);
+        pushTrailPoint(visual.trail, add(enemy.position, scale(forwardOf(enemy.orientation), -3.2)));
       }
     }
-    for (const [id, mesh] of enemyMeshes) {
+    for (const [id, visual] of enemyVisuals) {
       if (!activeIds.has(id)) {
-        scene.remove(mesh);
-        disposeObject3D(mesh, sharedGeometries, sharedMaterials);
-        enemyMeshes.delete(id);
-      }
-    }
-    for (const [id, trail] of enemyTrails) {
-      if (!activeIds.has(id)) {
-        scene.remove(trail.line);
-        trail.line.geometry.dispose();
-        (trail.line.material as THREE.Material).dispose();
-        enemyTrails.delete(id);
+        scene.remove(visual.root);
+        disposeObject3D(visual.root);
+        disposeTrail(visual.trail);
+        enemyVisuals.delete(id);
       }
     }
   }
 
   function syncProjectiles(world: WorldState, tickAdvanced: boolean, emitExhaust: boolean): void {
-    const activeIds = new Set<string>();
+    cockpitRig.muzzleLeft.getWorldPosition(muzzleTipLeft);
+    cockpitRig.muzzleRight.getWorldPosition(muzzleTipRight);
+    const flameFlicker = 0.8 + ((world.tick * 7) % 5) * 0.09;
+    const activeMissiles = new Set<string>();
+    bolts.begin();
     for (const proj of world.projectiles) {
-      activeIds.add(proj.id);
-      let mesh = projectileMeshes.get(proj.id);
-      if (mesh === undefined) {
-        const mat =
-          proj.kind === 'missile'
-            ? missileMat
-            : proj.faction === 'friendly'
-              ? friendlyBoltMat
-              : hostileBoltMat;
-        mesh = new THREE.Mesh(proj.kind === 'missile' ? missileGeo : boltGeo, mat);
-        projectileMeshes.set(proj.id, mesh);
-        scene.add(mesh);
-      }
-      mesh.position.set(proj.position.x, proj.position.y, proj.position.z);
+      const { x, y, z } = proj.position;
       scratchDir.set(proj.velocity.x, proj.velocity.y, proj.velocity.z).normalize();
-      // On a player bolt's spawn tick, bridge its tail directly into the cockpit muzzle tip
-      // so the laser visually erupts out of the gun barrel with zero air gap.
-      if (proj.kind === 'bolt' && proj.owner === 'player') {
-        const age = COMBAT_TUNING.boltTtl - proj.ttl;
-        if (age <= FIXED_DT * 2.2) {
-          const pullBack = age <= FIXED_DT * 1.2 ? 4.4 : 1.6;
-          mesh.position.addScaledVector(scratchDir, -pullBack);
-        }
-      }
-      mesh.lookAt(
-        mesh.position.x + scratchDir.x,
-        mesh.position.y + scratchDir.y,
-        mesh.position.z + scratchDir.z,
-      );
 
-      if (proj.kind === 'missile') {
-        let trail = missileTrails.get(proj.id);
-        if (trail === undefined) {
-          trail = createTrail(SCENE_PALETTE.missileTrail, 22, 0.85);
-          missileTrails.set(proj.id, trail);
-          scene.add(trail.line);
+      if (proj.kind === 'bolt') {
+        const reach = BOLT_LENGTH * 0.5;
+        scratchTail.set(x, y, z).addScaledVector(scratchDir, -reach);
+        // For its first two ticks a player bolt keeps its tail on the visible gun tip,
+        // so the shot erupts out of the barrel with no air gap.
+        if (proj.owner === 'player' && COMBAT_TUNING.boltTtl - proj.ttl <= FIXED_DT * 2.2) {
+          scratchVec.set(x, y, z);
+          scratchTail.copy(
+            scratchVec.distanceToSquared(muzzleTipLeft) < scratchVec.distanceToSquared(muzzleTipRight)
+              ? muzzleTipLeft
+              : muzzleTipRight,
+          );
         }
-        if (tickAdvanced) {
-          pushTrailPoint(trail, proj.position);
-        }
-        if (emitExhaust) {
-          exhaustOrigin.copy(proj.position).addScaledVector(scratchDir, -3);
-          exhaustVelocity.copy(proj.velocity).multiplyScalar(0.55);
-          sparks.emit(exhaustOrigin, world.tick, SCENE_PALETTE.missileTrail, 4, 0.28, 0.38, exhaustVelocity);
-        }
+        const tint = proj.faction === 'friendly' ? BOLT_TINTS.friendly : BOLT_TINTS.hostile;
+        bolts.push(
+          x + scratchDir.x * reach, y + scratchDir.y * reach, z + scratchDir.z * reach,
+          scratchTail.x, scratchTail.y, scratchTail.z,
+          tint.r, tint.g, tint.b, proj.faction === 'friendly' ? 0.24 : 0.3,
+        );
+        continue;
+      }
+
+      activeMissiles.add(proj.id);
+      let visual = missileVisuals.get(proj.id);
+      if (visual === undefined) {
+        visual = { root: buildMissileMesh(), trail: createTrail(SCENE_PALETTE.missileTrail, 22, 0.85) };
+        missileVisuals.set(proj.id, visual);
+        scene.add(visual.root, visual.trail.line);
+      }
+      visual.root.position.set(x, y, z);
+      // lookAt aims +Z at its target; the missile's nose is -Z like every ship, so aim behind it.
+      visual.root.lookAt(x - scratchDir.x, y - scratchDir.y, z - scratchDir.z);
+      // It leaves the rail small and grows over the first tenth of a second, clear of the canopy.
+      const age = COMBAT_TUNING.missileTtl - proj.ttl;
+      visual.root.scale.setScalar(THREE.MathUtils.lerp(0.35, 1.5, THREE.MathUtils.smoothstep(age, 0, 0.18)));
+
+      const nozzle = 1.3 * visual.root.scale.x;
+      const flame = (1.3 + 3.2 * flameFlicker) * visual.root.scale.x;
+      scratchTail.set(x, y, z).addScaledVector(scratchDir, -nozzle);
+      bolts.push(
+        scratchTail.x, scratchTail.y, scratchTail.z,
+        scratchTail.x - scratchDir.x * flame, scratchTail.y - scratchDir.y * flame, scratchTail.z - scratchDir.z * flame,
+        BOLT_TINTS.flame.r, BOLT_TINTS.flame.g, BOLT_TINTS.flame.b, 0.24 * visual.root.scale.x,
+      );
+      // Trail and exhaust shards wait until the missile is clear of the canopy:
+      // a shard beside the camera fills a quarter of the view, and a trail from the rail cuts across it.
+      const clear = age > 0.2;
+      if (tickAdvanced && clear) {
+        pushTrailPoint(visual.trail, proj.position);
+      }
+      if (emitExhaust && clear) {
+        exhaustVelocity.copy(proj.velocity).multiplyScalar(0.55);
+        sparks.emit(scratchTail, world.tick, SCENE_PALETTE.missileTrail, 4, 0.16, 0.38, exhaustVelocity);
       }
     }
-    for (const [id, mesh] of projectileMeshes) {
-      if (!activeIds.has(id)) {
-        scene.remove(mesh);
-        projectileMeshes.delete(id);
-      }
-    }
-    for (const [id, trail] of missileTrails) {
-      if (!activeIds.has(id)) {
-        scene.remove(trail.line);
-        trail.line.geometry.dispose();
-        (trail.line.material as THREE.Material).dispose();
-        missileTrails.delete(id);
+    bolts.end();
+
+    for (const [id, visual] of missileVisuals) {
+      if (!activeMissiles.has(id)) {
+        scene.remove(visual.root);
+        disposeObject3D(visual.root);
+        disposeTrail(visual.trail);
+        missileVisuals.delete(id);
       }
     }
   }
 
   function syncExplosions(world: WorldState): void {
-    const activeIds = new Set<string>();
+    blastShells.begin();
+    shockRings.begin();
+    shieldShatters.begin();
     for (const exp of world.explosions) {
-      activeIds.add(exp.id);
-      let entry = explosionVisuals.get(exp.id);
-      if (entry === undefined) {
-        const color =
-          exp.tint === 'cyan'
-            ? 0x58ecff
-            : exp.tint === 'crimson'
-              ? SCENE_PALETTE.explosionCrimson
-              : exp.tint === 'emerald'
-                ? SCENE_PALETTE.explosionEmerald
-                : SCENE_PALETTE.explosionAmber;
-        const sphereMat = new THREE.MeshBasicMaterial({
-          color: new THREE.Color(color).multiplyScalar(2.6),
-          transparent: true,
-          opacity: 0.94,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-        });
-        const ringMat = new THREE.MeshBasicMaterial({
-          color: new THREE.Color(
-            exp.tint === 'cyan' ? 0x8ef6ff : SCENE_PALETTE.explosionRing,
-          ).multiplyScalar(2.8),
-          side: THREE.DoubleSide,
-          transparent: true,
-          opacity: 0.9,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-        });
-        const sphere = new THREE.Mesh(explosionGeo, sphereMat);
-        const ring = new THREE.Mesh(ringGeo, ringMat);
-        scene.add(sphere);
-        scene.add(ring);
-
-        // Hit and subsystem events share this explosion's impact position, even across skipped ticks.
-        sparks.burst(exp.position, world.tick - exp.elapsed / FIXED_DT, color, exp.radius);
-        entry = { sphere, ring };
-        explosionVisuals.set(exp.id, entry);
+      const { x, y, z } = exp.position;
+      const tint = BLAST_TINTS[exp.tint];
+      const t = THREE.MathUtils.clamp(exp.elapsed / Math.max(exp.duration, 0.01), 0, 1);
+      const seed = seedFromId(exp.id);
+      if (!burstExplosions.has(exp.id)) {
+        burstExplosions.add(exp.id);
+        // Sparks start when the blast did, even if this frame skipped ticks.
+        sparks.burst(exp.position, world.tick - exp.elapsed / FIXED_DT, tint.getHex(), exp.radius);
       }
-      const t = exp.elapsed / Math.max(exp.duration, 0.01);
-      const scaleRadius = Math.max(0.5, exp.radius * (0.25 + t * 0.95));
-      entry.sphere.position.set(exp.position.x, exp.position.y, exp.position.z);
-      entry.sphere.scale.setScalar(scaleRadius * (1 - t * 0.35));
-      const sphereMat = entry.sphere.material as THREE.MeshBasicMaterial;
-      if (exp.tint === 'cyan') {
-        sphereMat.color.setHex(t < 0.25 ? 0xe0fcff : 0x48e4ff).multiplyScalar(t < 0.25 ? 3.0 : 2.3);
-      } else if (t < 0.22) {
-        sphereMat.color.setHex(0xfff8e8).multiplyScalar(3.1);
-      } else if (t < 0.58) {
-        sphereMat.color
-          .setHex(
-            exp.tint === 'emerald' ? SCENE_PALETTE.explosionEmerald : SCENE_PALETTE.explosionAmber,
-          )
-          .multiplyScalar(2.5);
-      } else {
-        sphereMat.color
-          .setHex(
-            exp.tint === 'emerald'
-              ? SCENE_PALETTE.explosionEmerald
-              : SCENE_PALETTE.explosionCrimson,
-          )
-          .multiplyScalar(1.65);
-      }
-      sphereMat.opacity = Math.max(0, 1 - t);
 
-      entry.ring.position.set(exp.position.x, exp.position.y, exp.position.z);
-      entry.ring.scale.setScalar(scaleRadius * 1.55);
-      entry.ring.lookAt(camera.position);
-      (entry.ring.material as THREE.MeshBasicMaterial).opacity = Math.max(0, (1 - t) * 0.88);
+      if (exp.tint === 'cyan' && exp.radius >= SHIELD_BREAK_RADIUS) {
+        shieldShatters.push(x, y, z, exp.radius * 0.52, t, seed, tint.r, tint.g, tint.b);
+        shockRings.push(x, y, z, exp.radius * 1.2, t, seed, tint.r, tint.g, tint.b);
+        continue;
+      }
+      blastShells.push(x, y, z, exp.radius, t, seed, tint.r, tint.g, tint.b);
+      if (exp.radius > 15) {
+        // Kills get a second, later-blooming lobe so the fireball is not one clean ball.
+        const late = THREE.MathUtils.clamp(t * 1.3 - 0.14, 0, 1);
+        const lobe = exp.radius * 0.34;
+        blastShells.push(
+          x + (seed - 0.5) * lobe, y + lobe * 0.8, z + (0.5 - seed) * lobe,
+          exp.radius * 0.66, late, seed + 0.37, tint.r, tint.g, tint.b,
+        );
+      }
+      shockRings.push(x, y, z, exp.radius * 1.35, t, seed, tint.r, tint.g, tint.b);
     }
-    for (const [id, entry] of explosionVisuals) {
-      if (!activeIds.has(id)) {
-        scene.remove(entry.sphere);
-        scene.remove(entry.ring);
-        (entry.sphere.material as THREE.Material).dispose();
-        (entry.ring.material as THREE.Material).dispose();
-        explosionVisuals.delete(id);
+    blastShells.end();
+    shockRings.end();
+    shieldShatters.end();
+
+    if (burstExplosions.size > world.explosions.length) {
+      const active = new Set(world.explosions.map((exp) => exp.id));
+      for (const id of burstExplosions) {
+        if (!active.has(id)) burstExplosions.delete(id);
       }
     }
   }
@@ -719,20 +564,69 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     frigateRig.shieldRing.rotation.z = world.tick * 0.035;
   }
 
-  function updateCamera(world: WorldState, dt: number): void {
+  function updateCockpit(world: WorldState, dt: number): void {
     const player = world.player;
-    const overdrive = player.energy.overdrive;
-    const pose = computeCameraPose(player, world.cameraMode);
+    cockpitRig.root.position.set(
+      -player.angularVelocity.y * 0.03,
+      -player.angularVelocity.x * 0.025,
+      player.recoilKick * 0.028,
+    );
+    cockpitRig.root.rotation.set(
+      player.angularVelocity.x * 0.022,
+      player.angularVelocity.y * 0.022,
+      player.angularVelocity.z * 0.032,
+    );
+    cockpitRig.throttleHandle.position.z = player.energy.overdrive
+      ? -0.98
+      : -0.82 - Math.min(player.throttle, 1) * 0.12;
+
+    // Reciprocating left/right gun barrels kick visibly back-and-forth on each alternating shot.
+    cockpitRig.barrelLeft.position.z = player.recoilLeft * 0.28;
+    cockpitRig.barrelRight.position.z = player.recoilRight * 0.28;
+
+    const leftFlash = player.recoilLeft > 0.52;
+    const rightFlash = player.recoilRight > 0.52;
+    cockpitRig.muzzleLeft.visible = leftFlash;
+    cockpitRig.muzzleRight.visible = rightFlash;
+    cockpitRig.muzzleLeft.rotation.z = world.tick * 0.9;
+    cockpitRig.muzzleRight.rotation.z = -world.tick * 0.9;
+    cockpitRig.muzzleFlash.value = leftFlash || rightFlash ? 1 : 0;
+
+    // Diegetic overheat feedback: gun tips glow cherry-hot as heat builds and vent curling plumes on lockout.
+    const heat = 1 - Math.min(1, Math.max(0, player.energy.weaponCharge / 100));
+    const overheated = player.energy.weaponState === 'overheated';
+    const heatPulse = overheated ? 0.85 + 0.15 * Math.sin(world.tick * 0.35) : 1;
+    cockpitRig.barrelHeatMat.uniforms.uEmissiveIntensity.value = overheated
+      ? (1.1 + heat * 1.4) * heatPulse
+      : heat > 0.35
+        ? (heat - 0.35) * 1.35
+        : 0;
+    cockpitRig.heatVents.time.value = world.tick * FIXED_DT;
+    cockpitRig.heatVents.heat.value = heat;
+    for (const plume of cockpitRig.heatVents.plumes) {
+      plume.visible = overheated;
+    }
+
+    cockpitRig.throttleNeedle.rotation.z = gaugeNeedleAngle(player.throttle / 1.2);
+    cockpitRig.heatNeedle.rotation.z = gaugeNeedleAngle(heat);
+
+    // Underdamped pendulum driven by yaw, roll and recoil.
+    const swingTargetZ = THREE.MathUtils.clamp(player.angularVelocity.y * 0.5 + player.angularVelocity.z * 0.35, -0.9, 0.9);
+    const swingTargetX = THREE.MathUtils.clamp(player.angularVelocity.x * 0.5 - player.recoilKick * 0.4, -0.9, 0.9);
+    charmSwing.vz += ((swingTargetZ - charmSwing.z) * 46 - charmSwing.vz * 2.6) * dt;
+    charmSwing.vx += ((swingTargetX - charmSwing.x) * 46 - charmSwing.vx * 2.6) * dt;
+    charmSwing.z += charmSwing.vz * dt;
+    charmSwing.x += charmSwing.vx * dt;
+    cockpitRig.charm.rotation.set(charmSwing.x, 0, charmSwing.z);
+  }
+
+  function updateCamera(world: WorldState, dt: number): void {
+    const pose = computeCameraPose(world.player, world.cameraMode);
     if (Math.abs(camera.fov - pose.targetFov) > 0.05) {
       const fovAlpha = 1 - Math.exp(-10 * dt);
       camera.fov += (pose.targetFov - camera.fov) * fovAlpha;
       camera.updateProjectionMatrix();
     }
-
-    cockpitRig.root.visible = true;
-    playerRig.root.visible = false;
-    playerLeftTrail.line.visible = false;
-    playerRightTrail.line.visible = false;
 
     camera.position.set(pose.position.x, pose.position.y, pose.position.z);
     if (pose.orientation !== null) {
@@ -742,71 +636,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
         pose.orientation.z,
         pose.orientation.w,
       );
-      cockpitRig.root.position.set(
-        -player.angularVelocity.y * 0.03,
-        -player.angularVelocity.x * 0.025,
-        player.recoilKick * 0.028,
-      );
-      cockpitRig.root.rotation.set(
-        player.angularVelocity.x * 0.022,
-        player.angularVelocity.y * 0.022,
-        player.angularVelocity.z * 0.032,
-      );
-      const throttleZ = overdrive ? -0.98 : -0.82 - Math.min(player.throttle, 1) * 0.12;
-      cockpitRig.throttleHandle.position.z = throttleZ;
-
-      // Reciprocating left/right gun barrels kick visibly back-and-forth on each alternating shot.
-      cockpitRig.barrelLeft.position.z = player.recoilLeft * 0.28;
-      cockpitRig.barrelRight.position.z = player.recoilRight * 0.28;
-
-      const leftFlash = player.recoilLeft > 0.52;
-      const rightFlash = player.recoilRight > 0.52;
-      cockpitRig.muzzleLeft.visible = leftFlash;
-      cockpitRig.muzzleRight.visible = rightFlash;
-      if (leftFlash) {
-        cockpitRig.muzzleLeft.rotation.z = world.tick * 0.9;
-      }
-      if (rightFlash) {
-        cockpitRig.muzzleRight.rotation.z = -world.tick * 0.9;
-      }
-      cockpitRig.flashLight.intensity = leftFlash || rightFlash ? 2.1 : 0;
-
-      // Diegetic overheat feedback: gun tips glow cherry-hot as heat builds and vent rising smoke on lockout.
-      const heat = 1 - Math.min(1, Math.max(0, player.energy.weaponCharge / 100));
-      const overheated = player.energy.weaponState === 'overheated';
-      const heatPulse = overheated ? 0.85 + 0.15 * Math.sin(world.tick * 0.35) : 1;
-      cockpitRig.barrelHeatMat.emissiveIntensity = overheated
-        ? (1.1 + heat * 1.4) * heatPulse
-        : heat > 0.35
-          ? (heat - 0.35) * 1.35
-          : 0;
-
-      cockpitRig.throttleNeedle.rotation.z = gaugeNeedleAngle(player.throttle / 1.2);
-      cockpitRig.heatNeedle.rotation.z = gaugeNeedleAngle(heat);
-
-      // Underdamped pendulum driven by yaw, roll and recoil.
-      const swingTargetZ = THREE.MathUtils.clamp(player.angularVelocity.y * 0.5 + player.angularVelocity.z * 0.35, -0.9, 0.9);
-      const swingTargetX = THREE.MathUtils.clamp(player.angularVelocity.x * 0.5 - player.recoilKick * 0.4, -0.9, 0.9);
-      charmSwing.vz += ((swingTargetZ - charmSwing.z) * 46 - charmSwing.vz * 2.6) * dt;
-      charmSwing.vx += ((swingTargetX - charmSwing.x) * 46 - charmSwing.vx * 2.6) * dt;
-      charmSwing.z += charmSwing.vz * dt;
-      charmSwing.x += charmSwing.vx * dt;
-      cockpitRig.charm.rotation.set(charmSwing.x, 0, charmSwing.z);
-
-      const smokeTime = world.tick * FIXED_DT * 1.45;
-      for (const puff of cockpitRig.overheatPuffs) {
-        puff.mesh.visible = overheated;
-        if (!overheated) continue;
-        const cycle = (smokeTime + puff.phase) % 1;
-        const driftX = puff.side * (0.04 + cycle * 0.16) + Math.sin(smokeTime * 5 + puff.phase * 12) * 0.025;
-        const riseY = 0.04 + cycle * 0.42;
-        const backZ = -(COCKPIT_GUN_LOCAL.forward - 0.25) + cycle * 0.55;
-        puff.mesh.position.set(driftX, riseY, backZ);
-        puff.mesh.rotation.set(cycle * 3.2, cycle * 2.4, puff.phase * 6);
-        puff.mesh.scale.setScalar(0.65 + cycle * 2.1);
-        const mat = puff.mesh.material as THREE.MeshBasicMaterial;
-        mat.opacity = Math.sin(cycle * Math.PI) * (0.28 + heat * 0.36);
-      }
+      updateCockpit(world, dt);
     }
 
     if (shakeIntensity > 0.005) {
@@ -816,6 +646,18 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
       scratchCamUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
       camera.position.addScaledVector(scratchRight, Math.sin(phase * 3.1) * amp);
       camera.position.addScaledVector(scratchCamUp, Math.cos(phase * 4.3) * amp);
+    }
+    camera.updateMatrixWorld();
+  }
+
+  // Sparks spit from the dash and ride along with the ship.
+  function emitDamageSparks(world: WorldState): void {
+    scratchVec.set(0, -0.55, -1.5).applyMatrix4(camera.matrixWorld);
+    for (let i = 0; i < 12; i += 1) {
+      sparks.emit(
+        scratchVec, world.tick, i % 3 === 0 ? SCENE_PALETTE.explosionShardHighlight : SCENE_PALETTE.explosionCrimson,
+        0.8 + Math.random() * 1.4, 0.01 + Math.random() * 0.01, 0.25 + Math.random() * 0.3, world.player.velocity,
+      );
     }
   }
 
@@ -832,18 +674,16 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     lastTick = world.tick;
     if (tickReset) {
       sparks.clear();
+      burstExplosions.clear();
       shakeIntensity = 0;
-      clearTrail(playerLeftTrail);
-      clearTrail(playerRightTrail);
       clearTrail(wingmateTrail);
-      for (const trail of enemyTrails.values()) {
-        clearTrail(trail);
+      for (const visual of enemyVisuals.values()) {
+        clearTrail(visual.trail);
       }
     }
 
-    const integrity = player.hull + player.energy.shieldCharge;
+    let playerHit = false;
     if (tickAdvanced) {
-      let playerHit = integrity < lastPlayerIntegrity;
       for (const evt of world.events) {
         if (evt.kind === 'player_damaged') {
           playerHit = true;
@@ -858,28 +698,21 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
           shakeIntensity = Math.min(1, shakeIntensity + 0.065);
         }
       }
-      if (playerHit) {
-        sparks.burst(player.position, world.tick, SCENE_PALETTE.explosionCrimson, 8, player.velocity);
-      }
     }
-    lastPlayerIntegrity = integrity;
     shakeIntensity *= Math.exp(-10 * dt);
     if (shakeIntensity < 0.004) {
       shakeIntensity = 0;
     }
 
-    setPose(playerRig.root, player.position, player.orientation);
     setPose(wingmateRig.root, world.wingmate.position, world.wingmate.orientation);
     setPose(carrierMesh, world.friendlyCarrier.position, world.friendlyCarrier.orientation);
     setPose(frigateRig.root, world.hostileFrigate.position, world.hostileFrigate.orientation);
     syncSubsystems(world);
 
-    const flicker = 0.92 + ((world.tick * 13) % 7) * 0.03;
-    const plumeScale = (player.energy.overdrive ? 1.78 : 0.85) * flicker;
-    for (const plume of playerRig.plumes) {
-      plume.scale.set(1, 1, plumeScale);
+    const plumeFlicker = 0.85 * (0.92 + ((world.tick * 13) % 7) * 0.03);
+    for (const plume of wingmateRig.plumes) {
+      plume.scale.set(1, 1, plumeFlicker);
     }
-
     if (tickAdvanced) {
       pushTrailPoint(
         wingmateTrail,
@@ -888,6 +721,9 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     }
 
     updateCamera(world, dt);
+    if (playerHit) {
+      emitDamageSparks(world);
+    }
     backdrop.position.copy(camera.position);
     updateDustField(player.position);
     updateSpeedStreaks(world, dt);
@@ -895,12 +731,9 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     syncEnemies(world, tickAdvanced);
     syncProjectiles(world, tickAdvanced, emitExhaust);
     syncExplosions(world);
-    if (tickAdvanced || tickReset) sparks.update(world.tick);
+    if (tickAdvanced || tickReset) sparks.update(world.tick, camera.position);
 
-    camera.updateMatrixWorld();
-    renderer.setRenderTarget(postPass.target);
-    renderer.render(scene, camera);
-    postPass.renderToScreen(renderer);
+    postPass.render(renderer, scene, camera);
   }
 
   function resize(width: number, height: number): void {
@@ -909,7 +742,8 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     camera.aspect = safeWidth / safeHeight;
     camera.updateProjectionMatrix();
     postPass.resize(safeWidth, safeHeight);
-    renderer.setSize(postPass.target.width, postPass.target.height, false);
+    const internal = postPass.size();
+    renderer.setSize(internal.width, internal.height, false);
   }
 
   function projectWorldPoint(point: Vec3, width: number, height: number): ProjectedPoint {
@@ -925,15 +759,8 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
 
   function destroy(): void {
     sparks.mesh.dispose();
-    disposeObject3D(scene, sharedGeometries, sharedMaterials);
-    for (const geo of sharedGeometries) {
-      geo.dispose();
-    }
-    for (const mat of sharedMaterials) {
-      if (!SHARED_MODEL_MATERIALS.has(mat)) {
-        mat.dispose();
-      }
-    }
+    disposeObject3D(scene);
+    destroyedSubMat.dispose();
     for (const mat of initialSubMaterials.values()) {
       mat.dispose();
     }

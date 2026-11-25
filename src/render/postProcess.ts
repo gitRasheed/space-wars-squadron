@@ -1,155 +1,170 @@
 import * as THREE from 'three';
+import { glslVec3 } from './celMaterial';
+import { INK_PALETTE } from './palette';
 
 export interface StylizedPostPass {
-  readonly target: THREE.WebGLRenderTarget;
+  /** Pixel size of the internal targets; the canvas backing store should match it. */
+  readonly size: () => { readonly width: number; readonly height: number };
   readonly resize: (cssWidth: number, cssHeight: number) => void;
-  readonly renderToScreen: (renderer: THREE.WebGLRenderer) => void;
+  readonly render: (renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.PerspectiveCamera) => void;
   readonly destroy: () => void;
 }
+
+/** Meshes on this layer are drawn into the ink buffer, so they get outlines and crease lines. */
+export const INK_LAYER = 1;
 
 export const CAMERA_CLIP = { near: 0.25, far: 12000 } as const;
 
 const MAX_INTERNAL_HEIGHT = 1440;
 
-export function createStylizedPostPass(): StylizedPostPass {
-  const target = new THREE.WebGLRenderTarget(1280, 720, {
+const QUAD_VERTEX = `
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = vec4(position.xy, 0.0, 1.0);
+  }
+`;
+
+function halfFloatTarget(samples: number): THREE.WebGLRenderTarget {
+  return new THREE.WebGLRenderTarget(1280, 720, {
     minFilter: THREE.LinearFilter,
     magFilter: THREE.LinearFilter,
     format: THREE.RGBAFormat,
     type: THREE.HalfFloatType,
-    samples: 4,
-    depthTexture: new THREE.DepthTexture(1280, 720, THREE.UnsignedIntType),
-    depthBuffer: true,
+    samples,
+    depthBuffer: samples > 0,
     stencilBuffer: false,
   });
+}
 
-  const bloomTargetA = new THREE.WebGLRenderTarget(640, 360, {
-    minFilter: THREE.LinearFilter,
-    magFilter: THREE.LinearFilter,
-    format: THREE.RGBAFormat,
-    type: THREE.HalfFloatType,
-    depthBuffer: false,
-    stencilBuffer: false,
+function quadMaterial(uniforms: Record<string, THREE.IUniform>, fragmentShader: string): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms,
+    depthTest: false,
+    depthWrite: false,
+    vertexShader: QUAD_VERTEX,
+    fragmentShader,
   });
+}
 
-  const bloomTargetB = new THREE.WebGLRenderTarget(640, 360, {
-    minFilter: THREE.LinearFilter,
-    magFilter: THREE.LinearFilter,
-    format: THREE.RGBAFormat,
-    type: THREE.HalfFloatType,
-    depthBuffer: false,
-    stencilBuffer: false,
-  });
-
-  const quadGeo = new THREE.PlaneGeometry(2, 2);
-  const postCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-
-  const vertShader = `
+/** One axis of a separable 7-tap Gaussian over the prelude's `tap(uv)`, which may use the `tSource` sampler. */
+function blurShader(axis: 'x' | 'y', prelude: string): string {
+  const stride = axis === 'x' ? 'vec2(uTexel.x, 0.0)' : 'vec2(0.0, uTexel.y)';
+  return `
+    uniform sampler2D tSource;
+    uniform vec2 uTexel;
     varying vec2 vUv;
+    ${prelude}
     void main() {
-      vUv = uv;
-      gl_Position = vec4(position.xy, 0.0, 1.0);
+      vec2 stride = ${stride};
+      vec3 sum = tap(vUv) * 0.227027;
+      sum += (tap(vUv + stride * 1.5) + tap(vUv - stride * 1.5)) * 0.1945946;
+      sum += (tap(vUv + stride * 3.5) + tap(vUv - stride * 3.5)) * 0.1216216;
+      sum += (tap(vUv + stride * 5.5) + tap(vUv - stride * 5.5)) * 0.0702703;
+      gl_FragColor = vec4(sum, 1.0);
     }
   `;
+}
 
-  // Pass 1: Extract HDR emissives (> 0.95) and blur horizontally at half-res.
+export function createStylizedPostPass(): StylizedPostPass {
+  const colorTarget = halfFloatTarget(4);
+  // View normal in rgb, 1/depth in alpha. Multisampled so edge pixels blend, which is what antialiases the ink.
+  const inkTarget = halfFloatTarget(4);
+  const bloomTargetA = halfFloatTarget(0);
+  const bloomTargetB = halfFloatTarget(0);
+
+  const inkGeometryMat = new THREE.ShaderMaterial({
+    vertexShader: `
+      varying vec3 vNormal;
+      void main() {
+        vNormal = normalMatrix * normal;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vNormal;
+      void main() {
+        gl_FragColor = vec4(normalize(vNormal), gl_FragCoord.w);
+      }
+    `,
+  });
+
+  // Bloom: keep only HDR emissives while blurring across at half-res, then blur down.
   const extractUniforms = {
-    tDiffuse: { value: target.texture },
+    tSource: { value: colorTarget.texture },
     uTexel: { value: new THREE.Vector2(1 / 640, 1 / 360) },
   };
-  const extractMat = new THREE.ShaderMaterial({
-    uniforms: extractUniforms,
-    depthTest: false,
-    depthWrite: false,
-    vertexShader: vertShader,
-    fragmentShader: `
-      uniform sampler2D tDiffuse;
-      uniform vec2 uTexel;
-      varying vec2 vUv;
-
-      vec3 extractHdr(vec3 c) {
+  const extractMat = quadMaterial(
+    extractUniforms,
+    blurShader('x', `
+      vec3 tap(vec2 uv) {
+        vec3 c = texture2D(tSource, uv).rgb;
         float peak = max(c.r, max(c.g, c.b));
-        float weight = smoothstep(0.95, 1.85, peak);
-        return max(c - vec3(0.85), vec3(0.0)) * weight;
+        return max(c - vec3(0.85), vec3(0.0)) * smoothstep(0.95, 1.85, peak);
       }
-
-      void main() {
-        vec3 sum = extractHdr(texture2D(tDiffuse, vUv).rgb) * 0.227027;
-        sum += extractHdr(texture2D(tDiffuse, vUv + vec2(uTexel.x * 1.5, 0.0)).rgb) * 0.1945946;
-        sum += extractHdr(texture2D(tDiffuse, vUv - vec2(uTexel.x * 1.5, 0.0)).rgb) * 0.1945946;
-        sum += extractHdr(texture2D(tDiffuse, vUv + vec2(uTexel.x * 3.5, 0.0)).rgb) * 0.1216216;
-        sum += extractHdr(texture2D(tDiffuse, vUv - vec2(uTexel.x * 3.5, 0.0)).rgb) * 0.1216216;
-        sum += extractHdr(texture2D(tDiffuse, vUv + vec2(uTexel.x * 5.5, 0.0)).rgb) * 0.0702703;
-        sum += extractHdr(texture2D(tDiffuse, vUv - vec2(uTexel.x * 5.5, 0.0)).rgb) * 0.0702703;
-        gl_FragColor = vec4(sum, 1.0);
-      }
-    `,
-  });
-
-  // Pass 2: Separable vertical Gaussian blur at half-res.
+    `),
+  );
   const blurVUniforms = {
-    tBloom: { value: bloomTargetA.texture },
+    tSource: { value: bloomTargetA.texture },
     uTexel: { value: new THREE.Vector2(1 / 640, 1 / 360) },
   };
-  const blurVMat = new THREE.ShaderMaterial({
-    uniforms: blurVUniforms,
-    depthTest: false,
-    depthWrite: false,
-    vertexShader: vertShader,
-    fragmentShader: `
-      uniform sampler2D tBloom;
-      uniform vec2 uTexel;
-      varying vec2 vUv;
-
-      void main() {
-        vec3 sum = texture2D(tBloom, vUv).rgb * 0.227027;
-        sum += texture2D(tBloom, vUv + vec2(0.0, uTexel.y * 1.5)).rgb * 0.1945946;
-        sum += texture2D(tBloom, vUv - vec2(0.0, uTexel.y * 1.5)).rgb * 0.1945946;
-        sum += texture2D(tBloom, vUv + vec2(0.0, uTexel.y * 3.5)).rgb * 0.1216216;
-        sum += texture2D(tBloom, vUv - vec2(0.0, uTexel.y * 3.5)).rgb * 0.1216216;
-        sum += texture2D(tBloom, vUv + vec2(0.0, uTexel.y * 5.5)).rgb * 0.0702703;
-        sum += texture2D(tBloom, vUv - vec2(0.0, uTexel.y * 5.5)).rgb * 0.0702703;
-        gl_FragColor = vec4(sum, 1.0);
-      }
-    `,
-  });
+  const blurVMat = quadMaterial(
+    blurVUniforms,
+    blurShader('y', 'vec3 tap(vec2 uv) { return texture2D(tSource, uv).rgb; }'),
+  );
 
   const compositeUniforms = {
-    tDiffuse: { value: target.texture },
+    tDiffuse: { value: colorTarget.texture },
     tBloom: { value: bloomTargetB.texture },
-    tDepth: { value: target.depthTexture },
+    tInk: { value: inkTarget.texture },
     uInkStep: { value: new THREE.Vector2(1 / 1280, 1 / 720) },
   };
-  const compositeMat = new THREE.ShaderMaterial({
-    uniforms: compositeUniforms,
-    depthTest: false,
-    depthWrite: false,
-    vertexShader: vertShader,
-    fragmentShader: `
+  const compositeMat = quadMaterial(
+    compositeUniforms,
+    `
       uniform sampler2D tDiffuse;
       uniform sampler2D tBloom;
-      uniform sampler2D tDepth;
+      uniform sampler2D tInk;
       uniform vec2 uInkStep;
       varying vec2 vUv;
 
-      float viewDistance(vec2 uv) {
-        float depth = texture2D(tDepth, uv).r;
-        return ${CAMERA_CLIP.near} / mix(1.0, ${CAMERA_CLIP.near / CAMERA_CLIP.far}, depth);
+      // 1/depth is linear across the screen on any flat face, so its second difference is zero there at every
+      // viewing angle and jumps only where a nearer surface ends. Positive means this pixel is the near side.
+      float outline(float here, float a, float b) {
+        float bulge = (2.0 * here - a - b) / here;
+        float edge = smoothstep(0.012, 0.03, bulge);
+        // Slivers with background on both sides would otherwise turn solid ink.
+        return edge * (1.0 - 0.55 * smoothstep(1.2, 1.8, bulge));
       }
 
-      // Emissives are HDR-boosted well past 1.0, so only they escape the outline; sunlit hull keeps its ink.
-      float inkCoverage(float peak) {
-        float center = viewDistance(vUv);
-        if (center > 1600.0 || peak >= 1.5) return 0.0;
+      // A fold between two faces at about the same depth. Blunt folds stay clean so rocks do not turn into wireframes.
+      float crease(vec4 here, vec4 next) {
+        float sameSurface = 1.0 - smoothstep(0.02, 0.05, abs(here.a - next.a) / max(here.a, next.a));
+        float bend = 1.0 - dot(normalize(here.rgb), normalize(next.rgb + vec3(0.0, 0.0, 1e-5)));
+        return smoothstep(0.2, 0.5, bend) * sameSurface;
+      }
 
-        float taper = mix(1.0, 0.5, smoothstep(40.0, 520.0, center));
-        vec2 dx = vec2(uInkStep.x * taper, 0.0);
-        vec2 dy = vec2(0.0, uInkStep.y * taper);
-        float acrossX = max(viewDistance(vUv - dx), viewDistance(vUv + dx));
-        float acrossY = max(viewDistance(vUv - dy), viewDistance(vUv + dy));
-        float depthJump = (max(acrossX, acrossY) - center) / center;
-        return smoothstep(0.035, 0.12, depthJump)
-             * (1.0 - smoothstep(450.0, 1600.0, center))
+      // Emissives are HDR-boosted well past 1.0, so only they escape the ink; sunlit hull keeps it.
+      float inkCoverage(float peak) {
+        vec4 here = texture2D(tInk, vUv);
+        if (here.a <= 0.0 || peak >= 1.5) return 0.0;
+        float dist = 1.0 / here.a;
+        if (dist > 2600.0) return 0.0;
+
+        // Bold lines on the cockpit, hairlines on distant hulls.
+        float width = mix(1.3, 0.55, smoothstep(4.0, 420.0, dist));
+        vec2 dx = vec2(uInkStep.x * width, 0.0);
+        vec2 dy = vec2(0.0, uInkStep.y * width);
+        vec4 right = texture2D(tInk, vUv + dx);
+        vec4 up = texture2D(tInk, vUv + dy);
+        float silhouette = max(
+          outline(here.a, texture2D(tInk, vUv - dx).a, right.a),
+          outline(here.a, texture2D(tInk, vUv - dy).a, up.a)
+        );
+        float fold = max(crease(here, right), crease(here, up)) * (1.0 - smoothstep(260.0, 900.0, dist));
+        return max(silhouette, fold * 0.85)
+             * mix(1.0, 0.45, smoothstep(160.0, 700.0, dist))
+             * (1.0 - smoothstep(1500.0, 2600.0, dist))
              * (1.0 - smoothstep(1.05, 1.5, peak));
       }
 
@@ -176,8 +191,8 @@ export function createStylizedPostPass(): StylizedPostPass {
         vec3 baseLinear = texture2D(tDiffuse, vUv).rgb;
         vec3 bloomLinear = texture2D(tBloom, vUv).rgb;
         float ink = inkCoverage(max(baseLinear.r, max(baseLinear.g, baseLinear.b)));
-        vec3 inkColor = min(baseLinear, baseLinear * 0.1 + vec3(0.007, 0.008, 0.02));
-        vec3 combined = mix(baseLinear, inkColor, ink * 0.9) + bloomLinear * 0.5;
+        vec3 inkColor = min(baseLinear, baseLinear * ${INK_PALETTE.keep.toFixed(3)} + ${glslVec3(INK_PALETTE.tint)});
+        vec3 combined = mix(baseLinear, inkColor, ink * 0.92) + bloomLinear * 0.5;
 
         vec2 centered = vUv * 2.0 - 1.0;
         float vignette = clamp(1.0 - dot(centered, centered) * 0.16, 0.74, 1.0);
@@ -197,16 +212,24 @@ export function createStylizedPostPass(): StylizedPostPass {
         gl_FragColor = vec4(displayColor + (grain - 0.5) / 255.0, 1.0);
       }
     `,
-  });
+  );
 
-  const sceneExtract = new THREE.Scene();
-  sceneExtract.add(new THREE.Mesh(quadGeo, extractMat));
+  const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), extractMat);
+  quad.frustumCulled = false;
+  const quadScene = new THREE.Scene();
+  quadScene.add(quad);
+  const quadCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  const savedClear = new THREE.Color();
 
-  const sceneBlurV = new THREE.Scene();
-  sceneBlurV.add(new THREE.Mesh(quadGeo, blurVMat));
-
-  const sceneComposite = new THREE.Scene();
-  sceneComposite.add(new THREE.Mesh(quadGeo, compositeMat));
+  function drawQuad(
+    renderer: THREE.WebGLRenderer,
+    material: THREE.ShaderMaterial,
+    target: THREE.WebGLRenderTarget | null,
+  ): void {
+    quad.material = material;
+    renderer.setRenderTarget(target);
+    renderer.render(quadScene, quadCamera);
+  }
 
   function resize(cssWidth: number, cssHeight: number): void {
     const safeW = Math.max(1, Math.round(cssWidth));
@@ -217,7 +240,8 @@ export function createStylizedPostPass(): StylizedPostPass {
     const halfW = Math.max(1, Math.round(internalW * 0.5));
     const halfH = Math.max(1, Math.round(internalH * 0.5));
 
-    target.setSize(internalW, internalH);
+    colorTarget.setSize(internalW, internalH);
+    inkTarget.setSize(internalW, internalH);
     bloomTargetA.setSize(halfW, halfH);
     bloomTargetB.setSize(halfW, halfH);
 
@@ -227,31 +251,43 @@ export function createStylizedPostPass(): StylizedPostPass {
     compositeUniforms.uInkStep.value.set(inkWidth / internalW, inkWidth / internalH);
   }
 
-  function renderToScreen(renderer: THREE.WebGLRenderer): void {
-    renderer.setRenderTarget(bloomTargetA);
-    renderer.render(sceneExtract, postCamera);
+  function render(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.PerspectiveCamera): void {
+    // Alpha 0 is "nothing here": the ink shader reads it as infinitely far away.
+    renderer.getClearColor(savedClear);
+    const savedAlpha = renderer.getClearAlpha();
+    renderer.setClearColor(0x000000, 0);
+    scene.overrideMaterial = inkGeometryMat;
+    camera.layers.set(INK_LAYER);
+    renderer.setRenderTarget(inkTarget);
+    renderer.render(scene, camera);
+    camera.layers.set(0);
+    scene.overrideMaterial = null;
+    renderer.setClearColor(savedClear, savedAlpha);
 
-    renderer.setRenderTarget(bloomTargetB);
-    renderer.render(sceneBlurV, postCamera);
+    renderer.setRenderTarget(colorTarget);
+    renderer.render(scene, camera);
 
-    renderer.setRenderTarget(null);
-    renderer.render(sceneComposite, postCamera);
+    drawQuad(renderer, extractMat, bloomTargetA);
+    drawQuad(renderer, blurVMat, bloomTargetB);
+    drawQuad(renderer, compositeMat, null);
   }
 
   function destroy(): void {
-    target.dispose();
+    colorTarget.dispose();
+    inkTarget.dispose();
     bloomTargetA.dispose();
     bloomTargetB.dispose();
-    quadGeo.dispose();
+    quad.geometry.dispose();
+    inkGeometryMat.dispose();
     extractMat.dispose();
     blurVMat.dispose();
     compositeMat.dispose();
   }
 
   return {
-    target,
+    size: () => ({ width: colorTarget.width, height: colorTarget.height }),
     resize,
-    renderToScreen,
+    render,
     destroy,
   };
 }

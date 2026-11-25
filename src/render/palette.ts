@@ -4,40 +4,47 @@ export const SUN_DIRECTION = {
   z: -0.51,
 } as const;
 
-export const LIGHT_PALETTE = {
-  sunColor: 0xffdfbd,
-  sunIntensity: 2.4,
-  rimColor: 0x6b88ff,
-  rimIntensity: 1.05,
-  hemiSky: 0x7c88b8,
-  hemiGround: 0x1b172c,
-  hemiIntensity: 0.78,
+// Light multipliers per cel band, keyed on N·L against SUN_DIRECTION: warm highlight, saturated base, indigo shadow.
+// Faces in shadow that look toward the sky opposite the sun step up to `bounce`, so backlit shapes keep their form.
+export const CEL_SHADING = {
+  highlight: [1.0, 0.84, 0.64],
+  base: [0.52, 0.47, 0.52],
+  shadow: [0.14, 0.16, 0.36],
+  bounce: [0.24, 0.27, 0.54],
+  bounceEdge: 0.6,
+  highlightEdge: 0.42,
+  shadowEdge: -0.12,
+  rimEdge: 0.78,
+  glint: [1.0, 0.9, 0.76],
+  muzzleFlash: [1.0, 0.6, 0.22],
 } as const;
 
-// Light multipliers per toon step: violet shadow, cool core, warm terminator, then full light.
-export const TOON_BANDS = {
-  shadow: [0.06, 0.065, 0.13],
-  core: [0.3, 0.31, 0.45],
-  terminator: [0.82, 0.7, 0.64],
+// Rim light doubles as figure-ground separation, so its hue says whose ship it is.
+export const RIM_PALETTE = {
+  neutral: 0x7c96d8,
+  friendly: 0x9fdcff,
+  hostile: 0xff8fb0,
+  rock: 0x9a8fd0,
+} as const;
+
+export const INK_PALETTE = {
+  tint: [0.007, 0.008, 0.02],
+  keep: 0.1,
 } as const;
 
 export const SCENE_PALETTE = {
   playerStripe: 0xe88332,
   wingmateStripe: 0x4bc5e8,
-  friendlyTrail: 0x88e8ff,
   wingmateTrail: 0x52d4ff,
   friendlyBolt: 0xffe07d,
   hostileBolt: 0x5dffb3,
   missile: 0xff7740,
   missileTrail: 0xffaa55,
   enemyTrail: 0x5dffb3,
-  inkOutline: 0x070712,
-  subtleEdge: 0x111222,
   destroyedSubsystem: 0x1b1922,
   explosionCrimson: 0xff4560,
   explosionEmerald: 0x6bffb8,
   explosionAmber: 0xffb84d,
-  explosionRing: 0xfff3d4,
   explosionShardHighlight: 0xffe8b0,
   dust: 0xd4e2ff,
   streakBoost: 0xa6e8ff,
@@ -47,6 +54,10 @@ export const SCENE_PALETTE = {
   frigateAccent: 0xf04d5c,
   frigateGlow: 0xff6b7a,
   shieldDome: 0xff5ec0,
+  enemyShield: 0x52e5ff,
+  enemyShieldEdge: 0xc8fbff,
+  heatWisp: 0xffd9bd,
+  heatWispCool: 0xb9c4de,
   clampCore: 0xff843b,
 } as const;
 
@@ -62,7 +73,6 @@ export const HUD_PALETTE = {
   missileOrange: '#ff8e4d',
   frigateOrange: '#ff8040',
   subsystemMagenta: '#ff52b8',
-  labelBg: 'rgba(8, 10, 18, 0.78)',
   panelBg: 'rgba(7, 10, 18, 0.68)',
   inkStroke: '#070812',
 } as const;
