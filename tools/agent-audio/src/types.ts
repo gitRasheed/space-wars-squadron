@@ -45,6 +45,8 @@ export const FINDING_CODES = [
   'LOUDNESS_MOMENTARY_HIGH',
   'LOUDNESS_INTEGRATED_LOW',
   'LOUDNESS_INTEGRATED_HIGH',
+  'ALIASING_SUSPECTED',
+  'QUIET_TAIL',
 ] as const;
 
 export type FindingCode = (typeof FINDING_CODES)[number];
@@ -99,6 +101,12 @@ export interface SpectralMetrics {
   readonly centroidHz: number;
   readonly rolloff85Hz: number;
   readonly rolloff95Hz: number;
+  readonly aliasingRatio: number | null;
+}
+
+export interface TailMetrics {
+  readonly quietTailS: number;
+  readonly quietTailFraction: number;
 }
 
 export interface StereoMetrics {
@@ -121,6 +129,9 @@ export const THRESHOLD_KEYS = [
   'maxLoopWrapDelta',
   'maxStereoBalanceDb',
   'minStereoCorrelation',
+  'maxAliasingRatio',
+  'quietTailDb',
+  'maxQuietTailFraction',
 ] as const;
 
 export type ThresholdKey = (typeof THRESHOLD_KEYS)[number];
@@ -143,6 +154,7 @@ export interface CheckReport {
   readonly loudness: LoudnessMetrics;
   readonly stereo: StereoMetrics | null;
   readonly spectral: SpectralMetrics;
+  readonly tail: TailMetrics;
   readonly channels: readonly ChannelMetrics[];
   readonly thresholds: CheckThresholds;
   readonly findings: readonly CheckFinding[];
@@ -168,6 +180,24 @@ export interface BiquadSpec {
   readonly q?: number;
 }
 
+export interface FilterEnvelopeSpec {
+  readonly depthHz: number;
+  readonly attackS: number;
+  readonly decayS: number;
+}
+
+export interface DelaySpec {
+  readonly timeS: number;
+  readonly feedback: number;
+  readonly mix: number;
+  readonly pingPong?: boolean;
+}
+
+export interface RepeatSpec {
+  readonly times: number;
+  readonly strideBeats: number;
+}
+
 export interface VoiceSpec {
   readonly id: string;
   readonly waveform: WaveformType;
@@ -180,7 +210,9 @@ export interface VoiceSpec {
   readonly fmIndex?: number;
   readonly envelope: AdsrEnvelope;
   readonly filter?: BiquadSpec;
+  readonly filterEnv?: FilterEnvelopeSpec;
   readonly drive?: number;
+  readonly bandLimited?: boolean;
   readonly startS?: number;
   readonly durationS?: number;
 }
@@ -190,6 +222,10 @@ export interface NoteEvent {
   readonly durationBeats: number;
   readonly midi: number;
   readonly velocity: number;
+  readonly pitchStartSemitones?: number;
+  readonly freqStartHz?: number;
+  readonly freqEndHz?: number;
+  readonly pitchSweepS?: number;
 }
 
 export interface MusicTrackSpec {
@@ -199,9 +235,17 @@ export interface MusicTrackSpec {
     'id' | 'freqStartHz' | 'freqEndHz' | 'freqCurve' | 'startS' | 'durationS'
   >;
   readonly notes: readonly NoteEvent[];
+  readonly repeat?: RepeatSpec;
+  readonly delay?: DelaySpec;
 }
 
-export interface OneShotRecipe {
+export interface MasterBusOptions {
+  readonly masterGainDb?: number;
+  readonly dcBlock?: boolean;
+  readonly masterLimiterDb?: number;
+}
+
+export interface OneShotRecipe extends MasterBusOptions {
   readonly schemaVersion: 'agent-audio/recipe/v1';
   readonly kind: 'one-shot';
   readonly id: string;
@@ -210,11 +254,10 @@ export interface OneShotRecipe {
   readonly encoding?: 'pcm16' | 'float32';
   readonly seed?: number;
   readonly durationS: number;
-  readonly masterGainDb?: number;
   readonly voices: readonly VoiceSpec[];
 }
 
-export interface LoopRecipe {
+export interface LoopRecipe extends MasterBusOptions {
   readonly schemaVersion: 'agent-audio/recipe/v1';
   readonly kind: 'loop';
   readonly id: string;
@@ -224,7 +267,6 @@ export interface LoopRecipe {
   readonly seed?: number;
   readonly bpm: number;
   readonly beats: number;
-  readonly masterGainDb?: number;
   readonly loopWrap?: boolean;
   readonly tracks: readonly MusicTrackSpec[];
 }

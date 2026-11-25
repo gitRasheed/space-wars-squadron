@@ -1,6 +1,10 @@
-export { checkAudio, DEFAULT_THRESHOLDS } from './analyze.js';
+export { checkAudio, DEFAULT_LOOP_DISCONTINUITY_RATIO, DEFAULT_THRESHOLDS } from './analyze.js';
 export { measureLoudness, measureTruePeak } from './loudness.js';
 export { encodeRgbPng, writeInspectionPngs } from './png.js';
 export { RecipeError, renderRecipe, validateRecipe } from './synth.js';
 export * from './types.js';
 export { decodeWav, encodeWav, readWavFile, SUPPORTED_CHANNELS, SUPPORTED_SAMPLE_RATES } from './wav.js';
+export { checkMix, MIX_THRESHOLD_KEYS, MixError, mixStems, parseMixFlag, parseMixManifest } from './mix.js';
+export type { MixReport, MixSpec, MixStem, MixStemSpec } from './mix.js';
+export { formatSummaryTable, summaryRow, verdictOf } from './summary.js';
+export type { SummaryRow, Verdict } from './summary.js';

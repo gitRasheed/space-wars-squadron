@@ -18,6 +18,38 @@ import {
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const RECIPES_DIR = path.join(REPO_ROOT, 'recipes');
 
+// Self-contained, so editing a shipped recipe can never shift these tests.
+const CHIRP: OneShotRecipe = {
+  schemaVersion: 'agent-audio/recipe/v1',
+  kind: 'one-shot',
+  id: 'test-chirp',
+  sampleRate: 48000,
+  channels: 2,
+  encoding: 'pcm16',
+  durationS: 0.12,
+  masterGainDb: -6,
+  voices: [
+    {
+      id: 'ping',
+      waveform: 'sine',
+      gainDb: -4,
+      freqStartHz: 1320,
+      freqEndHz: 1760,
+      envelope: { attackS: 0.003, decayS: 0.04, sustainLevel: 0.3, releaseS: 0.03 },
+    },
+    {
+      id: 'air',
+      waveform: 'sine',
+      gainDb: -14,
+      pan: 0.3,
+      freqStartHz: 2640,
+      startS: 0.01,
+      durationS: 0.04,
+      envelope: { attackS: 0.004, decayS: 0.02, sustainLevel: 0.2, releaseS: 0.03 },
+    },
+  ],
+};
+
 describe('listening gate planted defects and loop-seam contracts', () => {
   it('catches DC offset, impulse clicks, cut tails, full-scale clipping, and stereo imbalance', () => {
     const sr = 48000;
@@ -141,13 +173,7 @@ describe('listening gate planted defects and loop-seam contracts', () => {
     // Astra regression: invalid recipe fields and invalid CLI flags/thresholds must exit 2.
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-audio-val-'));
     try {
-      const baseLock = JSON.parse(
-        fs.readFileSync(path.join(RECIPES_DIR, 'lock-chirp.recipe.json'), 'utf8'),
-      ) as Record<string, unknown>;
-      const badRecipe = {
-        ...baseLock,
-        voices: [{ ...(baseLock['voices'] as Record<string, unknown>[])[0], waveform: 'bogus', pan: 4 }],
-      };
+      const badRecipe = { ...CHIRP, voices: [{ ...CHIRP.voices[0], waveform: 'bogus', pan: 4 }] };
       const badPath = path.join(tmpDir, 'bad.recipe.json');
       fs.writeFileSync(badPath, JSON.stringify(badRecipe));
       assert.equal(main(['render', badPath, '--out', path.join(tmpDir, 'bad.wav')]), 2);
@@ -217,14 +243,11 @@ describe('deterministic rendering, rounding, and defect-revision workflow', () =
         assert.equal(decoded.sampleRate, 48000);
       }
 
-      // Defect-revision acceptance loop: plant 40 ms leading silence in lock-chirp, catch it, fix it, re-pass.
-      const baseLock = JSON.parse(
-        fs.readFileSync(path.join(RECIPES_DIR, 'lock-chirp.recipe.json'), 'utf8'),
-      ) as OneShotRecipe;
+      // Defect-revision acceptance loop: plant 45 ms leading silence, catch it, fix it, re-pass.
       const brokenLock: OneShotRecipe = {
-        ...baseLock,
-        durationS: 0.16,
-        voices: baseLock.voices.map((v) => ({ ...v, startS: (v.startS ?? 0) + 0.045 })),
+        ...CHIRP,
+        durationS: CHIRP.durationS + 0.045,
+        voices: CHIRP.voices.map((v) => ({ ...v, startS: (v.startS ?? 0) + 0.045 })),
       };
       const brokenRecipePath = path.join(tmpDir, 'lock-broken.recipe.json');
       const brokenWavPath = path.join(tmpDir, 'lock-broken.wav');
@@ -240,7 +263,7 @@ describe('deterministic rendering, rounding, and defect-revision workflow', () =
 
       const fixedRecipePath = path.join(tmpDir, 'lock-fixed.recipe.json');
       const fixedWavPath = path.join(tmpDir, 'lock-fixed.wav');
-      fs.writeFileSync(fixedRecipePath, JSON.stringify(baseLock, null, 2));
+      fs.writeFileSync(fixedRecipePath, JSON.stringify(CHIRP, null, 2));
       assert.equal(main(['render', fixedRecipePath, '--out', fixedWavPath]), 0);
       assert.equal(main(['check', fixedWavPath]), 0);
     } finally {

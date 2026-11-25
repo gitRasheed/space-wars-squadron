@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { rfftMagnitude } from './fft.js';
+import { renderSeamImage, renderSpectrogramImage, renderWaveformImage, type Image } from './plot.js';
 import type { AudioBufferData } from './types.js';
 
 const CRC_TABLE = (() => {
@@ -69,21 +69,6 @@ export function encodeRgbPng(width: number, height: number, rgb: Uint8Array): Ui
   return out;
 }
 
-function setPixel(rgb: Uint8Array, width: number, x: number, y: number, r: number, g: number, b: number): void {
-  const idx = (y * width + x) * 3;
-  rgb[idx] = r;
-  rgb[idx + 1] = g;
-  rgb[idx + 2] = b;
-}
-
-function heatColor(norm: number): readonly [number, number, number] {
-  const t = Math.max(0, Math.min(1, norm));
-  const r = Math.round(Math.min(255, Math.max(0, (t - 0.2) * 340)));
-  const g = Math.round(Math.min(255, Math.max(0, (t - 0.5) * 480)));
-  const b = Math.round(Math.min(255, Math.max(0, t < 0.5 ? t * 380 : (1 - t) * 380)));
-  return [r, g, b];
-}
-
 function monoMix(audio: AudioBufferData): Float64Array {
   const n = audio.channels[0]?.length ?? 0;
   const out = new Float64Array(n);
@@ -98,78 +83,8 @@ function monoMix(audio: AudioBufferData): Float64Array {
   return out;
 }
 
-function renderWaveformPng(samples: Float64Array, width = 640, height = 180): Uint8Array {
-  const rgb = new Uint8Array(width * height * 3);
-  for (let i = 0; i < width * height; i += 1) {
-    rgb[i * 3] = 12;
-    rgb[i * 3 + 1] = 14;
-    rgb[i * 3 + 2] = 24;
-  }
-  const midY = Math.floor(height / 2);
-  for (let x = 0; x < width; x += 1) {
-    setPixel(rgb, width, x, midY, 48, 56, 78);
-  }
-  const n = samples.length;
-  if (n > 0) {
-    for (let x = 0; x < width; x += 1) {
-      const start = Math.floor((x / width) * n);
-      const end = Math.max(start + 1, Math.floor(((x + 1) / width) * n));
-      let minV = 0;
-      let maxV = 0;
-      for (let i = start; i < Math.min(n, end); i += 1) {
-        const v = samples[i] ?? 0;
-        if (v < minV) minV = v;
-        if (v > maxV) maxV = v;
-      }
-      const yTop = Math.max(0, Math.min(height - 1, Math.round(midY - maxV * (height * 0.46))));
-      const yBot = Math.max(0, Math.min(height - 1, Math.round(midY - minV * (height * 0.46))));
-      const clipped = Math.abs(maxV) >= 0.999 || Math.abs(minV) >= 0.999;
-      for (let y = yTop; y <= yBot; y += 1) {
-        if (clipped) {
-          setPixel(rgb, width, x, y, 255, 76, 98);
-        } else {
-          setPixel(rgb, width, x, y, 107, 229, 255);
-        }
-      }
-    }
-  }
-  return encodeRgbPng(width, height, rgb);
-}
-
-function renderSpectrogramPng(
-  samples: Float64Array,
-  sampleRate: number,
-  width = 640,
-  height = 240,
-): Uint8Array {
-  const rgb = new Uint8Array(width * height * 3);
-  const fftSize = 1024;
-  const n = samples.length;
-  const fMin = 40;
-  const fMax = sampleRate / 2;
-  const logMin = Math.log(fMin);
-  const logSpan = Math.log(fMax) - logMin;
-
-  for (let x = 0; x < width; x += 1) {
-    const center = Math.floor((x / Math.max(1, width - 1)) * Math.max(0, n - 1));
-    const win = new Float64Array(fftSize);
-    const start = center - fftSize / 2;
-    for (let i = 0; i < fftSize; i += 1) {
-      const idx = start + i;
-      win[i] = idx >= 0 && idx < n ? (samples[idx] ?? 0) : 0;
-    }
-    const mag = rfftMagnitude(win, fftSize);
-    for (let y = 0; y < height; y += 1) {
-      const frac = 1 - y / Math.max(1, height - 1);
-      const freq = Math.exp(logMin + frac * logSpan);
-      const bin = Math.min(mag.length - 1, Math.max(0, Math.round((freq * fftSize) / sampleRate)));
-      const db = 20 * Math.log10((mag[bin] ?? 0) / (fftSize * 0.25) + 1e-9);
-      const norm = (db + 96) / 96;
-      const [r, g, b] = heatColor(norm);
-      setPixel(rgb, width, x, y, r, g, b);
-    }
-  }
-  return encodeRgbPng(width, height, rgb);
+function encodeImage(img: Image): Uint8Array {
+  return encodeRgbPng(img.width, img.height, img.rgb);
 }
 
 export function writeInspectionPngs(
@@ -183,8 +98,8 @@ export function writeInspectionPngs(
 
   const waveformPath = path.join(outDir, `${baseName}_waveform.png`);
   const spectrogramPath = path.join(outDir, `${baseName}_spectrogram.png`);
-  fs.writeFileSync(waveformPath, renderWaveformPng(mono));
-  fs.writeFileSync(spectrogramPath, renderSpectrogramPng(mono, audio.sampleRate));
+  fs.writeFileSync(waveformPath, encodeImage(renderWaveformImage(mono, audio.sampleRate)));
+  fs.writeFileSync(spectrogramPath, encodeImage(renderSpectrogramImage(mono, audio.sampleRate)));
 
   if (includeSeamWrap && mono.length > 16) {
     const seamFrames = Math.min(Math.floor(mono.length / 2), Math.floor(audio.sampleRate * 0.08));
@@ -192,7 +107,7 @@ export function writeInspectionPngs(
     stitched.set(mono.subarray(mono.length - seamFrames), 0);
     stitched.set(mono.subarray(0, seamFrames), seamFrames);
     const seamWrapPath = path.join(outDir, `${baseName}_seam_wrap.png`);
-    fs.writeFileSync(seamWrapPath, renderSpectrogramPng(stitched, audio.sampleRate, 480, 200));
+    fs.writeFileSync(seamWrapPath, encodeImage(renderSeamImage(stitched, audio.sampleRate)));
     return {
       waveform: waveformPath,
       spectrogram: spectrogramPath,

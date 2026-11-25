@@ -10,6 +10,7 @@ import {
   decodeWav,
   encodeWav,
   FINDING_CODES,
+  parseMixManifest,
   renderRecipe,
   THRESHOLD_KEYS,
   validateRecipe,
@@ -383,9 +384,18 @@ describe('SKILL.md', () => {
     assert.deepEqual(FINDING_CODES.filter((code) => !skill.includes(code)), []);
   });
 
-  for (const [index, block] of [...skill.matchAll(/```json\n([\s\S]*?)```/g)].entries()) {
+  const examples = [...skill.matchAll(/```json\n([\s\S]*?)```/g)].map((m) => JSON.parse(m[1] ?? '') as unknown);
+  const isMix = (e: unknown): boolean => (e as { schemaVersion?: unknown }).schemaVersion === 'agent-audio/mix/v1';
+
+  it('has a valid mix manifest example', () => {
+    const mixes = examples.filter(isMix);
+    assert.equal(mixes.length, 1);
+    assert.equal(parseMixManifest(mixes[0], PKG_ROOT).stems.length, 3);
+  });
+
+  for (const [index, example] of examples.filter((e) => !isMix(e)).entries()) {
     it(`recipe example ${index + 1} renders and passes its gate`, () => {
-      const recipe = validateRecipe(JSON.parse(block[1] ?? ''));
+      const recipe = validateRecipe(example);
       const report = checkAudio(renderRecipe(recipe), `${recipe.id}.wav`, { loop: recipe.kind === 'loop' });
       assert.deepEqual(report.findings, []);
     });

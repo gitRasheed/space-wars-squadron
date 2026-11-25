@@ -1,3 +1,4 @@
+import { measureAliasingRatio } from './aliasing.js';
 import { fftInPlace } from './fft.js';
 import { measureLoudness } from './loudness.js';
 import type {
@@ -7,8 +8,10 @@ import type {
   CheckReport,
   CheckThresholds,
   LoopSeamMetrics,
+  LoudnessMetrics,
   SpectralMetrics,
   StereoMetrics,
+  TailMetrics,
 } from './types.js';
 
 export const DEFAULT_THRESHOLDS: CheckThresholds = {
@@ -20,6 +23,9 @@ export const DEFAULT_THRESHOLDS: CheckThresholds = {
   maxClickRatio: 25.0,
   maxStereoBalanceDb: 12.0,
   minStereoCorrelation: -0.5,
+  maxAliasingRatio: 0.006,
+  quietTailDb: 24,
+  maxQuietTailFraction: 0.4,
 };
 
 export const DEFAULT_LOOP_DISCONTINUITY_RATIO = 12.0;
@@ -361,7 +367,7 @@ function measureSpectral(channels: readonly Float64Array[], sampleRate: number):
   const right = channels[1];
   const n = left?.length ?? 0;
   if (left === undefined || n < 16) {
-    return { centroidHz: 0, rolloff85Hz: 0, rolloff95Hz: 0 };
+    return { centroidHz: 0, rolloff85Hz: 0, rolloff95Hz: 0, aliasingRatio: null };
   }
 
   const size = SPECTRAL_FFT_SIZE;
@@ -405,7 +411,7 @@ function measureSpectral(channels: readonly Float64Array[], sampleRate: number):
     weightedFreq += k * binHz * p;
   }
   if (powerSum <= 0) {
-    return { centroidHz: 0, rolloff85Hz: 0, rolloff95Hz: 0 };
+    return { centroidHz: 0, rolloff85Hz: 0, rolloff95Hz: 0, aliasingRatio: null };
   }
 
   let acc = 0;
@@ -429,6 +435,44 @@ function measureSpectral(channels: readonly Float64Array[], sampleRate: number):
     centroidHz: roundNum(weightedFreq / powerSum, 1),
     rolloff85Hz: roundNum(rolloff85Hz, 1),
     rolloff95Hz: roundNum(rolloff95Hz, 1),
+    aliasingRatio: null,
+  };
+}
+
+const TAIL_WINDOW_S = 0.01;
+
+// Time after the last 10 ms window that reaches within quietTailDb of the loudest window.
+function measureQuietTail(channels: readonly Float64Array[], sampleRate: number, quietTailDb: number): TailMetrics {
+  const n = channels[0]?.length ?? 0;
+  const win = Math.max(1, Math.round(sampleRate * TAIL_WINDOW_S));
+  const windows = Math.ceil(n / win);
+  const levels = new Float64Array(windows);
+  for (const buf of channels) {
+    for (let w = 0; w < windows; w += 1) {
+      let sq = 0;
+      const end = Math.min(n, (w + 1) * win);
+      for (let i = w * win; i < end; i += 1) {
+        sq += (buf[i] ?? 0) ** 2;
+      }
+      levels[w] = Math.max(levels[w] ?? 0, Math.sqrt(sq / (end - w * win)));
+    }
+  }
+  const loudest = levels.reduce((m, v) => Math.max(m, v), 0);
+  if (n === 0 || loudest <= 0) {
+    return { quietTailS: 0, quietTailFraction: 0 };
+  }
+  const floor = loudest * Math.pow(10, -quietTailDb / 20);
+  let lastLoud = 0;
+  for (let w = windows - 1; w >= 0; w -= 1) {
+    if ((levels[w] ?? 0) >= floor) {
+      lastLoud = w;
+      break;
+    }
+  }
+  const quietFrames = Math.max(0, n - Math.min(n, (lastLoud + 1) * win));
+  return {
+    quietTailS: roundNum(quietFrames / sampleRate, 4),
+    quietTailFraction: roundNum(quietFrames / n, 4),
   };
 }
 
@@ -462,15 +506,89 @@ function measureStereo(channels: readonly Float64Array[]): StereoMetrics | null 
   return { balanceDb, correlation };
 }
 
+export function truePeakFindings(
+  loudness: LoudnessMetrics,
+  thresholds: CheckThresholds,
+  sampleRate: number,
+): CheckFinding[] {
+  if (
+    thresholds.maxTruePeakDbtp === undefined ||
+    loudness.truePeakDbtp === null ||
+    loudness.truePeakDbtp <= thresholds.maxTruePeakDbtp
+  ) {
+    return [];
+  }
+  return [
+    {
+      code: 'TRUE_PEAK_EXCEEDED',
+      severity: 'fail',
+      message: `True peak ${loudness.truePeakDbtp} dBTP exceeds limit ${thresholds.maxTruePeakDbtp} dBTP`,
+      ...(loudness.truePeakChannel !== null ? { channel: loudness.truePeakChannel } : {}),
+      ...(loudness.truePeakFrame !== null
+        ? { frame: loudness.truePeakFrame, timeS: roundNum(loudness.truePeakFrame / sampleRate, 4) }
+        : {}),
+    },
+  ];
+}
+
+export function loudnessFindings(loudness: LoudnessMetrics, thresholds: CheckThresholds): CheckFinding[] {
+  const findings: CheckFinding[] = [];
+  if (
+    thresholds.minMomentaryLufs !== undefined &&
+    (loudness.momentaryMaxLufs === null || loudness.momentaryMaxLufs < thresholds.minMomentaryLufs)
+  ) {
+    findings.push({
+      code: 'LOUDNESS_MOMENTARY_LOW',
+      severity: 'fail',
+      message: `Max momentary loudness ${String(loudness.momentaryMaxLufs)} LUFS below ${thresholds.minMomentaryLufs} LUFS`,
+    });
+  }
+  if (
+    thresholds.maxMomentaryLufs !== undefined &&
+    loudness.momentaryMaxLufs !== null &&
+    loudness.momentaryMaxLufs > thresholds.maxMomentaryLufs
+  ) {
+    findings.push({
+      code: 'LOUDNESS_MOMENTARY_HIGH',
+      severity: 'fail',
+      message: `Max momentary loudness ${loudness.momentaryMaxLufs} LUFS above ${thresholds.maxMomentaryLufs} LUFS`,
+    });
+  }
+  if (
+    thresholds.minIntegratedLufs !== undefined &&
+    (loudness.integratedLufs === null || loudness.integratedLufs < thresholds.minIntegratedLufs)
+  ) {
+    findings.push({
+      code: 'LOUDNESS_INTEGRATED_LOW',
+      severity: 'fail',
+      message: `Integrated loudness ${String(loudness.integratedLufs)} LUFS (${loudness.integratedReason ?? 'measured'}) below ${thresholds.minIntegratedLufs} LUFS`,
+    });
+  }
+  if (
+    thresholds.maxIntegratedLufs !== undefined &&
+    loudness.integratedLufs !== null &&
+    loudness.integratedLufs > thresholds.maxIntegratedLufs
+  ) {
+    findings.push({
+      code: 'LOUDNESS_INTEGRATED_HIGH',
+      severity: 'fail',
+      message: `Integrated loudness ${loudness.integratedLufs} LUFS above ${thresholds.maxIntegratedLufs} LUFS`,
+    });
+  }
+  return findings;
+}
+
 export function checkAudio(
   audio: AudioBufferData,
   fileLabel: string,
   options?: {
     readonly loop?: boolean;
     readonly thresholds?: CheckThresholds;
+    readonly strict?: boolean;
   },
 ): CheckReport {
   const loopChecked = options?.loop ?? false;
+  const advisory = options?.strict === true ? 'fail' : 'warn';
   const thresholds: CheckThresholds = {
     ...DEFAULT_THRESHOLDS,
     ...(loopChecked ? { maxLoopDiscontinuityRatio: DEFAULT_LOOP_DISCONTINUITY_RATIO } : {}),
@@ -480,7 +598,12 @@ export function checkAudio(
   const durationS = roundNum(frames / audio.sampleRate, 4);
   const loudness = measureLoudness(audio.channels, audio.sampleRate);
   const stereo = measureStereo(audio.channels);
-  const spectral = measureSpectral(audio.channels, audio.sampleRate);
+  const aliasingRatio = measureAliasingRatio(audio.channels, audio.sampleRate);
+  const spectral: SpectralMetrics = {
+    ...measureSpectral(audio.channels, audio.sampleRate),
+    aliasingRatio: aliasingRatio !== null ? roundNum(aliasingRatio, 5) : null,
+  };
+  const tail = measureQuietTail(audio.channels, audio.sampleRate, thresholds.quietTailDb ?? 24);
   const level = measureReferenceLevel(audio.channels, audio.sampleRate);
   const channels = audio.channels.map((buf, idx) =>
     analyzeChannel(buf, idx, audio.sampleRate, level, loopChecked),
@@ -496,25 +619,7 @@ export function checkAudio(
     });
   }
 
-  if (
-    thresholds.maxTruePeakDbtp !== undefined &&
-    loudness.truePeakDbtp !== null &&
-    loudness.truePeakDbtp > thresholds.maxTruePeakDbtp
-  ) {
-    const finding: CheckFinding = {
-      code: 'TRUE_PEAK_EXCEEDED',
-      severity: 'fail',
-      message: `True peak ${loudness.truePeakDbtp} dBTP exceeds limit ${thresholds.maxTruePeakDbtp} dBTP`,
-      ...(loudness.truePeakChannel !== null ? { channel: loudness.truePeakChannel } : {}),
-      ...(loudness.truePeakFrame !== null
-        ? {
-            frame: loudness.truePeakFrame,
-            timeS: roundNum(loudness.truePeakFrame / audio.sampleRate, 4),
-          }
-        : {}),
-    };
-    findings.push(finding);
-  }
+  findings.push(...truePeakFindings(loudness, thresholds, audio.sampleRate));
 
   for (const ch of channels) {
     if (
@@ -640,46 +745,31 @@ export function checkAudio(
     });
   }
 
+  findings.push(...loudnessFindings(loudness, thresholds));
+
   if (
-    thresholds.minMomentaryLufs !== undefined &&
-    (loudness.momentaryMaxLufs === null || loudness.momentaryMaxLufs < thresholds.minMomentaryLufs)
+    thresholds.maxAliasingRatio !== undefined &&
+    spectral.aliasingRatio !== null &&
+    spectral.aliasingRatio > thresholds.maxAliasingRatio
   ) {
     findings.push({
-      code: 'LOUDNESS_MOMENTARY_LOW',
-      severity: 'fail',
-      message: `Max momentary loudness ${String(loudness.momentaryMaxLufs)} LUFS below ${thresholds.minMomentaryLufs} LUFS`,
+      code: 'ALIASING_SUSPECTED',
+      severity: advisory,
+      message: `${roundNum(spectral.aliasingRatio * 100, 2)}% of pitched energy sits off the harmonic grid (limit ${roundNum(thresholds.maxAliasingRatio * 100, 2)}%); try bandLimited: true or a lowpass`,
     });
   }
+
   if (
-    thresholds.maxMomentaryLufs !== undefined &&
-    loudness.momentaryMaxLufs !== null &&
-    loudness.momentaryMaxLufs > thresholds.maxMomentaryLufs
+    !loopChecked &&
+    thresholds.maxQuietTailFraction !== undefined &&
+    tail.quietTailFraction > thresholds.maxQuietTailFraction
   ) {
     findings.push({
-      code: 'LOUDNESS_MOMENTARY_HIGH',
-      severity: 'fail',
-      message: `Max momentary loudness ${loudness.momentaryMaxLufs} LUFS above ${thresholds.maxMomentaryLufs} LUFS`,
-    });
-  }
-  if (
-    thresholds.minIntegratedLufs !== undefined &&
-    (loudness.integratedLufs === null || loudness.integratedLufs < thresholds.minIntegratedLufs)
-  ) {
-    findings.push({
-      code: 'LOUDNESS_INTEGRATED_LOW',
-      severity: 'fail',
-      message: `Integrated loudness ${String(loudness.integratedLufs)} LUFS (${loudness.integratedReason ?? 'measured'}) below ${thresholds.minIntegratedLufs} LUFS`,
-    });
-  }
-  if (
-    thresholds.maxIntegratedLufs !== undefined &&
-    loudness.integratedLufs !== null &&
-    loudness.integratedLufs > thresholds.maxIntegratedLufs
-  ) {
-    findings.push({
-      code: 'LOUDNESS_INTEGRATED_HIGH',
-      severity: 'fail',
-      message: `Integrated loudness ${loudness.integratedLufs} LUFS above ${thresholds.maxIntegratedLufs} LUFS`,
+      code: 'QUIET_TAIL',
+      severity: advisory,
+      frame: frames - Math.round(tail.quietTailS * audio.sampleRate),
+      timeS: roundNum(durationS - tail.quietTailS, 4),
+      message: `Last ${tail.quietTailS} s (${Math.round(tail.quietTailFraction * 100)}% of the file) sits more than ${thresholds.quietTailDb ?? 24} dB below the loudest 10 ms (limit ${Math.round(thresholds.maxQuietTailFraction * 100)}%); shorten durationS or the release`,
     });
   }
 
@@ -699,6 +789,7 @@ export function checkAudio(
     loudness,
     stereo,
     spectral,
+    tail,
     channels,
     thresholds,
     findings,

@@ -162,6 +162,28 @@ export function measureTruePeak(channels: readonly Float64Array[]): {
   };
 }
 
+// Per-frame max of the 4x-oversampled magnitude, the same interpolator measureTruePeak uses.
+export function truePeakEnvelope(buf: Float64Array): Float64Array {
+  const n = buf.length;
+  const out = new Float64Array(n);
+  for (let i = 0; i < n; i += 1) {
+    const base = i - (HALF_TAPS - 1);
+    let maxAbs = 0;
+    for (let p = 0; p < TRUE_PEAK_TAPS.length; p += TAPS_PER_PHASE) {
+      let acc = 0;
+      for (let k = 0; k < TAPS_PER_PHASE; k += 1) {
+        const idx = base + k;
+        if (idx >= 0 && idx < n) {
+          acc += (buf[idx] ?? 0) * (TRUE_PEAK_TAPS[p + k] ?? 0);
+        }
+      }
+      maxAbs = Math.max(maxAbs, Math.abs(acc));
+    }
+    out[i] = maxAbs;
+  }
+  return out;
+}
+
 const HOPS_PER_BLOCK = 4;
 
 function blockEnergies(

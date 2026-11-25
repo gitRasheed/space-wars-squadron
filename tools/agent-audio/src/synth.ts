@@ -1,10 +1,15 @@
+import { applyDcBlock, applyTruePeakLimiter, renderDelaySend } from './effects.js';
 import type {
   AdsrEnvelope,
   AudioBufferData,
   AudioRecipe,
   BiquadSpec,
+  FilterEnvelopeSpec,
   LoopRecipe,
+  MusicTrackSpec,
+  NoteEvent,
   OneShotRecipe,
+  RepeatSpec,
   SupportedSampleRate,
   VoiceSpec,
 } from './types.js';
@@ -73,15 +78,15 @@ interface FilterState {
   x2: number;
   y1: number;
   y2: number;
-  readonly b0: number;
-  readonly b1: number;
-  readonly b2: number;
-  readonly a1: number;
-  readonly a2: number;
+  b0: number;
+  b1: number;
+  b2: number;
+  a1: number;
+  a2: number;
 }
 
-function createBiquad(spec: BiquadSpec, sampleRate: number): FilterState {
-  const freq = Math.max(20, Math.min(sampleRate * 0.45, spec.freqHz));
+function setBiquadCoeffs(f: FilterState, spec: BiquadSpec, freqHz: number, sampleRate: number): void {
+  const freq = Math.max(20, Math.min(sampleRate * 0.45, freqHz));
   const q = Math.max(0.1, spec.q ?? 0.7071);
   const w0 = (2 * Math.PI * freq) / sampleRate;
   const cos = Math.cos(w0);
@@ -105,17 +110,17 @@ function createBiquad(spec: BiquadSpec, sampleRate: number): FilterState {
     b2 = -alpha;
   }
   const a0 = 1 + alpha;
-  return {
-    x1: 0,
-    x2: 0,
-    y1: 0,
-    y2: 0,
-    b0: b0 / a0,
-    b1: b1 / a0,
-    b2: b2 / a0,
-    a1: (-2 * cos) / a0,
-    a2: (1 - alpha) / a0,
-  };
+  f.b0 = b0 / a0;
+  f.b1 = b1 / a0;
+  f.b2 = b2 / a0;
+  f.a1 = (-2 * cos) / a0;
+  f.a2 = (1 - alpha) / a0;
+}
+
+function createBiquad(spec: BiquadSpec, sampleRate: number): FilterState {
+  const f: FilterState = { x1: 0, x2: 0, y1: 0, y2: 0, b0: 1, b1: 0, b2: 0, a1: 0, a2: 0 };
+  setBiquadCoeffs(f, spec, spec.freqHz, sampleRate);
+  return f;
 }
 
 function stepBiquad(f: FilterState, x0: number): number {
@@ -127,22 +132,53 @@ function stepBiquad(f: FilterState, x0: number): number {
   return y0;
 }
 
-function renderVoiceEvent(
-  channels: readonly Float64Array[],
-  totalFrames: number,
-  sampleRate: SupportedSampleRate,
-  voice: VoiceSpec,
-  startFrame: number,
-  holdDurationS: number,
-  velocityScale: number,
-  rng: () => number,
-  loopWrap: boolean,
-): void {
+// Linear attack to 1, then linear decay to 0.
+function evalFilterEnvelope(t: number, env: FilterEnvelopeSpec): number {
+  if (env.attackS > 0 && t < env.attackS) {
+    return t / env.attackS;
+  }
+  if (env.decayS <= 0) {
+    return 0;
+  }
+  return Math.max(0, 1 - (t - env.attackS) / env.decayS);
+}
+
+// Two-sample polynomial correction around each waveform step, removing most of the energy that folds back.
+function polyBlep(t: number, dt: number): number {
+  if (t < dt) {
+    const x = t / dt;
+    return x + x - x * x - 1;
+  }
+  if (t > 1 - dt) {
+    const x = (t - 1) / dt;
+    return x * x + x + x + 1;
+  }
+  return 0;
+}
+
+interface MixTarget {
+  readonly channels: readonly Float64Array[];
+  readonly totalFrames: number;
+  readonly sampleRate: SupportedSampleRate;
+  readonly rng: () => number;
+  readonly loopWrap: boolean;
+}
+
+interface VoiceEvent {
+  readonly startFrame: number;
+  readonly holdS: number;
+  readonly sweepS: number;
+  readonly velocity: number;
+}
+
+function renderVoiceEvent(target: MixTarget, voice: VoiceSpec, event: VoiceEvent): void {
+  const { channels, totalFrames, sampleRate, rng, loopWrap } = target;
+  const holdDurationS = event.holdS;
   const releaseS = Math.max(0.001, voice.envelope.releaseS);
   const totalDurS = Math.max(0.001, holdDurationS + releaseS);
   const eventFrames = Math.ceil(totalDurS * sampleRate);
 
-  const gain = dbToLinear(voice.gainDb) * velocityScale;
+  const gain = dbToLinear(voice.gainDb) * event.velocity;
   const pan = Math.max(-1, Math.min(1, voice.pan ?? 0));
   const leftGain = channels.length === 1 ? gain : gain * Math.cos(((pan + 1) * Math.PI) / 4);
   const rightGain = channels.length === 1 ? 0 : gain * Math.sin(((pan + 1) * Math.PI) / 4);
@@ -154,6 +190,8 @@ function renderVoiceEvent(
   const fmIndex = voice.fmIndex ?? 1.5;
   const drive = Math.max(0, voice.drive ?? 0);
   const filter = voice.filter !== undefined ? createBiquad(voice.filter, sampleRate) : null;
+  const filterEnv = voice.filter !== undefined ? voice.filterEnv : undefined;
+  const bandLimited = voice.bandLimited === true;
 
   let phase = 0;
   let modPhase = 0;
@@ -165,7 +203,7 @@ function renderVoiceEvent(
       break;
     }
 
-    const frac = Math.min(1, t / Math.max(1e-6, holdDurationS));
+    const frac = Math.min(1, t / Math.max(1e-6, event.sweepS));
     const freq = expCurve
       ? fStart * Math.pow(fEnd / fStart, frac)
       : fStart + (fEnd - fStart) * frac;
@@ -182,8 +220,15 @@ function renderVoiceEvent(
         raw = 4 * Math.abs(cycle - 0.5) - 1;
       } else if (voice.waveform === 'saw') {
         raw = 2 * cycle - 1;
+        if (bandLimited) {
+          raw -= polyBlep(cycle, Math.min(0.5, freq / sampleRate));
+        }
       } else if (voice.waveform === 'square') {
         raw = cycle < 0.5 ? 1 : -1;
+        if (bandLimited) {
+          const dt = Math.min(0.5, freq / sampleRate);
+          raw += polyBlep(cycle, dt) - polyBlep((cycle + 0.5) % 1, dt);
+        }
       } else {
         modPhase += (2 * Math.PI * freq * fmRatio) / sampleRate;
         raw = Math.sin(phase + Math.sin(modPhase) * fmIndex);
@@ -191,6 +236,10 @@ function renderVoiceEvent(
     }
 
     if (filter !== null) {
+      if (filterEnv !== undefined && voice.filter !== undefined) {
+        const cutoff = voice.filter.freqHz + filterEnv.depthHz * evalFilterEnvelope(t, filterEnv);
+        setBiquadCoeffs(filter, voice.filter, cutoff, sampleRate);
+      }
       raw = stepBiquad(filter, raw);
     }
     if (drive > 0) {
@@ -198,7 +247,7 @@ function renderVoiceEvent(
     }
 
     const sample = raw * env;
-    const rawTarget = startFrame + i;
+    const rawTarget = event.startFrame + i;
     if (!loopWrap && (rawTarget < 0 || rawTarget >= totalFrames)) {
       continue;
     }
@@ -224,15 +273,88 @@ function isFiniteNum(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v);
 }
 
-const RECIPE_KEYS = ['schemaVersion', 'kind', 'id', 'sampleRate', 'channels', 'encoding', 'seed', 'masterGainDb'];
+const RECIPE_KEYS = [
+  'schemaVersion',
+  'kind',
+  'id',
+  'sampleRate',
+  'channels',
+  'encoding',
+  'seed',
+  'masterGainDb',
+  'dcBlock',
+  'masterLimiterDb',
+];
 const ONE_SHOT_KEYS = [...RECIPE_KEYS, 'durationS', 'voices'];
 const LOOP_KEYS = [...RECIPE_KEYS, 'bpm', 'beats', 'loopWrap', 'tracks'];
-const TRACK_VOICE_KEYS = ['waveform', 'gainDb', 'pan', 'fmRatio', 'fmIndex', 'envelope', 'filter', 'drive'];
+const TRACK_VOICE_KEYS = [
+  'waveform',
+  'gainDb',
+  'pan',
+  'fmRatio',
+  'fmIndex',
+  'envelope',
+  'filter',
+  'filterEnv',
+  'drive',
+  'bandLimited',
+];
 const ONE_SHOT_VOICE_KEYS = ['id', ...TRACK_VOICE_KEYS, 'freqStartHz', 'freqEndHz', 'freqCurve', 'startS', 'durationS'];
-const TRACK_KEYS = ['id', 'voice', 'notes'];
-const NOTE_KEYS = ['startBeat', 'durationBeats', 'midi', 'velocity'];
+const TRACK_KEYS = ['id', 'voice', 'notes', 'repeat', 'delay'];
+const NOTE_KEYS = [
+  'startBeat',
+  'durationBeats',
+  'midi',
+  'velocity',
+  'pitchStartSemitones',
+  'freqStartHz',
+  'freqEndHz',
+  'pitchSweepS',
+];
 const ENVELOPE_KEYS = ['attackS', 'decayS', 'sustainLevel', 'releaseS'];
 const FILTER_KEYS = ['type', 'freqHz', 'q'];
+const FILTER_ENV_KEYS = ['depthHz', 'attackS', 'decayS'];
+const DELAY_KEYS = ['timeS', 'feedback', 'mix', 'pingPong'];
+const REPEAT_KEYS = ['times', 'strideBeats'];
+const MAX_REPEAT_TIMES = 1024;
+
+function asObject(v: unknown, label: string): Record<string, unknown> {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) {
+    throw new RecipeError(`${label} must be an object`);
+  }
+  return v as Record<string, unknown>;
+}
+
+function requireNumber(
+  obj: Record<string, unknown>,
+  key: string,
+  label: string,
+  ok: (v: number) => boolean,
+  range: string,
+): void {
+  const v = obj[key];
+  if (!isFiniteNum(v) || !ok(v)) {
+    throw new RecipeError(`${label} ${key} must be ${range}, got ${String(v)}`);
+  }
+}
+
+function optionalNumber(
+  obj: Record<string, unknown>,
+  key: string,
+  label: string,
+  ok: (v: number) => boolean,
+  range: string,
+): void {
+  if (obj[key] !== undefined) {
+    requireNumber(obj, key, label, ok, range);
+  }
+}
+
+function optionalBoolean(obj: Record<string, unknown>, key: string, label: string): void {
+  if (obj[key] !== undefined && typeof obj[key] !== 'boolean') {
+    throw new RecipeError(`${label} ${key} must be a boolean, got ${String(obj[key])}`);
+  }
+}
 
 function rejectUnknownKeys(obj: Record<string, unknown>, allowed: readonly string[], where: string): void {
   for (const key of Object.keys(obj)) {
@@ -267,6 +389,7 @@ function validateVoiceCommon(
   if (v['fmIndex'] !== undefined && (!isFiniteNum(v['fmIndex']) || v['fmIndex'] < 0)) {
     throw new RecipeError(`${label} invalid fmIndex: ${String(v['fmIndex'])}`);
   }
+  optionalBoolean(v, 'bandLimited', label);
 
   const env = v['envelope'];
   if (typeof env !== 'object' || env === null) {
@@ -303,6 +426,66 @@ function validateVoiceCommon(
       throw new RecipeError(`${label} invalid filter.q: ${String(f['q'])}`);
     }
   }
+
+  if (v['filterEnv'] !== undefined) {
+    if (v['filter'] === undefined) {
+      throw new RecipeError(`${label} filterEnv needs a filter to modulate`);
+    }
+    const fe = asObject(v['filterEnv'], `${label} filterEnv`);
+    rejectUnknownKeys(fe, FILTER_ENV_KEYS, `${where}.filterEnv`);
+    requireNumber(fe, 'depthHz', `${label} filterEnv`, (x) => Math.abs(x) <= 24000, 'within ±24000');
+    requireNumber(fe, 'attackS', `${label} filterEnv`, (x) => x >= 0, '>= 0');
+    requireNumber(fe, 'decayS', `${label} filterEnv`, (x) => x >= 0, '>= 0');
+  }
+}
+
+function validateDelay(raw: unknown, label: string, where: string): void {
+  const d = asObject(raw, `${label} delay`);
+  rejectUnknownKeys(d, DELAY_KEYS, where);
+  requireNumber(d, 'timeS', `${label} delay`, (x) => x > 0 && x <= 2, 'in (0, 2]');
+  requireNumber(d, 'feedback', `${label} delay`, (x) => x >= 0 && x <= 0.95, 'in [0, 0.95]');
+  requireNumber(d, 'mix', `${label} delay`, (x) => x >= 0 && x <= 1, 'in [0, 1]');
+  optionalBoolean(d, 'pingPong', `${label} delay`);
+}
+
+function validateRepeat(raw: unknown, label: string, where: string): RepeatSpec {
+  const r = asObject(raw, `${label} repeat`);
+  rejectUnknownKeys(r, REPEAT_KEYS, where);
+  requireNumber(
+    r,
+    'times',
+    `${label} repeat`,
+    (x) => Number.isInteger(x) && x >= 1 && x <= MAX_REPEAT_TIMES,
+    `an integer in [1, ${MAX_REPEAT_TIMES}]`,
+  );
+  requireNumber(r, 'strideBeats', `${label} repeat`, (x) => x > 0, '> 0');
+  return r as unknown as RepeatSpec;
+}
+
+function validateNoteSweep(note: Record<string, unknown>, label: string): void {
+  if (note['pitchStartSemitones'] !== undefined && note['freqStartHz'] !== undefined) {
+    throw new RecipeError(`${label} sets both pitchStartSemitones and freqStartHz; use one`);
+  }
+  optionalNumber(note, 'pitchStartSemitones', label, (x) => Math.abs(x) <= 96, 'within ±96');
+  optionalNumber(note, 'freqStartHz', label, (x) => x > 0, '> 0');
+  optionalNumber(note, 'freqEndHz', label, (x) => x > 0, '> 0');
+  optionalNumber(note, 'pitchSweepS', label, (x) => x > 0, '> 0');
+}
+
+// Repeat copies come pass by pass: every note of pass 0, then every note of pass 1, and so on.
+function expandTrackNotes(track: MusicTrackSpec): readonly NoteEvent[] {
+  const times = track.repeat?.times ?? 1;
+  const stride = track.repeat?.strideBeats ?? 0;
+  if (times === 1) {
+    return track.notes;
+  }
+  const out: NoteEvent[] = [];
+  for (let pass = 0; pass < times; pass += 1) {
+    for (const note of track.notes) {
+      out.push({ ...note, startBeat: note.startBeat + pass * stride });
+    }
+  }
+  return out;
 }
 
 export function validateRecipe(raw: unknown): AudioRecipe {
@@ -334,6 +517,8 @@ export function validateRecipe(raw: unknown): AudioRecipe {
   if (obj['seed'] !== undefined && !isFiniteNum(obj['seed'])) {
     throw new RecipeError(`Invalid seed: ${String(obj['seed'])}`);
   }
+  optionalBoolean(obj, 'dcBlock', 'Recipe');
+  optionalNumber(obj, 'masterLimiterDb', 'Recipe', (x) => x >= -30 && x <= 0, 'in [-30, 0] dBTP');
 
   if (obj['kind'] === 'one-shot') {
     rejectUnknownKeys(obj, ONE_SHOT_KEYS, 'recipe');
@@ -415,6 +600,12 @@ export function validateRecipe(raw: unknown): AudioRecipe {
       if (!Array.isArray(track['notes'])) {
         throw new RecipeError(`Track '${track['id']}' missing notes array`);
       }
+      const trackLabel = `Track '${track['id']}'`;
+      if (track['delay'] !== undefined) {
+        validateDelay(track['delay'], trackLabel, `${trackWhere}.delay`);
+      }
+      const repeat =
+        track['repeat'] !== undefined ? validateRepeat(track['repeat'], trackLabel, `${trackWhere}.repeat`) : undefined;
       for (const [noteIdx, rawNote] of (track['notes'] as unknown[]).entries()) {
         if (typeof rawNote !== 'object' || rawNote === null) {
           throw new RecipeError(`Track '${track['id']}' note must be an object`);
@@ -435,12 +626,41 @@ export function validateRecipe(raw: unknown): AudioRecipe {
         if (!isFiniteNum(note['velocity']) || note['velocity'] <= 0 || note['velocity'] > 1) {
           throw new RecipeError(`Track '${track['id']}' note velocity ${String(note['velocity'])} out of (0, 1]`);
         }
+        validateNoteSweep(note, `${trackLabel} note ${noteIdx}`);
+        if (repeat !== undefined) {
+          const lastStart = note['startBeat'] + (repeat.times - 1) * repeat.strideBeats;
+          if (lastStart >= beats) {
+            throw new RecipeError(
+              `${trackLabel} note ${noteIdx} repeats to startBeat ${lastStart}, past the loop's ${beats} beats`,
+            );
+          }
+        }
       }
     }
     return obj as unknown as LoopRecipe;
   }
 
   throw new RecipeError(`Unsupported recipe kind: ${String(obj['kind'])}`);
+}
+
+function noteVoice(track: MusicTrackSpec, note: NoteEvent): VoiceSpec {
+  const hz = midiToHz(note.midi);
+  const freqStartHz =
+    note.freqStartHz ??
+    (note.pitchStartSemitones !== undefined ? hz * Math.pow(2, note.pitchStartSemitones / 12) : hz);
+  return { ...track.voice, id: track.id, freqStartHz, freqEndHz: note.freqEndHz ?? hz };
+}
+
+function renderTrack(target: MixTarget, track: MusicTrackSpec, secPerBeat: number): void {
+  for (const note of expandTrackNotes(track)) {
+    const holdS = note.durationBeats * secPerBeat;
+    renderVoiceEvent(target, noteVoice(track, note), {
+      startFrame: Math.round(note.startBeat * secPerBeat * target.sampleRate),
+      holdS,
+      sweepS: note.pitchSweepS ?? holdS,
+      velocity: note.velocity,
+    });
+  }
 }
 
 export function renderRecipe(recipe: AudioRecipe): AudioBufferData {
@@ -462,39 +682,32 @@ export function renderRecipe(recipe: AudioRecipe): AudioBufferData {
   for (let c = 0; c < numChannels; c += 1) {
     channels.push(new Float64Array(totalFrames));
   }
+  const periodic = recipe.kind === 'loop' && (recipe.loopWrap ?? true);
+  const target: MixTarget = { channels, totalFrames, sampleRate, rng, loopWrap: periodic };
 
   if (recipe.kind === 'one-shot') {
     for (const voice of recipe.voices) {
       const startFrame = Math.round((voice.startS ?? 0) * sampleRate);
       const maxHold = Math.max(0.001, recipe.durationS - (voice.startS ?? 0) - voice.envelope.releaseS);
       const holdS = Math.min(maxHold, voice.durationS ?? maxHold);
-      renderVoiceEvent(channels, totalFrames, sampleRate, voice, startFrame, holdS, 1, rng, false);
+      renderVoiceEvent(target, voice, { startFrame, holdS, sweepS: holdS, velocity: 1 });
     }
   } else {
     const secPerBeat = 60 / recipe.bpm;
-    const loopWrap = recipe.loopWrap ?? true;
     for (const track of recipe.tracks) {
-      for (const note of track.notes) {
-        const startFrame = Math.round(note.startBeat * secPerBeat * sampleRate);
-        const holdS = note.durationBeats * secPerBeat;
-        const hz = midiToHz(note.midi);
-        const voiceSpec: VoiceSpec = {
-          ...track.voice,
-          id: track.id,
-          freqStartHz: hz,
-          freqEndHz: hz,
-        };
-        renderVoiceEvent(
-          channels,
-          totalFrames,
-          sampleRate,
-          voiceSpec,
-          startFrame,
-          holdS,
-          note.velocity,
-          rng,
-          loopWrap,
-        );
+      if (track.delay === undefined) {
+        renderTrack(target, track, secPerBeat);
+        continue;
+      }
+      const dry = channels.map(() => new Float64Array(totalFrames));
+      renderTrack({ ...target, channels: dry }, track, secPerBeat);
+      const wet = renderDelaySend(dry, track.delay, sampleRate, periodic);
+      for (const [c, ch] of channels.entries()) {
+        const d = dry[c] ?? new Float64Array(0);
+        const w = wet[c] ?? new Float64Array(0);
+        for (let i = 0; i < totalFrames; i += 1) {
+          ch[i] = (ch[i] ?? 0) + (d[i] ?? 0) + (w[i] ?? 0);
+        }
       }
     }
   }
@@ -505,6 +718,12 @@ export function renderRecipe(recipe: AudioRecipe): AudioBufferData {
         ch[i] = (ch[i] ?? 0) * masterGain;
       }
     }
+  }
+  if (recipe.dcBlock === true) {
+    applyDcBlock(channels, sampleRate, periodic);
+  }
+  if (recipe.masterLimiterDb !== undefined) {
+    applyTruePeakLimiter(channels, sampleRate, recipe.masterLimiterDb, periodic);
   }
 
   return {
