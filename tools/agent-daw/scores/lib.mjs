@@ -71,7 +71,7 @@ const SEED_TRIES = 16;
 
 /**
  * Evens out the piano. The model seeds each note from its start beat, and that seed alone moves an
- * otherwise identical note by up to 12 dB. Each note is nudged by under 0.05 ms to the seed that
+ * otherwise identical note by up to 12 dB. Each note is nudged by under 0.2 ms to the seed that
  * gives its lower-quartile level, so a line plays at the dynamics that were written.
  * Needs the tool built (`npm run build`), since it listens to the same model the renderer uses.
  */

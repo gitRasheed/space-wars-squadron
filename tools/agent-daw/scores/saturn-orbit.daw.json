@@ -791,7 +791,7 @@
       "name": "Concert grand",
       "role": "harmony",
       "layer": "tension",
-      "gainDb": -8,
+      "gainDb": -5,
       "pan": 0.15,
       "instrument": {
         "type": "piano",

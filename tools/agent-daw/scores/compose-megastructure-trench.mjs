@@ -192,7 +192,7 @@ function piano() {
     });
   }
   return {
-    id: 'piano', name: 'Concert grand', role: 'harmony', layer: 'tension', gainDb: -9, pan: 0.15,
+    id: 'piano', name: 'Concert grand', role: 'harmony', layer: 'tension', gainDb: -5, pan: 0.15,
     instrument: { type: 'piano', params: { pedal: false, brightness: 0.8 } },
     fx: [reverb('plate', 0.2, { decay: 0.7, predelayMs: 10, damping: 0.3 })],
     clips: [clip('ostinato', notes)],

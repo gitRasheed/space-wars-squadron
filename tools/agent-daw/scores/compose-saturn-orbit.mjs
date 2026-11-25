@@ -150,7 +150,7 @@ function piano() {
     for (const beat of PUSH) for (const p of [...BARS[bar].mid, BARS[bar].low[0]]) notes.push(note(p, bar * 4 + beat, 0.75, 90, 'accent'));
   }
   return {
-    id: 'piano', name: 'Concert grand', role: 'harmony', layer: 'tension', gainDb: -8, pan: 0.15,
+    id: 'piano', name: 'Concert grand', role: 'harmony', layer: 'tension', gainDb: -5, pan: 0.15,
     instrument: { type: 'piano', params: { pedal: true, brightness: 0.75 } },
     fx: [reverb('plate', 0.26, { decay: 0.75, predelayMs: 12, damping: 0.3 })],
     clips: [clip('all', notes)],
