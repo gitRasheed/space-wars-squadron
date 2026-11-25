@@ -272,7 +272,7 @@ export function runEdit(req: EditRequest): EditResult {
     case 'trim-silence':
       return finish(trimSilence(a, numParam(p, 'thresholdDb', -60), numParam(p, 'padMs', 5)));
     case 'fade':
-      return finish(fade(a, numParam(p, 'in', 0.005), numParam(p, 'out', 0.03), p.curve === 'linear' ? 'linear' : 'equal-power'));
+      return finish(fade(a, numParam(p, 'inS', numParam(p, 'in', 0.005)), numParam(p, 'outS', numParam(p, 'out', 0.03)), p.curve === 'linear' ? 'linear' : 'equal-power'));
     case 'normalize': {
       const cat = typeof p.category === 'string' && (CATEGORIES as readonly string[]).includes(p.category) ? (p.category as Category) : undefined;
       const r = normalize(a, {

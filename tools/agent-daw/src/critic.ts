@@ -271,31 +271,31 @@ function dynamics(all: readonly PlacedNote[], lead: readonly PlacedNote[], spans
 function adviceFor(c: Omit<Critique, 'advice' | 'score'>): string[] {
   const out: string[] = [];
   const { motif: m, harmony: h, rhythm: r, register: g, dynamics: d } = c.details;
-  if (c.subscores.motifRecall < 0.8) {
+  {
     if (m.grams < 4) out.push('motifRecall: the lead has fewer than 5 moving notes. Give a lead/counter track a real melody with steps and leaps.');
     else if (m.coverage < 0.7) out.push(`motifRecall: only ${Math.round(m.coverage * 100)}% of sections restate a motif. Bring the main hook's interval shape back in later sections (transposed or re-harmonised is fine).`);
     if (m.variety < 0.25) out.push('motifRecall: the lead repeats one figure almost exclusively. Develop it: sequence it, invert a leap, or vary the tail.');
     if (m.variety > 0.85) out.push('motifRecall: almost every 4-note figure is new. Pick a 4-6 note hook and repeat it so the ear has something to hold.');
   }
-  if (c.subscores.harmonicFlow < 0.8) {
+  {
     if (h.cadenceScore < 0.7) out.push(`harmonicFlow: cadence ${h.cadence}. End the loop on a V (major, with the leading tone) or bVII so the wrap resolves to the tonic.`);
     if (h.distinct < 4) out.push(`harmonicFlow: only ${h.distinct} distinct chords. Add a pre-dominant (iv, bVI or ii) and a dominant.`);
     if (h.fit < 0.75) out.push(`harmonicFlow: chord-tone fit ${h.fit}. Bars blur into clusters; keep each bar's sustained notes on one triad and move passing tones off strong beats.`);
     if (h.keyFit < 0.85) out.push(`harmonicFlow: ${Math.round((1 - h.keyFit) * 100)}% of note weight is outside the key. Use chromatic notes as brief colour, not sustained tones.`);
     if (h.changeRate < 0.4) out.push('harmonicFlow: the harmony rarely changes. Move the chord at least every bar or two.');
   }
-  if (c.subscores.rhythmicVariety < 0.8) {
+  {
     if (r.syncopation < 0.15) out.push('rhythmicVariety: nearly every onset is on the beat. Add off-beat pushes (dotted rhythms, anticipations, 16th pickups).');
     if (r.densityCv < 0.25) out.push('rhythmicVariety: every section is equally busy. Thin out a breakdown and pile up the climax.');
     if (r.durationEntropy < 0.55) out.push('rhythmicVariety: the lead uses one or two note lengths. Mix long held notes with quick pickups.');
   }
-  if (c.subscores.registerSeparation < 0.8) {
+  {
     if (g.mudRatio > 0.15) out.push(`registerSeparation: ${Math.round(g.mudRatio * 100)}% of low-register moments stack seconds or thirds below E3. Use octaves or fifths in the bass and move thirds up.`);
     if (g.leadMasked > 0.2) out.push(`registerSeparation: ${Math.round(g.leadMasked * 100)}% of lead notes sit under the harmony. Raise the lead or drop the pads.`);
     if (g.spanSemitones < 30) out.push(`registerSeparation: the arrangement spans only ${g.spanSemitones} semitones. Add a real bass line and a high line.`);
     if (g.bassMedian === null) out.push('registerSeparation: no bass-role track. Add strings-bass or synth-bass under the harmony.');
   }
-  if (c.subscores.dynamicContrast < 0.8) {
+  {
     if (d.rangeDb < 6) out.push(`dynamicContrast: section energy spans only ${d.rangeDb} dB. Drop layers or velocities in one section and build to a climax.`);
     if (d.peakSection === 0) out.push('dynamicContrast: the first section is the loudest. Build toward the peak instead.');
     if (d.leadVelocityStd < 10) out.push('dynamicContrast: lead velocities barely move. Shape phrases with crescendos and accents.');

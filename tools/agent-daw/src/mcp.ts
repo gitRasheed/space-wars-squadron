@@ -36,7 +36,7 @@ export function handleMessage(msg: Request): Reply {
       const args = (msg.params?.arguments ?? {}) as Record<string, unknown>;
       try {
         const r = tool.run(args);
-        return ok({ content: [{ type: 'text', text: JSON.stringify(r.data, null, 2) }], structuredContent: { ok: r.ok, result: r.data }, isError: !r.ok });
+        return ok({ content: [{ type: 'text', text: JSON.stringify(r.data, null, 2) }], structuredContent: { ok: r.ok, result: r.data }, isError: !r.ok && tool.verdict !== true });
       } catch (err) {
         const message = err instanceof ToolError ? err.message : `${(err as Error).name}: ${(err as Error).message}`;
         return ok({ content: [{ type: 'text', text: message }], isError: true });

@@ -71,8 +71,9 @@ export interface SeamMetrics {
 
 export interface HumMetrics {
   readonly hz: 50 | 60;
+  // Line level over the median of its neighbours (on the beat comb when the tempo is known); weaker of two windows on long files.
   readonly fundamentalDb: number;
-  readonly persistence: number;
+  readonly harmonicDb: number;
 }
 
 export interface GateReport {
@@ -201,37 +202,29 @@ function goertzelPower(x: Float64Array, start: number, len: number, window: Floa
   return s1 * s1 + s2 * s2 - k * s1 * s2;
 }
 
-// Mains hum is a narrow line at exactly 50 or 60 Hz with harmonics that persists through quiet passages.
-// Long Hann windows resolve 0.5 Hz, so G1 (49 Hz) or B1 (61.7 Hz) bass notes do not trip it.
-function measureHum(mono: Float64Array, sr: number, ratioDb: number): HumMetrics[] {
-  const winS = mono.length / sr >= 4 ? 4 : Math.max(1, mono.length / sr);
-  const len = Math.floor(winS * sr);
-  if (mono.length < sr) return [];
+// Mains hum is a stationary line at exactly 50 or 60 Hz. One long Hann window (up to 16 s, 0.25 Hz main lobe)
+// resolves it from G1 (49 Hz) or B1 (61.7 Hz) bass notes. A tempo-locked pattern puts lines on every multiple of
+// the beat rate (50 Hz is the 25th at 120 BPM), so with a known tempo the line is compared against its neighbours
+// on that same comb.
+function measureHum(mono: Float64Array, sr: number, beatHz: number | null): HumMetrics[] {
+  if (mono.length < 2 * sr) return [];
+  const len = Math.min(mono.length, 16 * sr);
   const window = new Float64Array(len);
   for (let i = 0; i < len; i += 1) window[i] = 0.5 * (1 - Math.cos((2 * Math.PI * i) / (len - 1)));
-  const hop = Math.max(1, Math.floor(len / 2));
-  const offsets = [-4, -3, -2, -1.5, -1, 1, 1.5, 2, 3, 4];
+  const starts = mono.length >= 2 * len ? [0, mono.length - len] : [Math.floor((mono.length - len) / 2)];
+  const offsets = beatHz !== null && beatHz >= 0.75 ? [-4, -3, -2, -1, 1, 2, 3, 4].map((k) => k * beatHz) : [-3, -2, -1.5, -1, -0.75, -0.5, 0.5, 0.75, 1, 1.5, 2, 3];
   const lineDb = (start: number, f: number): number => {
     const p = goertzelPower(mono, start, len, window, f, sr);
     const floor = offsets.map((o) => goertzelPower(mono, start, len, window, f + o, sr)).sort((a, b) => a - b);
-    const med = (floor[4] + floor[5]) / 2;
+    const mid = floor.length / 2;
+    const med = (floor[mid - 1] + floor[mid]) / 2;
     return 10 * Math.log10((p + 1e-30) / (med + 1e-30));
   };
-  const out: HumMetrics[] = [];
-  for (const hz of [50, 60] as const) {
-    let hits = 0;
-    let windows = 0;
-    let sumDb = 0;
-    for (let start = 0; start + len <= mono.length; start += hop) {
-      const fund = lineDb(start, hz);
-      const harmonic = Math.max(lineDb(start, 2 * hz), lineDb(start, 3 * hz));
-      windows += 1;
-      sumDb += fund;
-      if (fund >= ratioDb && harmonic >= ratioDb / 2) hits += 1;
-    }
-    out.push({ hz, fundamentalDb: round(sumDb / Math.max(1, windows), 2), persistence: round(hits / Math.max(1, windows), 3) });
-  }
-  return out;
+  return ([50, 60] as const).map((hz) => {
+    const fund = Math.min(...starts.map((st) => lineDb(st, hz)));
+    const harm = Math.min(...starts.map((st) => Math.max(lineDb(st, 2 * hz), lineDb(st, 3 * hz))));
+    return { hz, fundamentalDb: round(fund, 2), harmonicDb: round(harm, 2) };
+  });
 }
 
 function spectral(channels: readonly Float64Array[], sr: number): { centroid: number; r85: number; r95: number } {
@@ -280,16 +273,27 @@ function spectral(channels: readonly Float64Array[], sr: number): { centroid: nu
   return { centroid: weighted / total, r85, r95 };
 }
 
-function predictionStep(buf: Float64Array, at: number, sr: number): number {
+// How far the sample step at a boundary stands out from the steps around it (first and second differences,
+// each over its local median), so tonal material is judged strictly and noisy material leniently.
+function boundaryStep(buf: Float64Array, at: number, sr: number, level: number): number {
   const n = buf.length;
   const x = (i: number): number => buf[((i % n) + n) % n];
-  const err = (i: number): number => Math.abs(x(i) - (2 * x(i - 1) - x(i - 2)));
+  const d1 = (i: number): number => Math.abs(x(i) - x(i - 1));
+  const d2 = (i: number): number => Math.abs(x(i) - 2 * x(i - 1) + x(i - 2));
   const span = Math.round(sr * 0.02);
-  const local = new Float64Array(2 * span);
+  const a = new Float64Array(2 * span);
+  const b = new Float64Array(2 * span);
   let k = 0;
-  for (let i = at - span; i < at + span; i += 1) if (Math.abs(i - at) > 2) local[k++] = err(i);
-  const p95 = percentile(local.subarray(0, k), 0.95);
-  return err(at) / Math.max(p95, 1e-6);
+  for (let i = at - span; i < at + span; i += 1) {
+    if (Math.abs(i - at) <= 2) continue;
+    a[k] = d1(i);
+    b[k] = d2(i);
+    k += 1;
+  }
+  const floor = level * 1e-4 + 1e-9;
+  const m1 = Math.max(percentile(a.subarray(0, k), 0.5), floor);
+  const m2 = Math.max(percentile(b.subarray(0, k), 0.5), floor);
+  return Math.max(d1(at) / m1, d2(at) / m2, d2(at + 1) / m2);
 }
 
 function levelJumpDb(buf: Float64Array, at: number, sr: number): number {
@@ -307,19 +311,19 @@ function levelJumpDb(buf: Float64Array, at: number, sr: number): number {
 }
 
 // The loop wrap must look like any other bar line: compared against the roughest bar line in the file.
-function measureSeam(channels: readonly Float64Array[], sr: number, barFrames: number | null): SeamMetrics {
+function measureSeam(channels: readonly Float64Array[], sr: number, barFrames: number | null, level: number): SeamMetrics {
   let wrapStep = 0;
   let maxBarStep = 0;
   let wrapJumpDb = 0;
   let maxBarJumpDb = 0;
   for (const ch of channels) {
     const n = ch.length;
-    wrapStep = Math.max(wrapStep, predictionStep(ch, 0, sr));
+    wrapStep = Math.max(wrapStep, boundaryStep(ch, 0, sr, level));
     wrapJumpDb = Math.max(wrapJumpDb, levelJumpDb(ch, 0, sr));
     if (barFrames !== null && barFrames > 0) {
       for (let b = barFrames; b < n - 2; b += barFrames) {
         const at = Math.round(b);
-        maxBarStep = Math.max(maxBarStep, predictionStep(ch, at, sr));
+        maxBarStep = Math.max(maxBarStep, boundaryStep(ch, at, sr, level));
         maxBarJumpDb = Math.max(maxBarJumpDb, levelJumpDb(ch, at, sr));
       }
     }
@@ -387,8 +391,10 @@ export function gateAudio(audio: Audio, o: GateOptions = {}): GateReport {
 
   const mono = new Float64Array(n);
   for (const ch of chans) for (let i = 0; i < n; i += 1) mono[i] += ch[i] / chans.length;
-  const hum = measureHum(mono, sr, th.humRatioDb);
-  for (const h of hum) if (h.persistence >= 0.75) add({ code: 'hum', message: `${h.hz} Hz mains hum in ${Math.round(h.persistence * 100)}% of 4 s windows (line ${h.fundamentalDb} dB over its neighbours)` });
+  const hum = measureHum(mono, sr, o.bpm !== undefined ? o.bpm / 60 : null);
+  for (const h of hum)
+    if (h.fundamentalDb >= th.humRatioDb || (h.fundamentalDb >= th.humRatioDb / 2 && h.harmonicDb >= th.humRatioDb / 2))
+      add({ code: 'hum', message: `${h.hz} Hz mains hum: line ${h.fundamentalDb} dB over its neighbours, harmonics ${h.harmonicDb} dB` });
 
   let correlation: number | null = null;
   let balanceDb: number | null = null;
@@ -418,9 +424,9 @@ export function gateAudio(audio: Audio, o: GateOptions = {}): GateReport {
   let seam: SeamMetrics | null = null;
   if (o.loop === true) {
     const barFrames = o.bpm !== undefined ? ((o.beatsPerBar ?? 4) * 60 * sr) / o.bpm : null;
-    seam = measureSeam(chans, sr, barFrames);
+    seam = measureSeam(chans, sr, barFrames, level);
     const limit = Math.max(th.maxSeamStep, th.seamVsBarRatio * seam.maxBarStep);
-    if (seam.wrapStep > limit) add({ code: 'loop_seam', message: `loop wrap prediction step ${seam.wrapStep} exceeds ${round(limit, 2)} (roughest bar line ${seam.maxBarStep})` });
+    if (seam.wrapStep > limit) add({ code: 'loop_seam', message: `loop wrap step ${seam.wrapStep} exceeds ${round(limit, 2)} (roughest bar line ${seam.maxBarStep})` });
     const jumpLimit = Math.max(6, seam.maxBarJumpDb + 3);
     if (seam.wrapJumpDb > jumpLimit) add({ code: 'loop_level_jump', message: `loop wrap level jump ${seam.wrapJumpDb} dB exceeds ${round(jumpLimit, 2)} dB` });
   }

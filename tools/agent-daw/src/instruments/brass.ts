@@ -9,6 +9,8 @@ interface BrassVoicing {
   readonly scoopCents: number;
   readonly vibratoCents: number;
   readonly brightness: number;
+  // How much the bore's wave steepening brightens forte notes.
+  readonly blare: number;
   readonly breathHz: number;
   readonly spread: number;
   readonly bell: () => Biquad[];
@@ -21,7 +23,8 @@ const HORN: BrassVoicing = {
   releaseS: 0.22,
   scoopCents: -35,
   vibratoCents: 7,
-  brightness: 6,
+  brightness: 9,
+  blare: 0.45,
   breathHz: 700,
   spread: 0.45,
   // The horn bell faces away from the hall, so the top is soft and the low mids carry.
@@ -35,7 +38,8 @@ const TRUMPET: BrassVoicing = {
   releaseS: 0.15,
   scoopCents: -18,
   vibratoCents: 10,
-  brightness: 11,
+  brightness: 16,
+  blare: 0.7,
   breathHz: 1500,
   spread: 0.35,
   bell: () => [biquad('highpass', 170, 0.7), biquad('peak', 1250, 1.2, 5), biquad('peak', 2600, 1.6, 3.5), biquad('lowpass', 9500, 0.7)],
@@ -49,7 +53,7 @@ function renderBrass(ev: NoteEvent, params: Params, voicing: BrassVoicing): Ster
   const releaseS = voicing.releaseS * shape.releaseScale;
   const frames = tailFrames(shape.soundS, releaseS) + Math.round(0.03 * sr);
   const out = stereo(frames);
-  const drive = 1 + 2.8 * vel;
+  const drive = 1.2;
   const norm = 1 / Math.tanh(drive);
   const left = new Float64Array(frames);
   const right = new Float64Array(frames);
@@ -63,6 +67,7 @@ function renderBrass(ev: NoteEvent, params: Params, voicing: BrassVoicing): Ster
     const voice = { phase: ev.rng() };
     const svf = { ic1: 0, ic2: 0 };
     let g = 0;
+    let prev = 0;
     const pan = players === 1 ? 0 : ((p / (players - 1)) * 2 - 1) * voicing.spread;
     const [pl, pr] = panGains(pan);
     const scoop = ev.slurred ? voicing.scoopCents * 0.3 : voicing.scoopCents;
@@ -72,9 +77,12 @@ function renderBrass(ev: NoteEvent, params: Params, voicing: BrassVoicing): Ster
       const cents = centsOff + scoop * Math.exp(-t / 0.035) + vibDepth * Math.sin(2 * Math.PI * vibRate * t + vibPhase);
       const f = ev.freq * bendRatio(ev, t) * centsRatio(cents);
       const e = env[i];
-      if ((i & 15) === 0) g = svfG(clamp(f * (1.2 + voicing.brightness * vel * Math.pow(e, 1.4)), 120, 12000));
+      if ((i & 15) === 0) g = svfG(clamp(f * (1 + voicing.brightness * vel * vel * Math.pow(e, 1.4)), 120, 12000));
       const raw = svfStep(svf, sawStep(voice, f), g, 1 / 0.75);
-      const v = Math.tanh(drive * raw * 0.9) * norm * e;
+      // Nonlinear propagation in the bore steepens loud wavefronts: add the slope, scaled by dynamics.
+      const steep = (raw - prev) * (sr / (2 * Math.PI * f));
+      prev = raw;
+      const v = Math.tanh(drive * (raw + voicing.blare * vel * vel * e * steep)) * norm * e;
       left[i + onset] += v * pl;
       right[i + onset] += v * pr;
     }

@@ -5175,20 +5175,6 @@
             },
             {
               "midi": 33,
-              "startBeat": 62.5,
-              "durationBeats": 0.5,
-              "velocity": 100,
-              "articulation": "normal"
-            },
-            {
-              "midi": 33,
-              "startBeat": 63,
-              "durationBeats": 0.5,
-              "velocity": 104,
-              "articulation": "accent"
-            },
-            {
-              "midi": 33,
               "startBeat": 62,
               "durationBeats": 0.125,
               "velocity": 70,

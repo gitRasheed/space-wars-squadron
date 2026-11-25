@@ -250,7 +250,9 @@ function timpaniTrack() {
   notes.push(note('D2', 4 * 4, 2, 96, 'accent'));
   for (let bar = 8; bar < 16; bar += 1) {
     const r = CHORDS[bar][0].startsWith('D') || CHORDS[bar][0].startsWith('C') ? 'D2' : 'A1';
-    notes.push(note(r, bar * 4, 0.5, 112, 'accent'), note(r, bar * 4 + 1.5, 0.5, 96), note('A1', bar * 4 + 2.5, 0.5, 100), note(r, bar * 4 + 3, 0.5, 104, 'accent'));
+    notes.push(note(r, bar * 4, 0.5, 112, 'accent'), note(r, bar * 4 + 1.5, 0.5, 96));
+    // The last half bar belongs to the roll into the wrap.
+    if (bar < 15) notes.push(note('A1', bar * 4 + 2.5, 0.5, 100), note(r, bar * 4 + 3, 0.5, 104, 'accent'));
   }
   for (let k = 0; k < 16; k += 1) notes.push(note('A1', 62 + k * 0.125, 0.125, 70 + k * 3.2));
   return {

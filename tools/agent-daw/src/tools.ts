@@ -34,6 +34,8 @@ export interface Tool {
   readonly name: string;
   readonly description: string;
   readonly inputSchema: Record<string, unknown>;
+  // Verdict tools report pass/fail in their data; a failing verdict is still a successful call.
+  readonly verdict?: boolean;
   run(args: Args): ToolResult;
 }
 
@@ -114,6 +116,7 @@ export const TOOLS: readonly Tool[] = [
   },
   {
     name: 'project_validate',
+    verdict: true,
     description: 'Parse and lint a project: schema errors, non-integer loop frames, notes past the end, automation that jumps at the wrap.',
     inputSchema: schema(projectArg, ['project']),
     run: (a) => {
@@ -225,6 +228,7 @@ export const TOOLS: readonly Tool[] = [
   },
   {
     name: 'gate',
+    verdict: true,
     description: 'Objective listening gate on a WAV: BS.1770-4 loudness, 4x true peak, loop seam vs bar lines, DC, clicks, 50/60 Hz hum, silent channel, stereo phase, spectral balance; writes waveform and spectrogram PNGs.',
     inputSchema: schema({ wav: s('WAV path'), project: s('Project path for tempo, loop and loudness target'), category: { type: 'string', enum: CATEGORIES }, pngDir: s('Directory for PNGs'), loop: { type: 'boolean' }, bpm: n('Tempo for bar-line seam comparison') }, ['wav']),
     run: (a) => {

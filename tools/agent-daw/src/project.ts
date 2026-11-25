@@ -231,7 +231,7 @@ export function parseNote(ctx: Ctx, raw: unknown, path: string): Note | null {
     ctx.error(path, 'note must be an object');
     return null;
   }
-  // notes/v1 and the report's CLI example spell the key "pitch"; midi is canonical.
+  // notes/v1 spells the key "pitch"; midi is canonical.
   const keyed = raw.midi === undefined && raw.pitch !== undefined ? { ...raw, midi: raw.pitch } : raw;
   const midi = num(ctx, keyed, 'midi', path, undefined, 0, 127);
   if (!Number.isInteger(midi)) ctx.error(`${path}.midi`, 'must be an integer');
@@ -585,6 +585,14 @@ function lintProject(ctx: Ctx, p: Project): void {
   const totalBeats = p.bars * p.tempo.beatsPerBar;
   p.tracks.forEach((t, ti) => {
     const notes = expandTrackNotes(p, t);
+    const seen = new Set<string>();
+    let dupes = 0;
+    for (const n of notes) {
+      const key = `${n.midi}@${n.startBeat.toFixed(4)}`;
+      if (seen.has(key)) dupes += 1;
+      seen.add(key);
+    }
+    if (dupes > 0) ctx.warn(`$.tracks[${ti}]`, `${dupes} note(s) repeat the same pitch at the same beat; MIDI export will merge them`);
     const late = notes.filter((n) => n.startBeat >= totalBeats);
     if (late.length > 0) ctx.warn(`$.tracks[${ti}]`, `${late.length} note(s) start after the project ends (beat ${totalBeats})`);
     if (p.loop) {
