@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "verify:formal": "node scripts/run-formal-check.mjs",
+    "verify:lean": "node scripts/verify-lean.mjs",
     "verify:browser": "node scripts/verify-browser.mjs",
     "check": "npm run typecheck && npm run lint && npm run test && vite build"
   },

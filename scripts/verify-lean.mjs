@@ -60,11 +60,13 @@ const REQUIRED = [
 // Lean heat constants (hundredths of a percent per 60 Hz tick) against the game tuning they model.
 const PER_TICK = 100 / 60;
 const PINNED = [
-  ['shotHeat', 'energy.ts', 'primaryShotCost', 100],
-  ['coolRate', 'energy.ts', 'weaponRechargePerSecond', PER_TICK],
-  ['overheatCoolRate', 'energy.ts', 'overheatCooldownPerSecond', PER_TICK],
+  ['shotHeat', 'energy.ts', 'primaryShotHeat', 100],
+  ['coolRate', 'energy.ts', 'weaponCoolPerSecond', PER_TICK],
+  ['overheatCoolRate', 'energy.ts', 'overheatCoolPerSecond', PER_TICK],
   ['minOverdrive', 'energy.ts', 'minOverdriveShield', 100],
   ['overdriveDrain', 'energy.ts', 'overdriveShieldDrainPerSecond', PER_TICK],
+  ['heatMax', 'energy.ts', 'maxHeat', 100],
+  ['hotZoneMin', 'energy.ts', 'hotZoneHeat', 100],
   ['ventHeat', 'combat.ts', 'nearMissHeatVent', 100],
   ['nearMissShield', 'combat.ts', 'nearMissShieldRestore', 100],
   ['surgeShield', 'combat.ts', 'shieldSurge', 100],
