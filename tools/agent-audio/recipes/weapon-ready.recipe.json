@@ -1,0 +1,121 @@
+{
+  "schemaVersion": "agent-audio/recipe/v1",
+  "kind": "one-shot",
+  "id": "weapon-ready",
+  "sampleRate": 48000,
+  "channels": 2,
+  "durationS": 0.44,
+  "masterGainDb": -4,
+  "voices": [
+    {
+      "id": "vent",
+      "waveform": "noise",
+      "gainDb": -8,
+      "pan": -0.1,
+      "envelope": { "attackS": 0.003, "decayS": 0.05, "sustainLevel": 0.45, "releaseS": 0.12 },
+      "filter": { "type": "bandpass", "freqHz": 3800, "q": 0.7 },
+      "startS": 0,
+      "durationS": 0.06
+    },
+    {
+      "id": "vent-body",
+      "waveform": "noise",
+      "gainDb": -14,
+      "pan": 0.1,
+      "envelope": { "attackS": 0.003, "decayS": 0.05, "sustainLevel": 0.45, "releaseS": 0.12 },
+      "filter": { "type": "bandpass", "freqHz": 900, "q": 0.8 },
+      "startS": 0,
+      "durationS": 0.06
+    },
+    {
+      "id": "charge",
+      "waveform": "sine",
+      "gainDb": -12,
+      "pan": 0,
+      "envelope": { "attackS": 0.08, "decayS": 0.04, "sustainLevel": 0.8, "releaseS": 0.03 },
+      "startS": 0.02,
+      "durationS": 0.15,
+      "freqStartHz": 196,
+      "freqEndHz": 392
+    },
+    {
+      "id": "latch-click",
+      "waveform": "noise",
+      "gainDb": -7,
+      "pan": 0.05,
+      "envelope": { "attackS": 0.001, "decayS": 0.004, "sustainLevel": 0.1, "releaseS": 0.006 },
+      "filter": { "type": "highpass", "freqHz": 2500, "q": 0.8 },
+      "startS": 0.185,
+      "durationS": 0.005
+    },
+    {
+      "id": "latch-thunk",
+      "waveform": "sine",
+      "gainDb": -3,
+      "pan": 0,
+      "envelope": { "attackS": 0.001, "decayS": 0.03, "sustainLevel": 0.2, "releaseS": 0.05 },
+      "startS": 0.185,
+      "durationS": 0.035,
+      "freqStartHz": 190,
+      "freqEndHz": 85
+    },
+    {
+      "id": "latch-ring",
+      "waveform": "fm",
+      "gainDb": -11,
+      "pan": -0.1,
+      "envelope": { "attackS": 0.001, "decayS": 0.03, "sustainLevel": 0.25, "releaseS": 0.09 },
+      "fmRatio": 2.76,
+      "fmIndex": 1.4,
+      "startS": 0.187,
+      "durationS": 0.03,
+      "freqStartHz": 1046.5,
+      "freqEndHz": 1046.5
+    },
+    {
+      "id": "seat-click",
+      "waveform": "noise",
+      "gainDb": -12,
+      "pan": -0.05,
+      "envelope": { "attackS": 0.001, "decayS": 0.003, "sustainLevel": 0.1, "releaseS": 0.006 },
+      "filter": { "type": "bandpass", "freqHz": 3200, "q": 1.5 },
+      "startS": 0.235,
+      "durationS": 0.004
+    },
+    {
+      "id": "seat-thunk",
+      "waveform": "sine",
+      "gainDb": -11,
+      "pan": 0,
+      "envelope": { "attackS": 0.001, "decayS": 0.02, "sustainLevel": 0.2, "releaseS": 0.04 },
+      "startS": 0.235,
+      "durationS": 0.02,
+      "freqStartHz": 140,
+      "freqEndHz": 95
+    },
+    {
+      "id": "ready",
+      "waveform": "fm",
+      "gainDb": -12,
+      "pan": 0,
+      "envelope": { "attackS": 0.004, "decayS": 0.05, "sustainLevel": 0.5, "releaseS": 0.12 },
+      "fmRatio": 2,
+      "fmIndex": 0.4,
+      "startS": 0.25,
+      "durationS": 0.06,
+      "freqStartHz": 783.99,
+      "freqEndHz": 783.99
+    },
+    {
+      "id": "ready-fifth",
+      "waveform": "sine",
+      "gainDb": -16,
+      "pan": 0.2,
+      "envelope": { "attackS": 0.004, "decayS": 0.04, "sustainLevel": 0.5, "releaseS": 0.11 },
+      "startS": 0.27,
+      "durationS": 0.05,
+      "freqStartHz": 1174.66,
+      "freqEndHz": 1174.66
+    }
+  ]
+}

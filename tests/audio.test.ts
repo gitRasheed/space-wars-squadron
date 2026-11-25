@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import cues from '../src/audio/combat-cues.json';
+import { BAKED_LOOP } from '../src/audio/bakedSoundtrack';
 import { renderCue, type CueId } from '../src/audio/combatCues';
 import { COMBAT_LOOP_SCORE, renderCombatLoopStereo } from '../src/audio/combatScore';
 import { mixVoice, noiseGenerator, stereoBuffer } from '../src/audio/renderVoice';
-import { createSynthAudio } from '../src/audio/synthAudio';
+import { createSynthAudio, type SynthAudioOptions } from '../src/audio/synthAudio';
 import type { SimEvent } from '../src/sim/types';
 import { createInitialWorld } from '../src/sim/world';
 
@@ -32,6 +33,8 @@ class BufferSource extends Source {
   buffer?: ReturnType<AudioContextFake['createBuffer']>;
   detune = new Param();
   loop = false;
+  loopStart = 0;
+  loopEnd = 0;
 }
 class AudioContextFake {
   destination = new Node();
@@ -62,14 +65,18 @@ class AudioContextFake {
 const NOTES_PER_TICK = 4;
 const SCORE_TICKS = Math.ceil(COMBAT_LOOP_SCORE.tracks.reduce((sum, track) => sum + track.notes.length, 0) / NOTES_PER_TICK);
 
-function cockpit(warm = true) {
-  const ctx = new AudioContextFake();
-  const doc = Object.assign(new EventTarget(), { hidden: false });
+class DecodingContextFake extends AudioContextFake {
+  decoded = { duration: 33, length: 33 * 8000, getChannelData: () => new Float32Array(0) };
+  decodeAudioData = vi.fn(() => Promise.resolve(this.decoded));
+}
+
+function cockpit(warm = true, ctx = new AudioContextFake(), options?: SynthAudioOptions) {
+  const doc = Object.assign(new EventTarget(), { hidden: false, baseURI: 'https://game.test/play/' });
   vi.stubGlobal('window', { AudioContext: vi.fn(function () { return ctx; }) });
   vi.stubGlobal('document', doc);
   let clock = 0;
   vi.stubGlobal('performance', { now: () => clock++ });
-  const audio = createSynthAudio();
+  const audio = createSynthAudio(options);
   audio.unlock();
   const world = createInitialWorld(123, true);
   for (let i = 0; warm && i < SCORE_TICKS; i++) audio.sync({ ...world, phase: { kind: 'paused', elapsedSeconds: 0 } });
@@ -201,6 +208,94 @@ describe('combat audio', () => {
     }
   });
 
+  it('climbs the hit-confirm pitch along a rapid chain and resets it after a gap or a kill', () => {
+    const { ctx, tick } = cockpit();
+    const hit = { kind: 'hit_confirmed', isKill: false } as const;
+    for (let i = 0; i < 7; i++) tick(hit);
+    expect(ctx.cues.map(s => s.detune.value)).toEqual([0, 200, 500, 700, 1000, 1200, 1200]);
+    for (let i = 0; i < 48; i++) tick();
+    tick(hit);
+    expect(ctx.cues.at(-1)?.detune.value).toBe(0);
+    tick(hit, { kind: 'hit_confirmed', isKill: true }, hit, hit);
+    expect(ctx.cues.slice(-5).map(s => s.detune.value)).toEqual([200, 0, 0, 0, 200]);
+  });
+
+  it('plays the reward and warning cues, ducks the score under a crit and pans the warning to the shooter', () => {
+    const { ctx, tick, world } = cockpit();
+    tick();
+    const musicGain = ctx.music[0]?.connections[0] as Gain;
+    const setTarget = vi.spyOn(musicGain.gain, 'setTargetAtTime');
+    const right = { x: world.player.position.x + 50, y: world.player.position.y, z: world.player.position.z };
+    const left = { ...right, x: world.player.position.x - 50 };
+    tick({ kind: 'crit_hit', position: right }, { kind: 'supply_drop', drop: 'heat_flush' }, { kind: 'weapon_ready' },
+      { kind: 'incoming_fire', position: left }, { kind: 'near_miss', source: 'bolt', reward: 'shield' });
+    const expected: CueId[] = ['crit-hit', 'supply-drop', 'weapon-ready', 'incoming-fire', 'near-miss'];
+    expect(ctx.cues.map(s => s.buffer?.length)).toEqual(expected.map(id => cues[id].durationS * ctx.sampleRate));
+    for (const [i, id] of expected.entries()) {
+      expect(ctx.cues[i]?.buffer?.getChannelData(0)).toEqual(renderCue(id, ctx.sampleRate).left);
+    }
+    const ducks = setTarget.mock.calls.flatMap(([value, when]) => [value, when]);
+    expect(ducks).toHaveLength(4);
+    for (const [i, value] of [.31 * .63, .05, .31, .17].entries()) expect(ducks[i]).toBeCloseTo(value);
+    expect(ctx.cues[2]?.start).toHaveBeenCalledWith(expect.closeTo(.3));
+    expect((ctx.cues[3]?.connections[0] as Panner).pan.value).toBeCloseTo(-.7);
+
+    // Shots inside the cooldown stay quiet but still steer the next pass, which now runs right to left.
+    tick({ kind: 'incoming_fire', position: right }, { kind: 'near_miss', source: 'buzz', reward: 'heat_vent' });
+    expect(ctx.cues).toHaveLength(6);
+    const pass = renderCue('near-miss', ctx.sampleRate);
+    expect(ctx.cues[5]?.buffer?.getChannelData(0)).toEqual(pass.right);
+    expect(ctx.cues[5]?.buffer?.getChannelData(1)).toEqual(pass.left);
+    for (let i = 0; i < 30; i++) tick();
+    tick({ kind: 'incoming_fire', position: right });
+    expect((ctx.cues[6]?.connections[0] as Panner).pan.value).toBeCloseTo(.7);
+  });
+
+  it('streams a baked level score between its padded loop points once it decodes', async () => {
+    const ctx = new DecodingContextFake();
+    const fetched = vi.fn((_url: URL) => Promise.resolve({ ok: true, arrayBuffer: () => Promise.resolve(new ArrayBuffer(8)) }));
+    vi.stubGlobal('fetch', fetched);
+    const { tick } = cockpit(false, ctx, { soundtrack: 'megastructure-trench' });
+    tick();
+    expect(ctx.music).toHaveLength(0);
+    await vi.waitFor(() => { expect(ctx.decodeAudioData).toHaveBeenCalledOnce(); });
+    await Promise.resolve();
+    tick();
+    expect(fetched.mock.calls[0]?.[0].href).toBe('https://game.test/play/audio/megastructure-trench.ogg');
+    const score = ctx.music[0];
+    expect(score?.buffer).toBe(ctx.decoded);
+    expect([score?.loopStart, score?.loopEnd]).toEqual([BAKED_LOOP.startS, BAKED_LOOP.endS]);
+    expect(score?.start).toHaveBeenCalledWith(0, BAKED_LOOP.startS);
+    expect(score?.connections[0]).toMatchObject({ gain: { value: .27 } });
+    const outputs = ctx.nodes.filter(node => node.connections.includes(ctx.destination));
+    expect(outputs).toHaveLength(1);
+    tick();
+    expect(ctx.music).toHaveLength(1);
+  });
+
+  it('keeps the synthesized loop when the baked score cannot be fetched, and swaps once one arrives', async () => {
+    const ctx = new DecodingContextFake();
+    const fetched = vi.fn((url: URL) => url.href.includes('saturn')
+      ? Promise.reject(new Error('offline'))
+      : Promise.resolve({ ok: true, arrayBuffer: () => Promise.resolve(new ArrayBuffer(8)) }));
+    vi.stubGlobal('fetch', fetched);
+    const { tick, audio } = cockpit(false, ctx);
+    for (let i = 0; i < SCORE_TICKS; i++) tick();
+    await vi.waitFor(() => { expect(fetched).toHaveBeenCalledOnce(); });
+    expect(ctx.decodeAudioData).not.toHaveBeenCalled();
+    expect(ctx.music[0]?.buffer?.getChannelData(0)).toEqual(renderCombatLoopStereo(ctx.sampleRate).left);
+    expect(ctx.music[0]?.start).toHaveBeenCalledWith();
+
+    audio.setSoundtrack('sunset-ground-support');
+    tick();
+    expect(ctx.music).toHaveLength(1);
+    await vi.waitFor(() => { expect(ctx.decodeAudioData).toHaveBeenCalledOnce(); });
+    await Promise.resolve();
+    tick();
+    expect(ctx.music[0]?.stop).toHaveBeenCalledOnce();
+    expect(ctx.music[1]?.buffer).toBe(ctx.decoded);
+  });
+
   it('smoothly raises both turbine pitches with speed and overdrive and closes them on teardown', () => {
     const { ctx, audio, world } = cockpit();
     const run = (speed: number, overdrive: boolean) => {
@@ -263,6 +358,11 @@ describe('combat audio', () => {
     'weapon-overheat': [[753, 3918, 3066], [9572, 5509, 5749], [19144, 822, 1644], [28726, -502, -483]],
     'boost': [[5217, -1929, -1495], [10434, -4760, -4046], [15655, -468, -603]],
     'player-damage': [[4470, 4750, 4772], [8940, 4277, 4610], [13469, -405, -405]],
+    'crit-hit': [[4416, 6751, 6673], [9936, -1742, -1443], [15456, -1655, -2121]],
+    'near-miss': [[3648, -1012, -1264], [8208, 1805, 4015], [12768, 205, 768]],
+    'supply-drop': [[5952, -3749, -3328], [13392, 2767, 3439], [20832, 510, 966]],
+    'weapon-ready': [[4224, -2687, -2716], [9504, 8315, 7904], [14784, -688, -1042]],
+    'incoming-fire': [[1536, -663, -663], [3456, 0, 0], [5376, -1072, -1072]],
   };
   it.each(Object.entries(referenceFrames))('renders %s as the reference does, through every layered voice', (id, frames) => {
     const { left, right } = renderCue(id as CueId, 48000);
