@@ -7,6 +7,8 @@ export interface InputChannel {
   readonly isPointerLocked: () => boolean;
   /** Releases pointer lock for a pause, remembering it so the resume click re-locks. */
   readonly releasePointerForPause: () => void;
+  /** Frees the cursor for the briefing card's mission buttons; the next launch click locks again. */
+  readonly releasePointer: () => void;
   readonly destroy: () => void;
 }
 
@@ -306,6 +308,14 @@ export function createInputChannel(
     }
   }
 
+  function releasePointer(): void {
+    lockedBeforePause = false;
+    resumeOnPointerLock = false;
+    if (document.pointerLockElement === canvas) {
+      document.exitPointerLock();
+    }
+  }
+
   function destroy(): void {
     window.removeEventListener('keydown', onKeyDown);
     window.removeEventListener('keyup', onKeyUp);
@@ -323,6 +333,7 @@ export function createInputChannel(
     sample,
     isPointerLocked: () => steering.kind === 'pointer_locked',
     releasePointerForPause,
+    releasePointer,
     destroy,
   };
 }

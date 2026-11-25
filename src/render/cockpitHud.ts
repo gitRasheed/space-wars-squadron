@@ -328,7 +328,8 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
 
   /** The one state word by the reticle: danger first, then reward, then state. */
   function currentStatus(world: WorldState): Status | null {
-    if (hullLowSince !== null) {
+    // Hull never regenerates, so the word holds the slot for one alarm beat and the dash pill carries it after.
+    if (hullLowSince !== null && world.tick - hullLowSince < HULL_ALARM_INTERVAL_SECONDS * 60) {
       return { kind: 'warning', text: 'HULL CRITICAL', sinceTick: hullLowSince };
     }
     if (overheatSince !== null) {

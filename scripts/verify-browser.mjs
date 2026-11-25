@@ -188,6 +188,12 @@ async function run() {
       'Autonomous wingmate should track an active target',
     );
     await page.screenshot({ path: path.join(OUT_DIR, '02-cockpit-combat.png') });
+    const hotZoneSnap = await waitForTelemetry(
+      page,
+      (snap) => snap.hotZone && snap.weaponState === 'ready' && snap.weaponHeat >= 80,
+      'cannons firing in the Hot Zone',
+    );
+    await page.screenshot({ path: path.join(OUT_DIR, '02b-hot-zone.png') });
     const cockpitGlSignal = await measureWebglSignal(page);
     assertCondition(
       cockpitGlSignal.nonBlackRatio >= 0.15 && cockpitGlSignal.uniqueColors >= 24,
@@ -221,6 +227,15 @@ async function run() {
       '120% throttle overdrive',
     );
     await page.screenshot({ path: path.join(OUT_DIR, '04-overdrive.png') });
+    // Holding C drops Overdrive to the 100% detent and channels shields.
+    await page.keyboard.down('KeyC');
+    const rechargeSnap = await waitForTelemetry(
+      page,
+      (snap) => snap.recharging && !snap.overdrive && snap.throttle <= 1.0001,
+      'manual shield recharge out of Overdrive',
+    );
+    await page.screenshot({ path: path.join(OUT_DIR, '04b-recharge.png') });
+    await page.keyboard.up('KeyC');
     const overdriveGlSignal = await measureWebglSignal(page);
     assertCondition(
       overdriveGlSignal.nonBlackRatio >= 0.15 && overdriveGlSignal.uniqueColors >= 24,
@@ -386,8 +401,10 @@ async function run() {
       screenshots: [
         '01-briefing.png',
         '02-cockpit-combat.png',
+        '02b-hot-zone.png',
         '03-overheat.png',
         '04-overdrive.png',
+        '04b-recharge.png',
         '05-missile-combat.png',
         'trench-01-briefing.png',
         'trench-02-mouth.png',
@@ -401,8 +418,10 @@ async function run() {
       snapshots: {
         initial,
         combatSnap,
+        hotZoneSnap,
         overheatSnap,
         overdriveSnap,
+        rechargeSnap,
         lockSnap,
         homingSnap,
         finalSnap,

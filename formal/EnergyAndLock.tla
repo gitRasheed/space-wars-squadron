@@ -103,10 +103,15 @@ Hold(w) ==
 
 StepReadyWeapon(w, recharge) == Hold(w) \/ (CanFireWhile(recharge) /\ Shoot(w))
 
-(* A locked-out gun sits somewhere between the Hot Zone and cold while it cools; which band is left open. *)
+(* A lockout cools at a fixed rate, so the ticks left fix its heat band; the exact boundary may round either way. *)
+LockoutBands(ticks) ==
+    CASE ticks * OverheatCool > HotHeat -> {HotBand}
+      [] ticks * OverheatCool = HotHeat -> {1, HotBand}
+      [] OTHER -> {1}
+
 StepOverheatedWeapon(recharge) ==
     \/ /\ weaponState' = "overheated"
-       /\ weaponHeat' \in 1..FullHeat
+       /\ weaponHeat' \in LockoutBands(overheatTicks - 1)
        /\ overheatTicks' = overheatTicks - 1
        /\ primaryCooldown' = IF primaryCooldown > 0 THEN primaryCooldown - 1 ELSE 0
        /\ cannonFired' = FALSE

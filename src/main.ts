@@ -275,6 +275,9 @@ function boot(): void {
       if (before.phase.kind === 'active' && after.phase.kind === 'paused') {
         input.releasePointerForPause();
       }
+      if (before.phase.kind !== 'briefing' && after.phase.kind === 'briefing') {
+        input.releasePointer();
+      }
       audio.sync(after);
     });
     world = advanced.world;

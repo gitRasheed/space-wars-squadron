@@ -252,12 +252,13 @@ async function expectClean(config) {
 const checkedModel = 'SimulationAgreement';
 
 try {
-  for (const module of [model, mutant, overheatMutant, rechargeMutant]) {
+  for (const module of [model, mutant, overheatMutant]) {
     for (const extension of ['tla', 'cfg']) {
       const name = `${module}.${extension}`;
       await copyFile(join(formal, name), join(work, name));
     }
   }
+  await copyFile(join(formal, `${rechargeMutant}.tla`), join(work, `${rechargeMutant}.tla`));
   await copyFile(join(formal, `${model}Combat.cfg`), join(work, `${model}Combat.cfg`));
 
   const measured = await measureSimulation(work);
@@ -286,8 +287,18 @@ try {
   // Firing on the first overheated frame needs three shots to overheat plus one more pull.
   checks.push(expectViolation(overheatMutant, `${overheatMutant}.cfg`, 'Action property OverheatCannotFire',
     2 + 3 * measured.PrimaryCooldown));
-  // A recharge that leaves the guns live fires on its very first frame.
-  checks.push(expectViolation(rechargeMutant, `${rechargeMutant}.cfg`, 'Invariant RechargeExclusive', 2));
+  // Each half of the recharge lockout is mutated on its own, and each breaks RechargeExclusive on the first frame:
+  // Overdrive and the cannons in the flight projection, missiles in the combat one.
+  const rechargeMutants = [
+    ['RechargeKeepsOverdrive', 'FlightInit', 'RechargeAllowsOverdrive'],
+    ['RechargeFiresCannons', 'FlightInit', 'RechargeAllowsFire'],
+    ['RechargeFiresMissiles', 'CombatInit', 'RechargeAllowsFire'],
+  ];
+  for (const [name, init, gate] of rechargeMutants) {
+    const config = `${name}.cfg`;
+    await writeFile(join(work, config), `INIT ${init}\nNEXT Next\nCONSTANT ${gate} <- RechargeIgnored\nINVARIANT RechargeExclusive\n`);
+    checks.push(expectViolation(rechargeMutant, config, 'Invariant RechargeExclusive', 2));
+  }
   const flight = expectClean(`${model}.cfg`);
   const combat = expectClean(`${model}Combat.cfg`);
   await Promise.all(checks);

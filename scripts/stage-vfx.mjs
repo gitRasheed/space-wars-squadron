@@ -252,7 +252,7 @@ const STAGES = [
     run: (build) => {
       const { duel, near } = build();
       const blast = { id: 'shdbrk-stage', position: near.position, radius: 20, elapsed: 0.13, duration: 0.52, tint: 'cyan' };
-      globalThis.__STAGE__.play({ ...duel, explosions: [blast] }, [{ kind: 'shield_broken', position: near.position }], 8);
+      globalThis.__STAGE__.play({ ...duel, explosions: [blast] }, [{ kind: 'shield_broken', position: near.position, targetId: near.id, attackerId: 'player' }], 8);
     },
   },
   {
