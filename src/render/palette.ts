@@ -32,6 +32,73 @@ export const INK_PALETTE = {
   keep: 0.1,
 } as const;
 
+type Rgb = readonly [number, number, number];
+
+/** Per-biome light bands and grade; every biome keeps the band edges and changes only the hue of each step. */
+export interface BiomeCard {
+  /** Direction toward the key light; cel bands, the bounce side and the sky's sun disc all derive from it. */
+  readonly sun: Rgb;
+  readonly shadow: Rgb;
+  readonly bounce: Rgb;
+  readonly base: Rgb;
+  readonly highlight: Rgb;
+  readonly inkTint: Rgb;
+  readonly vignetteTint: Rgb;
+  readonly gradeShadows: Rgb;
+  readonly gradeHighlights: Rgb;
+}
+
+export const SATURN_BIOME: BiomeCard = {
+  sun: [SUN_DIRECTION.x, SUN_DIRECTION.y, SUN_DIRECTION.z],
+  shadow: CEL_SHADING.shadow,
+  bounce: CEL_SHADING.bounce,
+  base: CEL_SHADING.base,
+  highlight: CEL_SHADING.highlight,
+  inkTint: INK_PALETTE.tint,
+  vignetteTint: [0.78, 0.74, 1.0],
+  gradeShadows: [0.92, 0.97, 1.12],
+  gradeHighlights: [1.05, 1.0, 0.93],
+};
+
+// Saturn's bands scaled by the art bible's C/A card ratios: violet shadows, peach light, a warmer core.
+export const SUNSET_BIOME: BiomeCard = {
+  // About 12° up and just right of the canyon axis, so the sun disc sits over the valley you fly down.
+  sun: [0.32, 0.215, -0.92],
+  shadow: [0.17, 0.15, 0.36],
+  bounce: [0.3, 0.26, 0.5],
+  base: [0.6, 0.45, 0.48],
+  highlight: [1.0, 0.8, 0.56],
+  inkTint: [0.012, 0.008, 0.022],
+  vignetteTint: [0.86, 0.72, 0.9],
+  gradeShadows: [0.95, 0.94, 1.1],
+  gradeHighlights: [1.06, 0.99, 0.9],
+};
+
+export const SUNSET_PALETTE = {
+  skyZenith: 0x2b2f5e,
+  skyHigh: 0x7a4f7c,
+  skyLow: 0xe8866a,
+  skyHorizon: 0xe9ab78,
+  sunHalo: 0xf2bf86,
+  sunDisc: 0xffc48a,
+  cloudLit: 0xe0a58c,
+  cloudShadow: 0x6a4a78,
+  mesaLight: 0xb88a68,
+  mesaMid: 0x7d5560,
+  mesaDark: 0x3d2f52,
+  /** The lightest terrain tone: pads and the walker road, so dark hostile bodies pop by value. */
+  pad: 0xe2bd94,
+  padMarking: 0x7d5560,
+  hostileHull: 0x3b314d,
+  hostilePlate: 0x57566e,
+  hostileGlow: 0xf04c48,
+  flakCharge: 0x5dffb3,
+  friendlyHull: 0xede6d5,
+  friendlyTrim: 0x2a3456,
+  friendlyLight: 0x52d4ff,
+  wreck: 0x1b1922,
+} as const;
+
 export const SCENE_PALETTE = {
   playerStripe: 0xe88332,
   wingmateStripe: 0x4bc5e8,

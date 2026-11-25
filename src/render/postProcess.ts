@@ -1,12 +1,12 @@
 import * as THREE from 'three';
-import { glslVec3 } from './celMaterial';
-import { INK_PALETTE } from './palette';
+import { INK_PALETTE, SATURN_BIOME, type BiomeCard } from './palette';
 
 export interface StylizedPostPass {
   /** Pixel size of the internal targets; the canvas backing store should match it. */
   readonly size: () => { readonly width: number; readonly height: number };
   readonly resize: (cssWidth: number, cssHeight: number) => void;
   readonly render: (renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.PerspectiveCamera) => void;
+  readonly setBiome: (card: BiomeCard) => void;
   readonly destroy: () => void;
 }
 
@@ -118,7 +118,18 @@ export function createStylizedPostPass(): StylizedPostPass {
     tBloom: { value: bloomTargetB.texture },
     tInk: { value: inkTarget.texture },
     uInkStep: { value: new THREE.Vector2(1 / 1280, 1 / 720) },
+    uInkTint: { value: new THREE.Vector3() },
+    uVignetteTint: { value: new THREE.Vector3() },
+    uGradeShadows: { value: new THREE.Vector3() },
+    uGradeHighlights: { value: new THREE.Vector3() },
   };
+  function setBiome(card: BiomeCard): void {
+    compositeUniforms.uInkTint.value.fromArray(card.inkTint);
+    compositeUniforms.uVignetteTint.value.fromArray(card.vignetteTint);
+    compositeUniforms.uGradeShadows.value.fromArray(card.gradeShadows);
+    compositeUniforms.uGradeHighlights.value.fromArray(card.gradeHighlights);
+  }
+  setBiome(SATURN_BIOME);
   const compositeMat = quadMaterial(
     compositeUniforms,
     `
@@ -126,6 +137,10 @@ export function createStylizedPostPass(): StylizedPostPass {
       uniform sampler2D tBloom;
       uniform sampler2D tInk;
       uniform vec2 uInkStep;
+      uniform vec3 uInkTint;
+      uniform vec3 uVignetteTint;
+      uniform vec3 uGradeShadows;
+      uniform vec3 uGradeHighlights;
       varying vec2 vUv;
 
       // 1/depth is linear across the screen on any flat face, so its second difference is zero there at every
@@ -191,20 +206,20 @@ export function createStylizedPostPass(): StylizedPostPass {
         vec3 baseLinear = texture2D(tDiffuse, vUv).rgb;
         vec3 bloomLinear = texture2D(tBloom, vUv).rgb;
         float ink = inkCoverage(max(baseLinear.r, max(baseLinear.g, baseLinear.b)));
-        vec3 inkColor = min(baseLinear, baseLinear * ${INK_PALETTE.keep.toFixed(3)} + ${glslVec3(INK_PALETTE.tint)});
+        vec3 inkColor = min(baseLinear, baseLinear * ${INK_PALETTE.keep.toFixed(3)} + uInkTint);
         vec3 combined = mix(baseLinear, inkColor, ink * 0.92) + bloomLinear * 0.5;
 
         vec2 centered = vUv * 2.0 - 1.0;
         float vignette = clamp(1.0 - dot(centered, centered) * 0.16, 0.74, 1.0);
-        combined *= mix(vec3(0.78, 0.74, 1.0), vec3(1.0), vignette) * vignette;
+        combined *= mix(uVignetteTint, vec3(1.0), vignette) * vignette;
 
         vec3 displayColor = linearToSrgb(neutralToneMap(combined));
 
         // Print-style grade: indigo in the shadows, warmth in the highlights, a touch more chroma and contrast.
         float luma = dot(displayColor, vec3(0.299, 0.587, 0.114));
         float shadows = 1.0 - smoothstep(0.0, 0.42, luma);
-        displayColor = mix(displayColor, displayColor * vec3(0.92, 0.97, 1.12) + vec3(0.008, 0.004, 0.024), shadows * 0.6);
-        displayColor = mix(displayColor, displayColor * vec3(1.05, 1.0, 0.93), smoothstep(0.55, 1.0, luma) * 0.5);
+        displayColor = mix(displayColor, displayColor * uGradeShadows + vec3(0.008, 0.004, 0.024), shadows * 0.6);
+        displayColor = mix(displayColor, displayColor * uGradeHighlights, smoothstep(0.55, 1.0, luma) * 0.5);
         displayColor = mix(vec3(luma), displayColor, 1.12);
         displayColor = mix(displayColor, displayColor * displayColor * (3.0 - 2.0 * displayColor), 0.22);
 
@@ -288,6 +303,7 @@ export function createStylizedPostPass(): StylizedPostPass {
     size: () => ({ width: colorTarget.width, height: colorTarget.height }),
     resize,
     render,
+    setBiome,
     destroy,
   };
 }

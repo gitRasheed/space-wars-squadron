@@ -233,6 +233,54 @@ async function run() {
     await page.screenshot({ path: path.join(OUT_DIR, '05-missile-combat.png') });
     await page.keyboard.up('KeyJ');
 
+    // 5. Mission selector: the briefing card swaps sorties on 2 and back on 1, before launch.
+    await page.goto(baseUrl, { waitUntil: 'networkidle' });
+    await waitForTelemetry(page, (snap) => snap.phase === 'briefing' && snap.level === 'saturn', 'default Saturn briefing');
+    await page.keyboard.press('Digit2');
+    await waitForTelemetry(page, (snap) => snap.phase === 'briefing' && snap.level === 'planetary', 'mission 2 selected');
+    await page.screenshot({ path: path.join(OUT_DIR, '06-mission-select.png') });
+    await page.keyboard.press('Digit1');
+    await waitForTelemetry(page, (snap) => snap.level === 'saturn' && snap.enemiesRemaining > 0, 'mission 1 reselected');
+
+    // 6. Planetary sortie, direct boot: canyon, pads and markers, then flak engaging the player.
+    const planetaryUrl = new URL(baseUrl);
+    planetaryUrl.searchParams.set('level', 'planetary');
+    await page.goto(planetaryUrl.href, { waitUntil: 'networkidle' });
+    await waitForTelemetry(page, (snap) => snap.phase === 'briefing' && snap.level === 'planetary', 'planetary briefing');
+    await page.keyboard.press('Enter');
+    const canyonSnap = await waitForTelemetry(
+      page,
+      (snap) => snap.phase === 'active' && snap.tick > 60,
+      'planetary flight under way',
+    );
+    assertCondition(
+      canyonSnap.stage === 'ground_attack' && canyonSnap.enemiesRemaining === 0 && canyonSnap.groundTargetsRemaining === 8,
+      `Planetary stage 1 should open with 8 ground targets and no air (${JSON.stringify(canyonSnap)})`,
+    );
+    assertCondition(canyonSnap.altitude > 40, 'Player should start well above the canyon floor');
+    await page.screenshot({ path: path.join(OUT_DIR, 'planetary-01-canyon.png') });
+    const canyonGlSignal = await measureWebglSignal(page);
+    assertCondition(
+      canyonGlSignal.nonBlackRatio >= 0.15 && canyonGlSignal.uniqueColors >= 24,
+      `Planetary 3D canvas lacks visual signal (${JSON.stringify(canyonGlSignal)})`,
+    );
+    const flakSnap = await waitForTelemetry(page, (snap) => snap.flakBursts > 0, 'flak bursting around the player', null, 60_000);
+    await page.screenshot({ path: path.join(OUT_DIR, 'planetary-02-flak.png') });
+
+    // 7. Stage 2 boot: the air wave dives through the cloud deck over the canyon.
+    planetaryUrl.searchParams.set('stage', 'air');
+    await page.goto(planetaryUrl.href, { waitUntil: 'networkidle' });
+    await waitForTelemetry(page, (snap) => snap.phase === 'briefing' && snap.stage === 'air_superiority', 'planetary stage 2 briefing');
+    await page.keyboard.press('Enter');
+    const airSnap = await waitForTelemetry(
+      page,
+      (snap) => snap.phase === 'active' && snap.enemiesRemaining === 4 && snap.enemyInViewRange !== null && snap.enemyInViewRange < 600,
+      'air wave closing on the player',
+      null,
+      60_000,
+    );
+    await page.screenshot({ path: path.join(OUT_DIR, 'planetary-03-air-wave.png') });
+
     assertCondition(
       await page.evaluate(() => globalThis.__SW_PROFILE__ === undefined),
       'Profiler must stay off without ?profile=1',
@@ -260,6 +308,7 @@ async function run() {
       glSignal: {
         cockpit: cockpitGlSignal,
         overdrive: overdriveGlSignal,
+        canyon: canyonGlSignal,
       },
       screenshots: [
         '01-briefing.png',
@@ -267,6 +316,10 @@ async function run() {
         '03-overheat.png',
         '04-overdrive.png',
         '05-missile-combat.png',
+        '06-mission-select.png',
+        'planetary-01-canyon.png',
+        'planetary-02-flak.png',
+        'planetary-03-air-wave.png',
       ],
       snapshots: {
         initial,
@@ -276,6 +329,9 @@ async function run() {
         lockSnap,
         homingSnap,
         finalSnap,
+        canyonSnap,
+        flakSnap,
+        airSnap,
       },
     };
     await fs.writeFile(path.join(OUT_DIR, 'report.json'), JSON.stringify(report, null, 2));

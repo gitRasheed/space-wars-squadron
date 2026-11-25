@@ -18,6 +18,7 @@
 | 3 | Throttle Overdrive & Weapon Heat | `overdrive` × `WeaponState` (`ready`/`overheated`) × charges | Traced (pass 3) | Medium (Common) | `src/sim/energy.ts`, `src/sim/flight.ts` | 1 |
 | 4 | Target Selection, Pin & Missile Lock | Sum (`LockState`) × `selectedTargetId` × `targetPinned` × `missileTriggerHeld` × `missilesReady` | Traced (pass 3) | Medium (Common) | `src/sim/combat.ts` (`resolveTargetSelection`, `stepPlayerWeapons`) | 1 |
 | 6 | Enemy Maneuver | Sum (`EnemyManeuver`: `approach`/`break_away`) | Traced (pass 3) | Medium (Common) | `src/sim/combat.ts` (`stepEnemyAi`) | 1 |
+| 7 | Planetary Stage (ground attack → air superiority) | Sum (`PlanetaryStage`) × ground-target hulls × `enemies` | Traced (pass 4) | Low (Edge) | `src/sim/planetary.ts` (`stepGroundBattle`, `remainingPlanetaryHostiles`), `src/sim/world.ts` | 1 |
 | 5 | Web Audio Engine Lifecycle | Implicit (`muted` × `ctx` × `document.hidden`) | Traced | Low (Edge) | `src/audio/synthAudio.ts:13-57,125-138` | 0 |
 
 ## 3. Detailed Sections (`Traced` Only)
@@ -87,3 +88,7 @@
 - **Machine 6, raider attack run.** The approach timer was clamped at 0.4 s, so the timed break-away never fired, and the tail check had its sign reversed. The timer now reaches 0, and a raider holds the run only while it is actually behind the player.
 - **Machine 2, pause ordering.** On `P` during locked flight, `main.ts` released pointer lock after the sim paused, so `pointerlockchange` saw the overlay open and never recorded `lockedBeforePause`; the resume click then resumed into cursor steering. `InputChannel.releasePointerForPause()` records the lock before releasing it.
 
+## 7. Pass 4 (2026-11-25): Planetary Stage
+
+- **Machine 7, one-way hand-off.** `PlanetaryStage` lives on the optional `world.planetary`, so `SortiePhase` and its formal model are untouched. `ground_attack` becomes `air_superiority` once `airWaveThreshold` ground targets are down, which spawns the air wave exactly once; nothing moves it back. Restart rebuilds it from `world.sortie.planetary`.
+- **Victory gate.** Stage 1 has no air enemies and no frigate cores, so the orbital rule (`enemies === 0 && cores === 0`) would have won on the first tick. Planetary sorties count living ground targets plus the unspawned wave as remaining hostiles (`remainingPlanetaryHostiles`). `tests/planetary.test.ts` pins this, and dropping the gate fails 8 tests.

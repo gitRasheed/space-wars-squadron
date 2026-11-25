@@ -174,11 +174,13 @@ export function createSynthAudio(): SynthAudio {
       case 'hit_confirmed':
         playCue(bus, event.isKill ? 'kill-confirm' : 'hit-confirm');
         // A subsystem kill emits its own larger explosion immediately after the confirmation.
-        if (event.isKill && next?.kind !== 'subsystem_destroyed') playCue(bus, 'explosion');
+        if (event.isKill && next?.kind !== 'subsystem_destroyed' && next?.kind !== 'ground_target_destroyed') playCue(bus, 'explosion');
         break;
       case 'shield_broken': playCue(bus, 'shield-break'); break;
       case 'weapon_overheated': playCue(bus, 'weapon-overheat'); break;
-      case 'subsystem_destroyed': playCue(bus, 'subsystem-destruction'); break;
+      case 'subsystem_destroyed':
+      case 'ground_target_destroyed': playCue(bus, 'subsystem-destruction'); break;
+      case 'flak_burst': playCue(bus, 'enemy-cannon'); break;
       case 'missile_fired': playCue(bus, 'missile-launch'); break;
       case 'target_locked': playCue(bus, 'lock-chirp'); break;
       case 'player_damaged': playCue(bus, 'player-damage'); break;

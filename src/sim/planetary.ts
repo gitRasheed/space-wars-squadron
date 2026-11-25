@@ -1,6 +1,6 @@
 import { COMBAT_TUNING } from './combat';
 import { damagePlayer } from './flight';
-import { add, clamp, computeLeadPoint, distance, dot, len, normalize, quatLookAt, scale, sub, vec3 } from './math';
+import { add, clamp, computeLeadPoint, cross, distance, dot, len, nextRandom, normalize, quatLookAt, scale, sub, vec3 } from './math';
 import {
   AIR_WAVE,
   CONVOY_MAX_ADVANCE,
@@ -195,7 +195,7 @@ export function burstFlak(
       continue;
     }
     events.push({ kind: 'flak_burst', position: proj.position });
-    explosions.push({ id: `flak-${tick}-${proj.id}`, position: proj.position, radius: 16, elapsed: 0, duration: 0.55, tint: 'emerald' });
+    explosions.push({ id: `flak-${tick}-${proj.id}`, position: proj.position, radius: 5.5, elapsed: 0, duration: 0.45, tint: 'emerald' });
     if (miss < PLANETARY_TUNING.flakBurstRadius) {
       player = damagePlayer(player, proj.damage * (1 - miss / PLANETARY_TUNING.flakBurstRadius));
       events.push({ kind: 'player_damaged' });
@@ -217,6 +217,27 @@ function hostileShot(id: string, from: Vec3, to: Vec3, speed: number, damage: nu
     damage,
     ttl: distance(from, to) / speed + (kind === 'flak' ? 0 : 0.5),
   };
+}
+
+/** Deterministic per-shot scatter ahead of and above the flight path; it uses no sim RNG, so replays stay identical. */
+function barrageOffset(tick: number, id: string, player: PlayerShipState): Vec3 {
+  let seed = tick * 7919;
+  for (let i = 0; i < id.length; i += 1) seed = (Math.imul(seed, 31) + id.charCodeAt(i)) | 0;
+  const draw = (): number => {
+    const r = nextRandom(seed);
+    seed = r.nextState;
+    return r.value;
+  };
+  if (draw() < PLANETARY_TUNING.flakDirectShare) return vec3(0, 0, 0);
+  const speed = len(player.velocity);
+  const ahead = speed > 1 ? scale(player.velocity, 1 / speed) : vec3(0, 0, -1);
+  const lateral = normalize(cross(ahead, UP));
+  const [aheadMin, aheadMax] = PLANETARY_TUNING.flakLeadAhead;
+  const [aboveMin, aboveMax] = PLANETARY_TUNING.flakLeadAbove;
+  return add(
+    add(scale(ahead, aheadMin + draw() * (aheadMax - aheadMin)), scale(lateral, (draw() * 2 - 1) * PLANETARY_TUNING.flakLeadSpread)),
+    vec3(0, aboveMin + draw() * (aboveMax - aboveMin), 0),
+  );
 }
 
 function stepGroundTarget(
@@ -247,7 +268,8 @@ function stepGroundTarget(
         const charge = cooldown < tuning.flakChargeSeconds ? 1 - cooldown / tuning.flakChargeSeconds : 0;
         return { target: { ...decayed, fireCooldown: cooldown, charge }, shot: null };
       }
-      const lead = computeLeadPoint(muzzle, vec3(0, 0, 0), player.position, player.velocity, tuning.flakShellSpeed, 3.5) ?? player.position;
+      const intercept = computeLeadPoint(muzzle, vec3(0, 0, 0), player.position, player.velocity, tuning.flakShellSpeed, 3.5) ?? player.position;
+      const lead = add(intercept, barrageOffset(tick, target.id, player));
       return {
         target: { ...decayed, fireCooldown: tuning.flakCycleSeconds, charge: 0 },
         shot: hostileShot(`fk-${tick}-${target.id}`, muzzle, lead, tuning.flakShellSpeed, tuning.flakBurstDamage, 'flak'),

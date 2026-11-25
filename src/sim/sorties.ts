@@ -1,6 +1,6 @@
 import { createGroundTargets, createOutpost, GROUND_SPEAKER, spawnAirWave } from './planetary';
 import { GROUND_TARGET_PLACEMENTS, PLANETARY_TUNING, PLAYER_START, WINGMATE_START } from './planetaryLayout';
-import { IDENTITY_QUAT, vec3 } from './math';
+import { IDENTITY_QUAT, normalize, quatLookAt, scale, vec3 } from './math';
 import type { CapitalShipState, SortieConfig } from './types';
 import { DEFAULT_SORTIE_CONFIG } from './world';
 
@@ -19,7 +19,7 @@ export const MISSIONS: readonly MissionInfo[] = [
     id: 'planetary',
     key: '2',
     title: 'SUNSET GROUND SUPPORT',
-    objective: 'Cover the pinned convoy: flak, walkers, relay and siege gun. Then win the sky.',
+    objective: 'Break the siege on the canyon road, then win the sky.',
   },
 ];
 
@@ -49,7 +49,9 @@ export function createPlanetarySortieConfig(options: PlanetaryOptions = {}): Sor
     airWave ? GROUND_TARGET_PLACEMENTS.slice(0, PLANETARY_TUNING.airWaveThreshold).map((p) => p.id) : [],
   );
   const groundTargets = createGroundTargets(destroyed);
-  const velocity = vec3(0, 0, -PLAYER_START.speed);
+  // The scramble preset starts in a gentle climb toward the diving wave.
+  const heading = airWave ? normalize(vec3(0, 0.27, -1)) : vec3(0, 0, -1);
+  const velocity = scale(heading, PLAYER_START.speed);
   return {
     id: PLANETARY_SORTIE_ID,
     openingRadio: airWave
@@ -59,9 +61,10 @@ export function createPlanetarySortieConfig(options: PlanetaryOptions = {}): Sor
       ...DEFAULT_SORTIE_CONFIG.player,
       position: PLAYER_START.position,
       velocity,
+      orientation: quatLookAt(heading),
       selectedTargetId: groundTargets.find((t) => t.hull > 0)?.id ?? null,
     },
-    wingmate: { ...DEFAULT_SORTIE_CONFIG.wingmate, position: WINGMATE_START, velocity, targetId: null },
+    wingmate: { ...DEFAULT_SORTIE_CONFIG.wingmate, position: WINGMATE_START, velocity, orientation: quatLookAt(heading), targetId: null },
     enemies: airWave ? spawnAirWave() : [],
     friendlyCarrier: createOutpost(),
     hostileFrigate: NO_FRIGATE,

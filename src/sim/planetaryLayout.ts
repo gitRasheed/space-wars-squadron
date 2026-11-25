@@ -81,7 +81,7 @@ export const TERRAIN_EXTENT = {
   maxX: TERRAIN_OUTER_X,
   minZ: END_WALL_NEAR_Z.south - (TERRACE_HEIGHTS.length - 1) * END_WALL_STEP - END_WALL_DEPTH,
   maxZ: END_WALL_NEAR_Z.north + (TERRACE_HEIGHTS.length - 1) * END_WALL_STEP + END_WALL_DEPTH,
-  plateauHeight: TERRACE_HEIGHTS[TERRACE_HEIGHTS.length - 1],
+  plateauHeight: TERRACE_HEIGHTS[3],
 } as const;
 
 /** Ground height under (x, z): the canyon floor, or the top of the tallest terrace standing there. */
@@ -202,6 +202,11 @@ export const PLANETARY_TUNING = {
   flakCycleSeconds: 2.6,
   flakShellSpeed: 330,
   flakProximityFuse: 14,
+  /** Share of shells aimed dead on the intercept; the rest burst ahead of the flight path as a visible barrage. */
+  flakDirectShare: 0.35,
+  flakLeadAhead: [45, 85],
+  flakLeadSpread: 26,
+  flakLeadAbove: [4, 18],
   flakBurstRadius: 26,
   flakBurstDamage: 18,
   walkerSpeed: 9,

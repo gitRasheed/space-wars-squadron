@@ -9,7 +9,7 @@ import { INK_LAYER } from './postProcess';
 import { createHeatVents, createShieldBubble, type HeatVents } from './vfx';
 import type { HullTextureSet } from './textures';
 
-function glowMat(
+export function glowMat(
   color: number,
   opacity = 1,
   options?: {
@@ -29,7 +29,7 @@ function glowMat(
   });
 }
 
-function addStyledPart(
+export function addStyledPart(
   parent: THREE.Object3D,
   geometry: THREE.BufferGeometry,
   material: THREE.Material,

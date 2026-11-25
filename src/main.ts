@@ -2,7 +2,9 @@ import { createSynthAudio } from './audio/synthAudio';
 import { createInputChannel } from './input/keyboardMouse';
 import { createCockpitHud } from './render/cockpitHud';
 import { createSceneRenderer } from './render/sceneRenderer';
-import { len } from './sim/math';
+import { dot, forwardOf, len, sub } from './sim/math';
+import { terrainHeightAt } from './sim/planetaryLayout';
+import { createMissionConfig, MISSIONS, type MissionId } from './sim/sorties';
 import { DEFAULT_SORTIE_SEED, FIXED_DT, type WorldState } from './sim/types';
 import { createInitialWorld, stepFrame } from './sim/world';
 
@@ -27,6 +29,16 @@ interface ReadOnlyTelemetry {
     readonly lockTargetId: string | null;
     readonly playerMissileTargets: readonly (string | null)[];
     readonly wingmateTargetId: string | null;
+    readonly level: MissionId;
+    readonly stage: 'ground_attack' | 'air_superiority' | null;
+    readonly groundTargetsRemaining: number;
+    readonly altitude: number;
+    readonly flakInFlight: number;
+    /** Flak bursts since the page loaded. */
+    readonly flakBursts: number;
+    readonly nearestEnemyRange: number | null;
+    /** Range to the nearest air hostile within 30° of the nose, if any. */
+    readonly enemyInViewRange: number | null;
   };
 }
 
@@ -135,7 +147,18 @@ function boot(): void {
   const glCanvas = requireCanvas('gl-canvas');
   const hudCanvas = requireCanvas('hud-canvas');
 
-  let world = createInitialWorld(DEFAULT_SORTIE_SEED, false);
+  const params = new URLSearchParams(window.location.search);
+  const airWave = params.get('stage') === 'air';
+  let mission: MissionId = params.get('level') === 'planetary' ? 'planetary' : 'saturn';
+  let world = createInitialWorld(DEFAULT_SORTIE_SEED, false, createMissionConfig(mission, { airWave }));
+  // Mission choice lives on the briefing card only, so flight input never sees it.
+  window.addEventListener('keydown', (event) => {
+    if (world.phase.kind !== 'briefing') return;
+    const picked = MISSIONS.find((m) => event.code === `Digit${m.key}` || event.code === `Numpad${m.key}`);
+    if (picked === undefined || picked.id === mission) return;
+    mission = picked.id;
+    world = createInitialWorld(DEFAULT_SORTIE_SEED, false, createMissionConfig(mission, { airWave }));
+  });
   const input = createInputChannel(glCanvas, () => world.phase.kind !== 'active');
   const renderer = createSceneRenderer(glCanvas);
   const hud = createCockpitHud(hudCanvas);
@@ -180,6 +203,23 @@ function boot(): void {
         .filter((p) => p.kind === 'missile' && p.owner === 'player')
         .map((p) => p.targetId),
       wingmateTargetId: world.wingmate.targetId,
+      level: mission,
+      stage: world.planetary?.stage.kind ?? null,
+      groundTargetsRemaining: world.planetary?.groundTargets.filter((t) => t.hull > 0).length ?? 0,
+      flakInFlight: world.projectiles.filter((p) => p.kind === 'flak').length,
+      flakBursts,
+      nearestEnemyRange: world.enemies.length === 0
+        ? null
+        : Math.min(...world.enemies.map((e) => len(sub(e.position, world.player.position)))),
+      enemyInViewRange: (() => {
+        const nose = forwardOf(world.player.orientation);
+        const ranges = world.enemies
+          .map((e) => sub(e.position, world.player.position))
+          .filter((rel) => dot(rel, nose) > len(rel) * Math.cos((30 * Math.PI) / 180))
+          .map(len);
+        return ranges.length === 0 ? null : Math.min(...ranges);
+      })(),
+      altitude: world.player.position.y - (world.planetary === null ? 0 : terrainHeightAt(world.player.position.x, world.player.position.z)),
     }),
   };
 
@@ -188,6 +228,7 @@ function boot(): void {
     window.__SW_PROFILE__ = { snapshot: profiler.snapshot, reset: profiler.reset };
   }
 
+  let flakBursts = 0;
   let lastFrameMs = performance.now();
   let accumulator = 0;
 
@@ -213,6 +254,7 @@ function boot(): void {
       audio.sync(after);
     });
     world = advanced.world;
+    flakBursts += advanced.frameEvents.filter((event) => event.kind === 'flak_burst').length;
     const frameWorld = { ...world, events: advanced.frameEvents };
 
     const renderStart = profiler === null ? 0 : performance.now();

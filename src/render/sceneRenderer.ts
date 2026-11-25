@@ -21,7 +21,9 @@ import {
   type FighterMeshRig,
   type HostileFrigateRig,
 } from './models';
-import { SCENE_PALETTE } from './palette';
+import { SATURN_BIOME, SCENE_PALETTE, SUNSET_BIOME } from './palette';
+import { createPlanetaryScene, type PlanetaryScene } from './planetaryScene';
+import { setCelBiome } from './celMaterial';
 import { CAMERA_CLIP, createStylizedPostPass } from './postProcess';
 import { createHullTextureSet } from './textures';
 import {
@@ -69,6 +71,7 @@ const SHIELD_BREAK_RADIUS = 14;
 const BOLT_TINTS = {
   friendly: new THREE.Color(SCENE_PALETTE.friendlyBolt).multiplyScalar(2.1),
   hostile: new THREE.Color(SCENE_PALETTE.hostileBolt).multiplyScalar(2.1),
+  flak: new THREE.Color(SCENE_PALETTE.hostileBolt).multiplyScalar(2.6),
   flame: new THREE.Color(SCENE_PALETTE.missileTrail).multiplyScalar(2.2),
 } as const;
 
@@ -277,6 +280,31 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     }
   }
 
+  // Built on first planetary frame, then kept so switching missions on the briefing card stays instant.
+  let planetaryScene: PlanetaryScene | null = null;
+  let planetaryShown = false;
+
+  function syncBiome(world: WorldState): void {
+    const planetary = world.planetary !== null;
+    if (planetary && planetaryScene === null) {
+      planetaryScene = createPlanetaryScene();
+      scene.add(planetaryScene.root, planetaryScene.sky);
+    }
+    if (planetary !== planetaryShown) {
+      planetaryShown = planetary;
+      const card = planetary ? SUNSET_BIOME : SATURN_BIOME;
+      setCelBiome(card);
+      postPass.setBiome(card);
+      backdrop.visible = !planetary;
+      carrierMesh.visible = !planetary;
+      frigateRig.root.visible = !planetary;
+      if (planetaryScene !== null) {
+        planetaryScene.root.visible = planetary;
+        planetaryScene.sky.visible = planetary;
+      }
+    }
+  }
+
   let lastTick = -1;
   let lastRenderTimeMs = 0;
   let shakeIntensity = 0;
@@ -428,6 +456,15 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
       const { x, y, z } = proj.position;
       scratchDir.set(proj.velocity.x, proj.velocity.y, proj.velocity.z).normalize();
 
+      if (proj.kind === 'flak') {
+        const reach = BOLT_LENGTH * 0.3;
+        bolts.push(
+          x + scratchDir.x * reach, y + scratchDir.y * reach, z + scratchDir.z * reach,
+          x - scratchDir.x * reach, y - scratchDir.y * reach, z - scratchDir.z * reach,
+          BOLT_TINTS.flak.r, BOLT_TINTS.flak.g, BOLT_TINTS.flak.b, 0.55,
+        );
+        continue;
+      }
       if (proj.kind === 'bolt') {
         const reach = BOLT_LENGTH * 0.5;
         scratchTail.set(x, y, z).addScaledVector(scratchDir, -reach);
@@ -688,7 +725,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
         if (evt.kind === 'player_damaged') {
           playerHit = true;
           shakeIntensity = Math.min(1, shakeIntensity + 0.55);
-        } else if (evt.kind === 'subsystem_destroyed') {
+        } else if (evt.kind === 'subsystem_destroyed' || evt.kind === 'ground_target_destroyed') {
           shakeIntensity = Math.min(1, shakeIntensity + 0.65);
         } else if (evt.kind === 'shield_broken') {
           shakeIntensity = Math.min(1, shakeIntensity + 0.28);
@@ -720,11 +757,16 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
       );
     }
 
+    syncBiome(world);
     updateCamera(world, dt);
     if (playerHit) {
       emitDamageSparks(world);
     }
     backdrop.position.copy(camera.position);
+    if (world.planetary !== null && planetaryScene !== null) {
+      planetaryScene.sky.position.copy(camera.position);
+      planetaryScene.sync(world.planetary, player.position, world.tick);
+    }
     updateDustField(player.position);
     updateSpeedStreaks(world, dt);
     syncAsteroids(world);
@@ -758,6 +800,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
   }
 
   function destroy(): void {
+    planetaryScene?.dispose();
     sparks.mesh.dispose();
     disposeObject3D(scene);
     destroyedSubMat.dispose();
