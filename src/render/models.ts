@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { COCKPIT_GUN_LOCAL, FIGHTER_WEAPON_LAYOUT } from '../sim/combat';
+import { SHIP_STATS } from '../sim/ships';
 import type { AsteroidState, EnemyKind } from '../sim/types';
 import { FRIGATE_SUBSYSTEM_LAYOUT } from '../sim/world';
 import { celMat, type CelMaterial } from './celMaterial';
@@ -1223,9 +1224,8 @@ export function buildEnemyMesh(kind: EnemyKind, textures: HullTextureSet): THREE
     }
   }
 
-  // Geodesic shield bubble: hidden at rest (ignored by turntable bounds),
-  // flares bright cyan on shield impact so players clearly read active enemy shields.
-  const shieldRadius = kind === 'striker' ? 11.2 : 9.4;
+  // Geodesic shield bubble: derived from SHIP_STATS hitRadius so visual shield shell matches sim bounds.
+  const shieldRadius = SHIP_STATS.enemies[kind].hitRadius * 1.18;
   const shieldBubble = createShieldBubble(shieldRadius).mesh;
   shieldBubble.name = ENEMY_SHIELD_BUBBLE;
   root.add(shieldBubble);

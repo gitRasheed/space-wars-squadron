@@ -24,7 +24,7 @@ jobs:
 
   formal:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -111,3 +111,16 @@ jobs:
             npm --prefix tools/agent-3d exec -- playwright install-deps chromium
           fi
       - run: npm --prefix tools/agent-3d test
+
+  tools-daw:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tools/agent-daw/package-lock.json
+      - run: npm --prefix tools/agent-daw ci
+      - run: npm --prefix tools/agent-daw test
