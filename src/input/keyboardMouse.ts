@@ -1,5 +1,5 @@
 import { clamp } from '../sim/math';
-import type { FlightInput } from '../sim/types';
+import type { FlightInput, LevelId } from '../sim/types';
 import { applyDeadzone } from './combine';
 
 export interface InputChannel {
@@ -16,6 +16,14 @@ type SteeringMode =
   | { readonly kind: 'pointer_locked'; readonly dx: number; readonly dy: number };
 
 const MOUSE_SENSITIVITY = 0.0046;
+const LEVEL_KEYS: Readonly<Partial<Record<string, LevelId>>> = {
+  Digit1: 'saturn',
+  Digit2: 'trench',
+  Digit3: 'planetary',
+  Numpad1: 'saturn',
+  Numpad2: 'trench',
+  Numpad3: 'planetary',
+};
 const CURSOR_STEER_DEADZONE = 0.05;
 
 export function createInputChannel(
@@ -36,6 +44,7 @@ export function createInputChannel(
   let queuedToggleMusic = false;
   let queuedTogglePause = false;
   let queuedPauseRequested = false;
+  let queuedSelectLevel: LevelId | null = null;
   let wasPointerLocked = false;
   let lockedBeforePause = false;
   let resumeOnPointerLock = false;
@@ -53,6 +62,7 @@ export function createInputChannel(
     queuedToggleMusic = false;
     queuedTogglePause = false;
     queuedPauseRequested = false;
+    queuedSelectLevel = null;
     resumeOnPointerLock = false;
     steering =
       steering.kind === 'pointer_locked'
@@ -92,6 +102,8 @@ export function createInputChannel(
         queuedToggleMute = true;
       } else if (code === 'KeyN') {
         queuedToggleMusic = true;
+      } else if (LEVEL_KEYS[code] !== undefined) {
+        queuedSelectLevel = LEVEL_KEYS[code];
       } else if (code === 'Escape' || code === 'KeyP') {
         if (isOverlayOpen()) {
           lockedBeforePause = false;
@@ -253,6 +265,7 @@ export function createInputChannel(
       toggleMusic: queuedToggleMusic,
       togglePause: queuedTogglePause,
       pauseRequested: queuedPauseRequested,
+      selectLevel: queuedSelectLevel,
     };
 
     queuedCycleTarget = false;
@@ -264,6 +277,7 @@ export function createInputChannel(
     queuedToggleMusic = false;
     queuedTogglePause = false;
     queuedPauseRequested = false;
+    queuedSelectLevel = null;
 
     return input;
   }

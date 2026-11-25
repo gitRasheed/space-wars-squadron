@@ -233,6 +233,97 @@ async function run() {
     await page.screenshot({ path: path.join(OUT_DIR, '05-missile-combat.png') });
     await page.keyboard.up('KeyJ');
 
+    // 5. Level 2: boot straight into the trench briefing, fly in through the mouth and down the spine.
+    const trenchUrl = new URL(baseUrl);
+    trenchUrl.searchParams.set('level', 'trench');
+    await page.goto(trenchUrl.href, { waitUntil: 'networkidle' });
+    const trenchBriefing = await waitForTelemetry(
+      page,
+      (snap) => snap.phase === 'briefing' && snap.level === 'trench' && snap.reactorsRemaining === 3,
+      'trench briefing from ?level=trench',
+    );
+    await page.screenshot({ path: path.join(OUT_DIR, 'trench-01-briefing.png') });
+    await page.keyboard.press('Enter');
+    const trenchMouth = await waitForTelemetry(
+      page,
+      (snap) => snap.phase === 'active' && snap.playerPosition.z < 840,
+      'player inside the trench mouth',
+      null,
+      45_000,
+    );
+    await page.screenshot({ path: path.join(OUT_DIR, 'trench-02-mouth.png') });
+    const trenchGlSignal = await measureWebglSignal(page);
+    assertCondition(
+      trenchGlSignal.nonBlackRatio >= 0.15 && trenchGlSignal.uniqueColors >= 24,
+      `Trench 3D canvas lacks visual signal (${JSON.stringify(trenchGlSignal)})`,
+    );
+    await page.keyboard.down('KeyW');
+    await waitForTelemetry(page, (snap) => snap.throttle >= 0.995, 'trench throttle at 100% detent');
+    await page.keyboard.up('KeyW');
+    await page.keyboard.press('KeyW');
+    await page.keyboard.down('KeyJ');
+    const trenchDeep = await waitForTelemetry(
+      page,
+      (snap) => snap.phase === 'active' && snap.overdrive && snap.playerPosition.z < 470,
+      'overdrive run deep in the spine',
+      null,
+      45_000,
+    );
+    await page.screenshot({ path: path.join(OUT_DIR, 'trench-03-spine-run.png') });
+    await page.keyboard.up('KeyJ');
+    const inside = trenchDeep.playerPosition;
+    assertCondition(
+      trenchDeep.level === 'trench' && Math.abs(inside.x) < 78 && inside.y > -51.5 && inside.y < 51.5,
+      `Player should be flying inside the trench envelope (${JSON.stringify(inside)})`,
+    );
+    // 6. Mission selector: the briefing card swaps sorties on 3 and back on 1, before launch.
+    await page.goto(baseUrl, { waitUntil: 'networkidle' });
+    await waitForTelemetry(page, (snap) => snap.phase === 'briefing' && snap.level === 'saturn', 'default Saturn briefing');
+    await page.keyboard.press('Digit3');
+    await waitForTelemetry(page, (snap) => snap.phase === 'briefing' && snap.level === 'planetary', 'mission 3 selected');
+    await page.screenshot({ path: path.join(OUT_DIR, '06-mission-select.png') });
+    await page.keyboard.press('Digit1');
+    await waitForTelemetry(page, (snap) => snap.level === 'saturn' && snap.enemiesRemaining > 0, 'mission 1 reselected');
+
+    // 7. Planetary sortie, direct boot: canyon, pads and markers, then flak engaging the player.
+    const planetaryUrl = new URL(baseUrl);
+    planetaryUrl.searchParams.set('level', 'planetary');
+    await page.goto(planetaryUrl.href, { waitUntil: 'networkidle' });
+    await waitForTelemetry(page, (snap) => snap.phase === 'briefing' && snap.level === 'planetary', 'planetary briefing');
+    await page.keyboard.press('Enter');
+    const canyonSnap = await waitForTelemetry(
+      page,
+      (snap) => snap.phase === 'active' && snap.tick > 60,
+      'planetary flight under way',
+    );
+    assertCondition(
+      canyonSnap.stage === 'ground_attack' && canyonSnap.enemiesRemaining === 0 && canyonSnap.groundTargetsRemaining === 8,
+      `Planetary stage 1 should open with 8 ground targets and no air (${JSON.stringify(canyonSnap)})`,
+    );
+    assertCondition(canyonSnap.altitude > 40, 'Player should start well above the canyon floor');
+    await page.screenshot({ path: path.join(OUT_DIR, 'planetary-01-canyon.png') });
+    const canyonGlSignal = await measureWebglSignal(page);
+    assertCondition(
+      canyonGlSignal.nonBlackRatio >= 0.15 && canyonGlSignal.uniqueColors >= 24,
+      `Planetary 3D canvas lacks visual signal (${JSON.stringify(canyonGlSignal)})`,
+    );
+    const flakSnap = await waitForTelemetry(page, (snap) => snap.flakBursts > 0, 'flak bursting around the player', null, 180_000);
+    await page.screenshot({ path: path.join(OUT_DIR, 'planetary-02-flak.png') });
+
+    // 8. Stage 2 boot: the air wave dives through the cloud deck over the canyon.
+    planetaryUrl.searchParams.set('stage', 'air');
+    await page.goto(planetaryUrl.href, { waitUntil: 'networkidle' });
+    await waitForTelemetry(page, (snap) => snap.phase === 'briefing' && snap.stage === 'air_superiority', 'planetary stage 2 briefing');
+    await page.keyboard.press('Enter');
+    const airSnap = await waitForTelemetry(
+      page,
+      (snap) => snap.phase === 'active' && snap.enemiesRemaining === 4 && snap.enemyInViewRange !== null && snap.enemyInViewRange < 600,
+      'air wave closing on the player',
+      null,
+      180_000,
+    );
+    await page.screenshot({ path: path.join(OUT_DIR, 'planetary-03-air-wave.png') });
+
     assertCondition(
       await page.evaluate(() => globalThis.__SW_PROFILE__ === undefined),
       'Profiler must stay off without ?profile=1',
@@ -260,6 +351,8 @@ async function run() {
       glSignal: {
         cockpit: cockpitGlSignal,
         overdrive: overdriveGlSignal,
+        trench: trenchGlSignal,
+        canyon: canyonGlSignal,
       },
       screenshots: [
         '01-briefing.png',
@@ -267,6 +360,13 @@ async function run() {
         '03-overheat.png',
         '04-overdrive.png',
         '05-missile-combat.png',
+        'trench-01-briefing.png',
+        'trench-02-mouth.png',
+        'trench-03-spine-run.png',
+        '06-mission-select.png',
+        'planetary-01-canyon.png',
+        'planetary-02-flak.png',
+        'planetary-03-air-wave.png',
       ],
       snapshots: {
         initial,
@@ -276,6 +376,12 @@ async function run() {
         lockSnap,
         homingSnap,
         finalSnap,
+        trenchBriefing,
+        trenchMouth,
+        trenchDeep,
+        canyonSnap,
+        flakSnap,
+        airSnap,
       },
     };
     await fs.writeFile(path.join(OUT_DIR, 'report.json'), JSON.stringify(report, null, 2));

@@ -60,6 +60,8 @@ async function measureSimulation(work) {
       enemies: [],
       friendlyCarrier: world.friendlyCarrier,
       hostileFrigate: world.hostileFrigate,
+      reactors: world.reactors,
+      arena: world.sortie.arena,
       asteroids: [],
       projectiles: [],
       explosions: [],

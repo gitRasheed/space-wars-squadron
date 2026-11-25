@@ -2,14 +2,19 @@ import { createSynthAudio } from './audio/synthAudio';
 import { createInputChannel } from './input/keyboardMouse';
 import { createCockpitHud } from './render/cockpitHud';
 import { createSceneRenderer } from './render/sceneRenderer';
-import { len } from './sim/math';
-import { DEFAULT_SORTIE_SEED, FIXED_DT, type WorldState } from './sim/types';
-import { createInitialWorld, stepFrame } from './sim/world';
+import { dot, forwardOf, len, sub } from './sim/math';
+import { terrainHeightAt } from './sim/planetaryLayout';
+import { DEFAULT_SORTIE_SEED, FIXED_DT, type LevelId, type Vec3, type WorldState } from './sim/types';
+import { createInitialWorld, createLevelConfig, stepFrame } from './sim/world';
 
 interface ReadOnlyTelemetry {
   readonly getSnapshot: () => {
     readonly tick: number;
+    readonly level: LevelId;
     readonly phase: WorldState['phase']['kind'];
+    readonly playerPosition: Vec3;
+    readonly hull: number;
+    readonly reactorsRemaining: number;
     readonly cameraMode: WorldState['cameraMode'];
     readonly speed: number;
     readonly throttle: number;
@@ -27,6 +32,15 @@ interface ReadOnlyTelemetry {
     readonly lockTargetId: string | null;
     readonly playerMissileTargets: readonly (string | null)[];
     readonly wingmateTargetId: string | null;
+    readonly stage: 'ground_attack' | 'air_superiority' | null;
+    readonly groundTargetsRemaining: number;
+    readonly altitude: number;
+    readonly flakInFlight: number;
+    /** Flak bursts since the page loaded. */
+    readonly flakBursts: number;
+    readonly nearestEnemyRange: number | null;
+    /** Range to the nearest air hostile within 30° of the nose, if any. */
+    readonly enemyInViewRange: number | null;
   };
 }
 
@@ -135,7 +149,10 @@ function boot(): void {
   const glCanvas = requireCanvas('gl-canvas');
   const hudCanvas = requireCanvas('hud-canvas');
 
-  let world = createInitialWorld(DEFAULT_SORTIE_SEED, false);
+  const params = new URLSearchParams(window.location.search);
+  const levelParam = params.get('level');
+  const requestedLevel: LevelId = levelParam === 'trench' || levelParam === 'planetary' ? levelParam : 'saturn';
+  let world = createInitialWorld(DEFAULT_SORTIE_SEED, false, createLevelConfig(requestedLevel, { airWave: params.get('stage') === 'air' }));
   const input = createInputChannel(glCanvas, () => world.phase.kind !== 'active');
   const renderer = createSceneRenderer(glCanvas);
   const hud = createCockpitHud(hudCanvas);
@@ -160,7 +177,11 @@ function boot(): void {
   window.__SWS_TELEMETRY__ = {
     getSnapshot: () => ({
       tick: world.tick,
+      level: world.sortie.level,
       phase: world.phase.kind,
+      playerPosition: world.player.position,
+      hull: world.player.hull,
+      reactorsRemaining: world.reactors.filter((r) => r.hull > 0).length,
       cameraMode: world.cameraMode,
       speed: len(world.player.velocity),
       throttle: world.player.throttle,
@@ -170,7 +191,7 @@ function boot(): void {
       shieldCharge: world.player.energy.shieldCharge,
       missilesReady: world.player.missilesReady,
       enemiesRemaining: world.enemies.length,
-      subsystemsRemaining: world.hostileFrigate.subsystems.filter((s) => s.hull > 0).length,
+      subsystemsRemaining: world.hostileFrigate?.subsystems.filter((s) => s.hull > 0).length ?? 0,
       projectilesCount: world.projectiles.length,
       selectedTargetId: world.player.selectedTargetId,
       targetPinned: world.player.targetPinned,
@@ -180,6 +201,22 @@ function boot(): void {
         .filter((p) => p.kind === 'missile' && p.owner === 'player')
         .map((p) => p.targetId),
       wingmateTargetId: world.wingmate.targetId,
+      stage: world.planetary?.stage.kind ?? null,
+      groundTargetsRemaining: world.planetary?.groundTargets.filter((t) => t.hull > 0).length ?? 0,
+      flakInFlight: world.projectiles.filter((p) => p.kind === 'flak').length,
+      flakBursts,
+      nearestEnemyRange: world.enemies.length === 0
+        ? null
+        : Math.min(...world.enemies.map((e) => len(sub(e.position, world.player.position)))),
+      enemyInViewRange: (() => {
+        const nose = forwardOf(world.player.orientation);
+        const ranges = world.enemies
+          .map((e) => sub(e.position, world.player.position))
+          .filter((rel) => dot(rel, nose) > len(rel) * Math.cos((30 * Math.PI) / 180))
+          .map(len);
+        return ranges.length === 0 ? null : Math.min(...ranges);
+      })(),
+      altitude: world.player.position.y - (world.planetary === null ? 0 : terrainHeightAt(world.player.position.x, world.player.position.z)),
     }),
   };
 
@@ -188,6 +225,7 @@ function boot(): void {
     window.__SW_PROFILE__ = { snapshot: profiler.snapshot, reset: profiler.reset };
   }
 
+  let flakBursts = 0;
   let lastFrameMs = performance.now();
   let accumulator = 0;
 
@@ -213,6 +251,7 @@ function boot(): void {
       audio.sync(after);
     });
     world = advanced.world;
+    flakBursts += advanced.frameEvents.filter((event) => event.kind === 'flak_burst').length;
     const frameWorld = { ...world, events: advanced.frameEvents };
 
     const renderStart = profiler === null ? 0 : performance.now();

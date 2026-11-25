@@ -1,3 +1,4 @@
+import { isInsideArena, moveThroughArena } from './arena';
 import { absorbShieldDamage, stepEnergy } from './energy';
 import {
   add,
@@ -18,6 +19,7 @@ import {
   upOf,
 } from './math';
 import type {
+  ArenaSolid,
   AsteroidState,
   CapitalShipState,
   FlightInput,
@@ -44,6 +46,12 @@ export const FLIGHT_TUNING = {
   asteroidClearanceMargin: 10,
   collisionDamagePerSpeed: 0.32,
   arenaRadius: 2600,
+  /** Hull-to-surface standoff against level geometry; keeps the cockpit camera clear of wall faces. */
+  arenaHullPad: 6,
+  /** Fraction of closing speed a wall throws back, and the least it leaves pointing away. */
+  wallRestitution: 0.35,
+  wallMinSeparation: 6,
+  wallWarningRange: 14,
 } as const;
 
 export interface FlightStepResult {
@@ -139,6 +147,7 @@ export function stepPlayerFlight(
   input: FlightInput,
   capitalShips: readonly CapitalShipState[],
   asteroids: readonly AsteroidState[],
+  arena: readonly ArenaSolid[],
   dt: number,
 ): FlightStepResult {
   // High-watermark throttle detent: holding W climbs smoothly to 100% and stops;
@@ -206,8 +215,22 @@ export function stepPlayerFlight(
     clamp(FLIGHT_TUNING.velocityResponse * dt, 0, 1),
   );
 
-  const rawPosition = add(player.position, scale(nextVelocity, dt));
-  const clearance = resolveObstacleClearance(rawPosition, nextVelocity, capitalShips, asteroids);
+  // Level geometry is swept, so no speed can carry the hull through a wall or rib.
+  const wallMove = moveThroughArena(
+    player.position,
+    add(player.position, scale(nextVelocity, dt)),
+    nextVelocity,
+    arena,
+    FLIGHT_TUNING.arenaHullPad,
+    FLIGHT_TUNING.wallRestitution,
+    FLIGHT_TUNING.wallMinSeparation,
+  );
+  if (wallMove.contactPoint !== null) {
+    events.push({ kind: 'wall_scrape', position: wallMove.contactPoint });
+  }
+  const clearance = resolveObstacleClearance(wallMove.position, wallMove.velocity, capitalShips, asteroids);
+  const nearWall =
+    arena.length > 0 && isInsideArena(clearance.position, arena, FLIGHT_TUNING.arenaHullPad + FLIGHT_TUNING.wallWarningRange);
   const clampedDistance = len(clearance.position);
   let arenaPosition = clearance.position;
   let arenaVelocity = clearance.velocity;
@@ -228,17 +251,18 @@ export function stepPlayerFlight(
     angularVelocity,
     throttle,
     energy,
-    proximityWarning: clearance.warning,
+    proximityWarning: clearance.warning || nearWall,
     hitFlash: Math.max(0, player.hitFlash - dt * 2.5),
     recoilKick: Math.max(0, player.recoilKick - dt * 6.5),
     recoilLeft: Math.max(0, player.recoilLeft - dt * 7.5),
     recoilRight: Math.max(0, player.recoilRight - dt * 7.5),
   };
-  if (clearance.impactSpeed <= 22) {
+  const impactSpeed = Math.max(clearance.impactSpeed, wallMove.impactSpeed);
+  if (impactSpeed <= 22) {
     return { player: flown, events };
   }
   events.push({ kind: 'player_damaged' });
-  const collisionDamage = (clearance.impactSpeed - 20) * FLIGHT_TUNING.collisionDamagePerSpeed;
+  const collisionDamage = (impactSpeed - 20) * FLIGHT_TUNING.collisionDamagePerSpeed;
   return { player: damagePlayer(flown, collisionDamage), events };
 }
 
