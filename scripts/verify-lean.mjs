@@ -16,6 +16,7 @@ const FORBIDDEN = [
   ['admit', /\badmit\b/],
   ['axiom', /\baxiom\b/],
   ['native_decide', /\bnative_decide\b/],
+  ['decide +native', /\+\s*native\b/],
   ['implemented_by', /\bimplemented_by\b/],
   ['extern', /\bextern\b/],
   ['unsafe', /\bunsafe\b/],
@@ -49,11 +50,38 @@ const REQUIRED = [
   'SpaceWars.HeatEconomy.inv_overheat_no_fire',
   'SpaceWars.HeatEconomy.inv_mutual_exclusion',
   'SpaceWars.HeatEconomy.overheat_terminates',
+  'SpaceWars.HeatEconomy.overheat_terminates_of_le_max',
   'SpaceWars.Counterexamples.end_of_tick_incomplete',
   'SpaceWars.Counterexamples.unclamped_unsound',
   'SpaceWars.Counterexamples.static_ship_breaks_disjointness',
   'SpaceWars.Counterexamples.unclamped_breaks_inv_bounds',
 ];
+
+// Lean heat constants (hundredths of a percent per 60 Hz tick) against the game tuning they model.
+const PER_TICK = 100 / 60;
+const PINNED = [
+  ['shotHeat', 'energy.ts', 'primaryShotCost', 100],
+  ['coolRate', 'energy.ts', 'weaponRechargePerSecond', PER_TICK],
+  ['overheatCoolRate', 'energy.ts', 'overheatCooldownPerSecond', PER_TICK],
+  ['minOverdrive', 'energy.ts', 'minOverdriveShield', 100],
+  ['overdriveDrain', 'energy.ts', 'overdriveShieldDrainPerSecond', PER_TICK],
+  ['ventHeat', 'combat.ts', 'nearMissHeatVent', 100],
+  ['nearMissShield', 'combat.ts', 'nearMissShieldRestore', 100],
+  ['surgeShield', 'combat.ts', 'shieldSurge', 100],
+];
+
+function checkPinnedConstants() {
+  const lean = readFileSync(join(proofDir, 'HeatEconomy.lean'), 'utf8');
+  const simDir = fileURLToPath(new URL('../src/sim/', import.meta.url));
+  for (const [leanName, file, tsName, scale] of PINNED) {
+    const leanValue = lean.match(new RegExp(`^def ${leanName} : Int := (-?\\d+)$`, 'm'))?.[1];
+    const tsValue = readFileSync(join(simDir, file), 'utf8').match(new RegExp(`\\b${tsName}:\\s*(-?[\\d.]+)`))?.[1];
+    if (leanValue === undefined || tsValue === undefined) fail(`cannot read ${leanName} or ${file}:${tsName}`);
+    if (Math.abs(Number(tsValue) * scale - Number(leanValue)) > 1e-9) {
+      fail(`${leanName} = ${leanValue} but ${file}:${tsName} = ${tsValue} gives ${Number(tsValue) * scale}`);
+    }
+  }
+}
 
 function run(cmd, args, options = {}) {
   const result = spawnSync(cmd, args, { cwd: root, env, encoding: 'utf8', maxBuffer: 64 << 20, ...options });
@@ -72,7 +100,12 @@ function scan(source) {
 }
 
 function selfTestScanner() {
-  const seeded = ['theorem t : 1 = 2 := by sorry', 'axiom bad : False', 'example : 1 = 1 := by native_decide'];
+  const seeded = [
+    'theorem t : 1 = 2 := by sorry',
+    'axiom bad : False',
+    'example : 1 = 1 := by native_decide',
+    'example : 1 = 1 := by decide +native',
+  ];
   for (const line of seeded) {
     if (scan(line).length === 0) fail(`scanner missed seeded construct: ${line}`);
   }
@@ -101,6 +134,10 @@ for (const file of sources) {
   for (const match of text.matchAll(/^(?:private\s+)?theorem\s+(\S+)/gm)) sourceTheorems.push(match[1]);
 }
 console.log(`   ${sources.length} files clean`);
+
+console.log('== heat constants pinned to src/sim');
+checkPinnedConstants();
+console.log(`   ${PINNED.length} constants match`);
 
 console.log('== #print axioms audit');
 const audit = run('lake', ['env', 'lean', 'audit/Axioms.lean']);

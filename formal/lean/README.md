@@ -1,6 +1,6 @@
 # Lean 4 proofs of the game kernels
 
-Pure Lean 4.36.0, no Mathlib, no dependencies. A clean `lake build` takes about 5 s.
+Pure Lean 4.36.0 with no Mathlib and no dependencies. A cold `lake build` takes 3.2-3.5 s, and the whole script about 11 s.
 
 ```
 node scripts/verify-lean.mjs
@@ -9,18 +9,21 @@ node scripts/verify-lean.mjs
 The script runs every gate and exits non-zero if any of them fails:
 
 1. `lake build` must exit 0, and its output must not contain `sorry` or `error`. A `sorry` alone still exits 0.
-2. A raw-source scan of `SpaceWars.lean` and `SpaceWars/*.lean` rejects `sorry`, `sorryAx`, `admit`, `axiom`, `native_decide`, `implemented_by`, `extern`, `unsafe`, `partial`, `opaque`, `ofReduceBool`, `debug.*` options, meta commands and `import Lean`. The scan includes comments. On startup the scanner tests itself against seeded lines.
+2. A raw-source scan of `SpaceWars.lean` and `SpaceWars/*.lean` rejects `sorry`, `sorryAx`, `admit`, `axiom`, `native_decide`, `decide +native`, `implemented_by`, `extern`, `unsafe`, `partial`, `opaque`, `ofReduceBool`, `debug.*` options, meta commands and `import Lean`. The scan includes comments. On startup the scanner tests itself against seeded lines.
 3. `audit/Axioms.lean` walks every constant defined in a `SpaceWars.*` module, including the auto-generated ones, and prints the axioms each one depends on, as `#print axioms` would. Any axiom outside `{propext, Classical.choice, Quot.sound}` fails the gate, and so do any `axiom` or `opaque` declaration, a theorem that is in the source but missing from the environment, and a theorem from the required list that is missing.
-4. `lake env leanchecker <module>` replays each module through the kernel.
-5. Negative control: `audit/KernelNegativeControl.lean` uses `debug.skipKernelTC` to add a forged proof of `1 = 2`. The script compiles it into a temp dir and requires leanchecker to reject it. `#print axioms` sees no axioms in that forgery, so only the replay catches it.
+4. The script checks that the heat constants in `HeatEconomy.lean` still match `ENERGY_RULES` and `COMBAT_TUNING` in `src/sim`.
+5. `lake env leanchecker <module>` replays each `SpaceWars/*.lean` module through the kernel, one process per module, because leanchecker 4.36 replays a module prefix in parallel tasks and segfaults about one run in five. The root `SpaceWars` module only re-exports the others, so it is not replayed on its own. Imported core oleans are trusted (`--fresh` replays them too but takes about 60 s).
+6. Negative control: `audit/KernelNegativeControl.lean` uses `debug.skipKernelTC` to add a forged proof of `1 = 2`. The script compiles it into a temp dir and requires leanchecker to reject it. `#print axioms` sees no axioms in that forgery, so only the replay catches it.
 
-The `audit/` files sit outside `SpaceWars/` and nothing imports them.
+The `audit/` files sit outside `SpaceWars/` and nothing imports them. Each gate has been seen to fail: a seeded `sorry`, `axiom` or `native_decide` trips the scan, `decide +native` (before the scan learned it) tripped the axiom audit, unclamping `tStar` or the vent breaks the build, and a drifted constant trips the pin check.
 
 ## What is proved
 
-All quantities are exact rationals or integers. The game runs the same formulas on doubles, and these proofs don't cover float rounding.
+All quantities are exact rationals or integers. The game computes on doubles, and these proofs don't cover float rounding.
 
 ### `SweptHit.lean`: relative-motion swept sphere test
+
+This is the specified kernel. HEAD's `combat.ts` sweeps the bolt against the ship's post-move position only, and its near miss also requires `0 < t < 1`.
 
 Over one tick the bolt-minus-ship offset is `rel(t) = d0 + t • dv`, `t ∈ [0, 1]` (`rel_is_relative_motion`). The kernel evaluates `|rel|²` once, at `tStar = clamp01(-(d0·dv) / |dv|²)`, with `tStar = 0` when `dv = 0`.
 
@@ -49,7 +52,7 @@ This is an integer model at ×100, one action per 60 Hz tick. Heat is `100 - wea
 - `inv_overheat_no_fire`: firing while overheated is a no-op. `fire_adds_heat` shows a shot otherwise always adds heat.
 - `inv_hot_zone_disjoint` is true by definition, because `inHotZone` already requires `overheated = false`. `hot_zone_fire_stays_hot` carries the real content: a shot from the hot zone either stays in the hot zone or trips the lockout at exactly 100%.
 - `inv_mutual_exclusion`: recharge and overdrive never overlap, and overdrive implies `shield > 0`.
-- `overheat_terminates`: from any reachable overheated state, exactly `⌈heat / 25⌉ ≤ 400` lockout ticks unlock the gun at 0 heat, and every earlier tick is still locked.
+- `overheat_terminates_of_le_max`: from any overheated state with heat at most 100%, reachable or not, at most `⌈10000 / 25⌉ = 400` lockout ticks unlock the gun at 0 heat, and every earlier tick is still locked. With positive heat it takes exactly `⌈heat / 25⌉` ticks. `overheat_terminates` is the same statement for reachable states.
 
 `witness_*` theorems show that each mode is reachable, so the invariants aren't vacuous.
 
@@ -57,6 +60,6 @@ This is an integer model at ×100, one action per 60 Hz tick. Heat is `100 - wea
 
 - `end_of_tick_tunnels`, `end_of_tick_incomplete`: an end-of-tick point test misses a bolt that crosses the centre at `t = 1/2`.
 - `unclamped_unsound`: an unclamped closest approach reports a hit whose minimum lies before the tick.
-- `static_ship_misclassifies_hit`, `static_ship_breaks_disjointness`: sweeping against the ship's start position calls a real hit a near miss. That is the moving-ship bug.
+- `static_ship_misclassifies_hit`, `static_ship_breaks_disjointness`: sweeping against the ship's post-move position, as HEAD does, calls a real hit a near miss. The counterexample is at unit scale, with the ship moving 4 units in one tick. I haven't checked whether game speeds and radii reach it.
 - `naive_aim_not_exact`: aiming at the current position ignores target motion.
-- `unclamped_vent_negative_heat`, `unclamped_shield_overflow`, `unclamped_breaks_inv_bounds`: an unclamped near-miss reward reaches -2.5% heat or a 106% shield from `init`.
+- `unclamped_vent_negative_heat`, `unclamped_shield_overflow`, `unclamped_breaks_inv_bounds`: an unclamped near-miss reward breaks the `inv_bounds` conclusion from `init`, reaching -2.5% heat or a 106% shield. `real_step_bounded` shows the real step keeps the same bounds on every trace.

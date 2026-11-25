@@ -3,6 +3,9 @@ import SpaceWars.Vec3
 /-!
 # Relative-motion swept segment-vs-sphere test
 
+This is the specified kernel, not the one at HEAD: `combat.ts` sweeps the bolt against the ship's
+post-move position only (see `Counterexamples.static_ship_misclassifies_hit`).
+
 Over one tick the bolt moves `pb(t) = pb0 + t • vb` and the ship moves `ps(t) = ps0 + t • vs`,
 `t ∈ [0, 1]`. Their offset is `rel(t) = d0 + t • dv` with `d0 = pb0 - ps0`, `dv = vb - vs`.
 The kernel evaluates `|rel|²` once, at the clamped closest-approach time `tStar`, and these

@@ -21,9 +21,10 @@ def endOfTickHit (d0 dv : Vec3) (r : Rat) : Bool := decide (normSq (rel d0 dv 1)
 def unclampedHit (d0 dv : Vec3) (r : Rat) : Bool :=
   decide (normSq (rel d0 dv (-(dot d0 dv) / normSq dv)) ≤ r * r)
 
-/-- Mutant: sweep the bolt against the ship's start position, ignoring ship motion. -/
-def staticShipNearMiss (pb0 vb ps0 _vs : Vec3) (rHit rGraze : Rat) : Bool :=
-  nearMiss (sub pb0 ps0) vb rHit rGraze
+/-- Mutant, as at HEAD in `combat.ts`: sweep the bolt against one fixed ship position, the
+post-move one, ignoring how the ship moved during the tick. -/
+def staticShipNearMiss (pb0 vb psEnd : Vec3) (rHit rGraze : Rat) : Bool :=
+  nearMiss (sub pb0 psEnd) vb rHit rGraze
 
 /-- A bolt crossing the centre at `t = 1/2` tunnels through an end-of-tick point test. -/
 theorem end_of_tick_tunnels :
@@ -53,28 +54,32 @@ theorem unclamped_unsound : ¬ Sound unclampedHit := by
   simp only [rel, along, normSq, dot, add, smul] at hin
   grind
 
-/-- Astra's moving-ship bug: the bolt and the ship meet at `t = 1/2`, yet sweeping the bolt
-against the ship's start position calls it a near miss. -/
+/-- Astra's moving-ship bug, at unit scale: the bolt runs from `(-2, 2, 0)` to `(2, 2, 0)` while
+the ship moves from the origin to `(0, 4, 0)`, and they meet at `t = 1/2`. Sweeping the bolt
+against the ship's post-move position calls it a near miss. -/
 theorem static_ship_misclassifies_hit :
-    staticShipNearMiss ⟨-2, 2, 0⟩ ⟨4, 0, 0⟩ ⟨0, 0, 0⟩ ⟨0, 4, 0⟩ 1 3 = true ∧
+    staticShipNearMiss ⟨-2, 2, 0⟩ ⟨4, 0, 0⟩ ⟨0, 4, 0⟩ 1 3 = true ∧
       sweptHit (sub ⟨-2, 2, 0⟩ ⟨0, 0, 0⟩) (sub ⟨4, 0, 0⟩ ⟨0, 4, 0⟩) 1 = true := by
   refine ⟨?_, sweptHit_complete _ _ _ ⟨1/2, ⟨by grind, by grind⟩, ?_⟩⟩
-  · have hd : sub ⟨-2, 2, 0⟩ ⟨0, 0, 0⟩ = (⟨-2, 2, 0⟩ : Vec3) := by
-      simp only [sub, Vec3.mk.injEq]; grind
-    unfold staticShipNearMiss
-    rw [hd]
-    exact witness_nearMiss
+  · have hmin : missSq (sub ⟨-2, 2, 0⟩ ⟨0, 4, 0⟩) ⟨4, 0, 0⟩ = 4 := by
+      simp only [missSq, tStar, clamp01, rel, along, normSq, dot, add, smul, sub]
+      grind
+    unfold staticShipNearMiss nearMiss
+    rw [hmin]
+    exact decide_eq_true (by grind)
   · simp only [rel, along, normSq, dot, add, smul, sub]; grind
 
 /-- The static kernel breaks the disjointness theorem the relative kernel satisfies. -/
 theorem static_ship_breaks_disjointness :
     ¬ ∀ pb0 vb ps0 vs rHit rGraze,
       (∃ t, InUnit t ∧ normSq (rel (sub pb0 ps0) (sub vb vs) t) ≤ rHit * rHit) →
-        staticShipNearMiss pb0 vb ps0 vs rHit rGraze = false := by
+        staticShipNearMiss pb0 vb (along ps0 vs 1) rHit rGraze = false := by
   intro h
+  have hend : along ⟨0, 0, 0⟩ ⟨0, 4, 0⟩ 1 = (⟨0, 4, 0⟩ : Vec3) := by
+    simp only [along, add, smul, Vec3.mk.injEq]; grind
   have := h ⟨-2, 2, 0⟩ ⟨4, 0, 0⟩ ⟨0, 0, 0⟩ ⟨0, 4, 0⟩ 1 3
     (sweptHit_sound _ _ _ static_ship_misclassifies_hit.2)
-  rw [static_ship_misclassifies_hit.1] at this
+  rw [hend, static_ship_misclassifies_hit.1] at this
   contradiction
 
 /-! ## Lead intercept -/
@@ -98,24 +103,32 @@ def stepUnclamped (s : S) : Action → S
 open HeatEconomy in
 def runUnclamped (s : S) (acts : List Action) : S := acts.foldl stepUnclamped s
 
+/-- The conclusion of `HeatEconomy.inv_bounds`. -/
+def Bounded (s : HeatEconomy.S) : Prop :=
+  0 ≤ s.heat ∧ s.heat ≤ 10000 ∧ 0 ≤ s.shield ∧ s.shield ≤ 10000
+
 open HeatEconomy in
 /-- One shot then an unclamped vent drives heat to -2.5%. -/
 theorem unclamped_vent_negative_heat :
     (runUnclamped init [.fireShot, .nearMissHeatVent]).heat = -250 ∧
-      ¬ HeatEconomy.Inv (runUnclamped init [.fireShot, .nearMissHeatVent]) := by
-  unfold HeatEconomy.Inv; decide
+      ¬ Bounded (runUnclamped init [.fireShot, .nearMissHeatVent]) := by
+  unfold Bounded; decide
 
 open HeatEconomy in
 /-- A near miss at full shields and zero heat overfills the shield to 106%. -/
 theorem unclamped_shield_overflow :
     (runUnclamped init [.nearMissHeatVent]).shield = 10600 ∧
-      ¬ HeatEconomy.Inv (runUnclamped init [.nearMissHeatVent]) := by
-  unfold HeatEconomy.Inv; decide
+      ¬ Bounded (runUnclamped init [.nearMissHeatVent]) := by
+  unfold Bounded; decide
 
 open HeatEconomy in
-/-- The mutant's step does not preserve the invariant the real step preserves (`inv_step`). -/
-theorem unclamped_breaks_inv_bounds : ¬ ∀ s a, HeatEconomy.Inv s → HeatEconomy.Inv (stepUnclamped s a) := by
-  intro h
-  exact unclamped_shield_overflow.2 (h init .nearMissHeatVent inv_init)
+/-- The mutant fails the trace property `trace_inv` and `inv_bounds` give the real step. -/
+theorem unclamped_breaks_inv_bounds : ¬ ∀ acts, Bounded (runUnclamped init acts) :=
+  fun h => unclamped_shield_overflow.2 (h _)
+
+/-- The real step satisfies the same `Bounded` on every trace. -/
+theorem real_step_bounded (acts : List HeatEconomy.Action) :
+    Bounded (HeatEconomy.run HeatEconomy.init acts) :=
+  HeatEconomy.inv_bounds (HeatEconomy.reachable_run .init acts)
 
 end SpaceWars.Counterexamples

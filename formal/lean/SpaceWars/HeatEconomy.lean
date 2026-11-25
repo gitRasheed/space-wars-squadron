@@ -267,22 +267,35 @@ theorem ticks_still_locked (k : Nat) (s : S) (ho : s.overheated = true)
     simp [step, ho] at hk ⊢
     omega
 
-/-- From any reachable overheated state the lockout ends after exactly `⌈heat / 25⌉ ≤ 400`
-lockout ticks, at zero heat, and not one tick earlier. -/
-theorem overheat_terminates {s : S} (h : Reachable s) (ho : s.overheated = true) :
+/-- From any overheated state with heat at most 100%, reachable or not, the lockout ends at zero
+heat within `⌈heatMax / 25⌉ = 400` lockout ticks, and every earlier tick is still locked. With
+positive heat it takes exactly `⌈heat / 25⌉` ticks. -/
+theorem overheat_terminates_of_le_max (s : S) (ho : s.overheated = true) (hle : s.heat ≤ heatMax) :
     ∃ k : Nat, (k : Int) ≤ overheatTickBound ∧
       (ticks k s).overheated = false ∧ (ticks k s).heat = 0 ∧
       ∀ j < k, (ticks j s).overheated = true := by
-  have hinv := reachable_inv h
-  simp only [Inv, heatMax_eq] at hinv
-  have hpos := hinv.2.2.2.2.1 ho
-  have hle := hinv.2.1
-  refine ⟨((s.heat + 24) / 25).toNat, ?_, ?_, ?_, ?_⟩
-  · rw [overheatTickBound_eq]; omega
-  · exact (ticks_unlock _ s ho hpos (by rw [overheatCoolRate_eq]; omega)).1
-  · exact (ticks_unlock _ s ho hpos (by rw [overheatCoolRate_eq]; omega)).2
-  · intro j hj
-    exact (ticks_still_locked j s ho (by rw [overheatCoolRate_eq]; omega)).1
+  rw [heatMax_eq] at hle
+  by_cases hpos : 0 < s.heat
+  · refine ⟨((s.heat + 24) / 25).toNat, ?_, ?_, ?_, ?_⟩
+    · rw [overheatTickBound_eq]; omega
+    · exact (ticks_unlock _ s ho hpos (by rw [overheatCoolRate_eq]; omega)).1
+    · exact (ticks_unlock _ s ho hpos (by rw [overheatCoolRate_eq]; omega)).2
+    · intro j hj
+      exact (ticks_still_locked j s ho (by rw [overheatCoolRate_eq]; omega)).1
+  · refine ⟨1, by rw [overheatTickBound_eq]; omega, ?_, ?_, ?_⟩
+    · simp [ticks, step, ho]; omega
+    · simp [ticks, step, ho]; omega
+    · intro j hj
+      have : j = 0 := by omega
+      subst this
+      exact ho
+
+/-- The same bound for every overheated state reachable from `init`. -/
+theorem overheat_terminates {s : S} (h : Reachable s) (ho : s.overheated = true) :
+    ∃ k : Nat, (k : Int) ≤ overheatTickBound ∧
+      (ticks k s).overheated = false ∧ (ticks k s).heat = 0 ∧
+      ∀ j < k, (ticks j s).overheated = true :=
+  overheat_terminates_of_le_max s ho (reachable_inv h).2.1
 
 /-! Non-vacuity: every mode the theorems talk about is reachable from `init`. -/
 

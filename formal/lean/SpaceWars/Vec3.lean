@@ -1,7 +1,6 @@
 /-!
-Exact rational 3-vectors shared by the swept-hit and lead-intercept kernels.
-`src/sim/math.ts` runs the same formulas on IEEE doubles; these proofs cover the exact arithmetic
-the float code approximates, not float rounding.
+Exact rational 3-vectors shared by the swept-hit and lead-intercept kernels. The game computes on
+IEEE doubles; these proofs cover exact arithmetic, not float rounding.
 -/
 
 namespace SpaceWars
