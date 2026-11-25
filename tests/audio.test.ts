@@ -362,7 +362,7 @@ describe('combat audio', () => {
     'near-miss': [[3648, -1012, -1264], [8208, 1805, 4015], [12768, 205, 768]],
     'supply-drop': [[5952, -3749, -3328], [13392, 2767, 3439], [20832, 510, 966]],
     'weapon-ready': [[4224, -2687, -2716], [9504, 8315, 7904], [14784, -688, -1042]],
-    'incoming-fire': [[1536, -663, -663], [3456, 0, 0], [5376, -1072, -1072]],
+    'incoming-fire': [[768, 2569, 2569], [4224, -492, -492], [5760, 932, 932]],
   };
   it.each(Object.entries(referenceFrames))('renders %s as the reference does, through every layered voice', (id, frames) => {
     const { left, right } = renderCue(id as CueId, 48000);

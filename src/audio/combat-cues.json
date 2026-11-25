@@ -1532,7 +1532,7 @@
     "sampleRate": 48000,
     "channels": 2,
     "durationS": 0.16,
-    "masterGainDb": -9,
+    "masterGainDb": -7.5,
     "voices": [
       {
         "id": "tick",
