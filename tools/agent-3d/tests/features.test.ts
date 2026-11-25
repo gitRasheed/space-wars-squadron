@@ -5,11 +5,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import zlib from 'node:zlib';
 import { Document, getBounds, NodeIO } from '@gltf-transform/core';
 import { listBatchAssets } from '../src/cli.js';
 import {
   classifyGpuProbe,
   evaluateAssetGates,
+  hexSrgbToLinearRgb,
+  linearRgbToHexSrgb,
   runAssetSession,
   runGpuProbe,
   WEBGPU_SWIFTSHADER_FLAGS,
@@ -48,6 +51,43 @@ function pngSize(file: string): { readonly width: number; readonly height: numbe
   return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
 }
 
+// Decodes the 8-bit RGB/RGBA non-interlaced PNGs Chromium's canvas writes; returns one gray byte per pixel (red channel).
+function pngRed(file: string): { readonly width: number; readonly height: number; readonly red: Uint8Array } {
+  const bytes = fs.readFileSync(file);
+  const { width, height } = pngSize(file);
+  const [depth, colorType, interlace] = [bytes[24], bytes[25], bytes[28]];
+  assert.ok(depth === 8 && (colorType === 2 || colorType === 6) && interlace === 0, `unsupported PNG ${file}`);
+  const bpp = colorType === 6 ? 4 : 3;
+  const idat: Buffer[] = [];
+  for (let o = 8; o < bytes.length;) {
+    const len = bytes.readUInt32BE(o);
+    if (bytes.toString('latin1', o + 4, o + 8) === 'IDAT') idat.push(bytes.subarray(o + 8, o + 8 + len));
+    o += 12 + len;
+  }
+  const raw = zlib.inflateSync(Buffer.concat(idat));
+  const stride = width * bpp;
+  const prev = new Uint8Array(stride);
+  const cur = new Uint8Array(stride);
+  const red = new Uint8Array(width * height);
+  for (let y = 0; y < height; y += 1) {
+    const base = y * (stride + 1);
+    const filter = raw[base]!;
+    for (let i = 0; i < stride; i += 1) {
+      const x = raw[base + 1 + i]!;
+      const a = i >= bpp ? cur[i - bpp]! : 0;
+      const b = prev[i]!;
+      const c = i >= bpp ? prev[i - bpp]! : 0;
+      const p = a + b - c;
+      const pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
+      const paeth = pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+      cur[i] = (x + [0, a, b, (a + b) >> 1, paeth][filter]!) & 0xff;
+    }
+    for (let x = 0; x < width; x += 1) red[y * width + x] = cur[x * bpp]!;
+    prev.set(cur);
+  }
+  return { width, height, red };
+}
+
 const box = factory('box.mjs', `return new THREE.Mesh(new THREE.BoxGeometry(1, 0.6, 2),
   new THREE.MeshStandardMaterial({ color: 0xcc8844 }));`);
 
@@ -57,7 +97,7 @@ describe('turntable capture flags', () => {
     const result = cli('turntable', box, '--out', out, '--tile-size', '160x120', '--save-views');
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const report = JSON.parse(result.stdout) as TurntableReport;
-    assert.deepEqual(report.capture, { tileWidth: 160, tileHeight: 120, zoom: 1, lighting: 'studio' });
+    assert.deepEqual(report.capture, { tileWidth: 160, tileHeight: 120, zoom: 1, zoomOrtho: false, lighting: 'studio' });
     assert.equal(report.viewPaths.length, 9);
     for (const view of report.views) {
       const file = path.join(out, `${view.id}.png`);
@@ -75,17 +115,84 @@ describe('turntable capture flags', () => {
     assert.deepEqual(fs.readdirSync(out).sort(), ['contact-sheet.png', 'report.json']);
   });
 
-  it('zooms the framing in and downgrades edge clipping to info', () => {
+  it('zooms only the perspective views by default, so ortho silhouettes stay whole', () => {
     const base = JSON.parse(cli('turntable', box, '--out', path.join(dir, 'z1'), '--tile-size', '128x96').stdout) as TurntableReport;
     const result = cli('turntable', box, '--out', path.join(dir, 'z4'), '--tile-size', '128x96', '--zoom', '4');
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const zoomed = JSON.parse(result.stdout) as TurntableReport;
+    assert.equal(zoomed.capture.zoomOrtho, false);
     for (const [i, view] of zoomed.views.entries()) {
-      assert.ok(view.coverageRatio > base.views[i]!.coverageRatio, `${view.id} did not zoom in`);
+      const before = base.views[i]!;
+      if (view.ortho) {
+        assert.equal(view.zoom, 1);
+        assert.equal(view.coverageRatio, before.coverageRatio, `${view.id} changed framing`);
+        assert.equal(view.edgeClipped, false, `${view.id} clipped`);
+      } else {
+        assert.equal(view.zoom, 4);
+        assert.ok(view.coverageRatio > before.coverageRatio, `${view.id} did not zoom in`);
+      }
     }
     const clipped = zoomed.findings.filter((f) => f.id === 'VIEW_EDGE_CLIPPED');
     assert.ok(clipped.length > 0);
-    assert.ok(clipped.every((f) => f.severity === 'info'));
+    assert.ok(clipped.every((f) => f.severity === 'info' && !f.message.includes("'ortho-")));
+  });
+
+  it('zooms the ortho views too with --zoom-ortho', () => {
+    const base = JSON.parse(cli('turntable', box, '--out', path.join(dir, 'zo1'), '--tile-size', '128x96').stdout) as TurntableReport;
+    const result = cli('turntable', box, '--out', path.join(dir, 'zo4'), '--tile-size', '128x96', '--zoom', '4', '--zoom-ortho');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const zoomed = JSON.parse(result.stdout) as TurntableReport;
+    assert.equal(zoomed.capture.zoomOrtho, true);
+    for (const [i, view] of zoomed.views.entries()) {
+      assert.equal(view.zoom, 4);
+      assert.ok(view.coverageRatio > base.views[i]!.coverageRatio, `${view.id} did not zoom in`);
+    }
+    assert.ok(zoomed.findings.some((f) => f.id === 'VIEW_EDGE_CLIPPED' && f.severity === 'info' && f.message.includes("'ortho-")));
+  });
+
+  it('fails an unzoomed ortho view that clips even when --zoom is set', () => {
+    const views = [
+      { id: 'persp-front', ortho: false, zoom: 2, coverageRatio: 0.5, edgeClipped: true, beautyUniqueColors: 9 },
+      { id: 'ortho-top', ortho: true, zoom: 1, coverageRatio: 0.5, edgeClipped: true, beautyUniqueColors: 9 },
+    ];
+    const metrics = (JSON.parse(cli('check', box).stdout) as Check3DReport).metrics;
+    const clipped = evaluateAssetGates(metrics, null, views).findings.filter((f) => f.id === 'VIEW_EDGE_CLIPPED');
+    assert.deepEqual(clipped.map((f) => f.severity), ['info', 'fail']);
+  });
+
+  it('writes a black-on-white ortho-top and ortho-front silhouette sheet with --black-fill', () => {
+    // A cone points up, so a vertical flip of the front mask would put its wide base on top.
+    const cone = factory('cone.mjs', `return new THREE.Mesh(new THREE.ConeGeometry(0.5, 2, 24),
+      new THREE.MeshStandardMaterial({ color: 0xcc8844 }));`);
+    const out = path.join(dir, 'black-fill');
+    const result = cli('turntable', cone, '--out', out, '--tile-size', '160x120', '--zoom', '1.4', '--black-fill');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const report = JSON.parse(result.stdout) as TurntableReport;
+    assert.equal(report.silhouetteSheetPath, path.join(out, 'silhouette-sheet.png'));
+    const { width, height, red } = pngRed(path.join(out, 'silhouette-sheet.png'));
+    assert.deepEqual([width, height], [2 * 160, 26 + 120]);
+    for (const [col, id] of ['ortho-top', 'ortho-front'].entries()) {
+      let black = 0;
+      let topBlack = 0;
+      let bottomBlack = 0;
+      for (let y = 0; y < 120; y += 1) {
+        for (let x = 0; x < 160; x += 1) {
+          const v = red[(26 + y) * width + col * 160 + x]!;
+          assert.ok(v === 0 || v === 255, `${id} has gray pixel ${v}`);
+          if (v === 0) {
+            black += 1;
+            if (y < 40) topBlack += 1;
+            if (y >= 80) bottomBlack += 1;
+          }
+        }
+      }
+      const view = report.views.find((v) => v.id === id)!;
+      assert.equal(black, Math.round(view.coverageRatio * 160 * 120), `${id} mask disagrees with coverage`);
+      if (id === 'ortho-front') assert.ok(bottomBlack > topBlack * 2, `${id} looks flipped (${topBlack} top vs ${bottomBlack} bottom)`);
+    }
+    const plain = JSON.parse(cli('turntable', cone, '--out', path.join(dir, 'no-black-fill'), '--tile-size', '96x72').stdout) as TurntableReport;
+    assert.equal(plain.silhouetteSheetPath, null);
+    assert.equal(fs.existsSync(path.join(dir, 'no-black-fill', 'silhouette-sheet.png')), false);
   });
 
   it('renders every lighting preset without a flat beauty tile and with distinct pixels', () => {
@@ -183,6 +290,75 @@ describe('palette sampling', () => {
     const evaluated = evaluateAssetGates(session.metrics, card);
     assert.equal(evaluated.ok, true);
     assert.ok(evaluated.findings.some((f) => f.id === 'PALETTE_UNASSESSED_SHADER'));
+  });
+
+  const celShader = (albedo: string, extra = '') => `new THREE.ShaderMaterial({
+    uniforms: {
+      uAlbedo: { value: new THREE.Color(${albedo}) },
+      uEmissive: { value: new THREE.Color(0x200000) },
+      uEmissiveIntensity: { value: 0.5 },
+      uBandBase: { value: new THREE.Vector3(9, 9, 9) },
+      ${extra}
+    },
+    vertexShader: 'void main() { gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: 'uniform vec3 uAlbedo; void main() { gl_FragColor = vec4(uAlbedo, 1.0); }',
+  })`;
+  const hullCard = fixture('hull-card.json', JSON.stringify({
+    id: 'hull', palette: { 'ivory-hull': '#ede6d5', 'obsidian-hull': '#232838' }, paletteDeltaE76Max: 3,
+  }));
+
+  it('scores a ShaderMaterial uAlbedo plus uEmissive times uEmissiveIntensity', async () => {
+    const asset = factory('cel-hull.mjs', `return new THREE.Mesh(new THREE.BoxGeometry(), ${celShader('0xede6d5')});`);
+    const result = cli('check', asset, '--card', hullCard);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const palette = (JSON.parse(result.stdout) as Check3DReport).metrics.palette;
+    assert.deepEqual([palette.status, palette.assessedMeshes, palette.shaderMeshes, palette.shaderUniformMeshes], ['assessed', 1, 0, 1]);
+    const lin = hexSrgbToLinearRgb('#ede6d5');
+    const red = Math.min(1, lin[0] + 0.5 * hexSrgbToLinearRgb('#200000')[0]);
+    assert.equal(palette.colors[0]?.hexSrgb, linearRgbToHexSrgb(red, lin[1], lin[2]));
+  });
+
+  it('fails an off-palette uAlbedo on a ShaderMaterial', () => {
+    const asset = factory('cel-off.mjs', `return new THREE.Mesh(new THREE.BoxGeometry(), ${celShader('0x00c040')});`);
+    const result = cli('check', asset, '--card', hullCard);
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+    const report = JSON.parse(result.stdout) as Check3DReport;
+    const finding = report.findings.find((f) => f.id === 'PALETTE_DELTA_E_EXCEEDED');
+    assert.ok(finding !== undefined);
+    assert.ok(typeof finding.actual === 'number' && finding.actual > 30);
+    assert.equal(report.findings.some((f) => f.id === 'PALETTE_UNASSESSED_SHADER'), false);
+  });
+
+  it('reads the uniforms a card names and still treats a textured shader as textured', async () => {
+    const asset = factory('cel-custom.mjs', `const root = new THREE.Group();
+      const custom = new THREE.ShaderMaterial({
+        uniforms: { tint: { value: new THREE.Color(0x232838) }, uAlbedo: { value: new THREE.Color(0x00ff00) } },
+        vertexShader: 'void main() { gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+        fragmentShader: 'uniform vec3 tint; void main() { gl_FragColor = vec4(tint, 1.0); }',
+      });
+      root.add(new THREE.Mesh(new THREE.BoxGeometry(), custom));
+      const tex = new THREE.DataTexture(new Uint8Array([255, 0, 0, 255]), 1, 1);
+      const mapped = new THREE.Mesh(new THREE.BoxGeometry(), ${celShader('0xffffff', 'uMap: { value: tex },')});
+      mapped.position.x = 2; root.add(mapped);
+      return root;`);
+    const card: StyleCard = {
+      id: 'custom', palette: { 'obsidian-hull': '#232838' }, paletteDeltaE76Max: 1, shaderColorUniforms: ['tint'],
+    };
+    const session = await runAssetSession({ assetPath: asset, card, renderSheet: false });
+    const palette = session.metrics.palette;
+    assert.deepEqual([palette.status, palette.shaderUniformMeshes, palette.texturedMeshes], ['partial_textured', 1, 1]);
+    assert.deepEqual(palette.colors.map((c) => c.hexSrgb), ['#232838']);
+    assert.equal(evaluateAssetGates(session.metrics, card).ok, true);
+  });
+
+  it('rejects malformed shader uniform lists in a card', () => {
+    const asset = factory('cel-ok.mjs', `return new THREE.Mesh(new THREE.BoxGeometry(), ${celShader('0xede6d5')});`);
+    for (const bad of [{ shaderColorUniforms: [] }, { shaderColorUniforms: ['u-bad'] }, { shaderEmissiveUniforms: ['uEmissive'] }]) {
+      const card = fixture('bad-shader-card.json', JSON.stringify({ id: 'bad', ...bad }));
+      const result = cli('check', asset, '--card', card);
+      assert.equal(result.status, 2, JSON.stringify(bad));
+      assert.match(JSON.parse(result.stderr).message, /shader(Color|Emissive)Uniforms/);
+    }
   });
 });
 
@@ -315,7 +491,7 @@ describe('batch', () => {
     assert.deepEqual(listBatchAssets(batchDir).map((f) => path.basename(f)), ['a-off-palette.mjs', 'b-good.mjs']);
 
     const out = path.join(dir, 'batch-a-out');
-    const result = cli('batch', batchDir, '--card', path.join(batchDir, 'card.json'), '--out', out, '--tile-size', '96x72');
+    const result = cli('batch', batchDir, '--card', path.join(batchDir, 'card.json'), '--out', out, '--tile-size', '96x72', '--black-fill');
     assert.equal(result.status, 1, result.stderr);
     const summary = JSON.parse(result.stdout) as BatchReport;
     assert.deepEqual(summary, JSON.parse(fs.readFileSync(path.join(out, 'summary.json'), 'utf8')));
@@ -332,6 +508,16 @@ describe('batch', () => {
     for (const name of ['a-off-palette', 'b-good']) {
       assert.ok(fs.existsSync(path.join(out, name, 'contact-sheet.png')));
       assert.ok(fs.existsSync(path.join(out, name, 'report.json')));
+      assert.deepEqual(pngSize(path.join(out, name, 'silhouette-sheet.png')), { width: 192, height: 26 + 72 });
+    }
+    assert.equal(summary.blackFillMasksPath, path.join(out, 'black-fill-masks.png'));
+    const masks = pngRed(path.join(out, 'black-fill-masks.png'));
+    assert.deepEqual([masks.width, masks.height], [192, 2 * (26 + 26 + 72)]);
+    // Each asset row's mask area matches that asset's own silhouette sheet.
+    const goodSheet = pngRed(path.join(out, 'b-good', 'silhouette-sheet.png'));
+    const rowStart = (26 + 26 + 72) + 26 + 26;
+    for (let i = 0; i < 192 * 72; i += 1) {
+      assert.equal(masks.red[rowStart * 192 + i], goodSheet.red[26 * 192 + i]);
     }
     assert.match(result.stderr, /^asset\s+tris\s+degen\s+palette/m);
     assert.match(result.stderr, /1\/2 passed against card 'batch-card'/);

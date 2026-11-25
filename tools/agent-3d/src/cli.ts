@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DEFAULT_CAPTURE, DEFAULT_TIMEOUT_MS, runAssetSession } from './browserRuntime.js';
+import { DEFAULT_CAPTURE, DEFAULT_TIMEOUT_MS, runAssetSession, stackLabeledPngs } from './browserRuntime.js';
 import { evaluateAssetGates } from './evaluate.js';
 import { runGpuProbe } from './gpuProbe.js';
 import type {
@@ -27,6 +27,8 @@ const VALID_CARD_KEYS = new Set([
   'palette',
   'paletteDeltaE76Max',
   'requirePaletteOnTextured',
+  'shaderColorUniforms',
+  'shaderEmissiveUniforms',
   'separationMinDeltaE76',
   'separationRoles',
   'budgets',
@@ -55,6 +57,7 @@ const MIN_TILE = 64;
 const MAX_TILE = 2048;
 const CONSOLE_FLAGS = ['--fail-on-console-error', '--no-fail-on-console-error'];
 const CAPTURE_VALUE_FLAGS = ['--tile-size', '--zoom', '--lighting'];
+const CAPTURE_SWITCHES = ['--zoom-ortho', '--save-views', '--black-fill'];
 
 function usage(): string {
   return [
@@ -67,9 +70,12 @@ function usage(): string {
     '<asset> is a .glb or a factory module (.ts, .mts, .js, .mjs). batch runs every such file in <dir>.',
     'Capture options:',
     '  --tile-size <WxH>         view tile size in pixels (default 420x315, each side 64-2048)',
-    '  --zoom <factor>           framing multiplier, 0.25-8 (default 1; above 1 edge clipping is info)',
+    '  --zoom <factor>           perspective framing multiplier, 0.25-8 (default 1; above 1 edge clipping is info)',
+    '  --zoom-ortho              apply --zoom to the ortho views too (default: they stay at 1)',
     '  --lighting <preset>       studio (default), cel, or dramatic',
     '  --save-views              also write <view-id>.png for each of the nine views',
+    '  --black-fill              write silhouette-sheet.png (batch: black-fill-masks.png), ortho-top and',
+    '                            ortho-front as black silhouettes on white',
     '  --no-fail-on-console-error  report browser console errors as warnings instead of failing',
     'Exit codes: 0 pass, 1 gate violation, 2 invalid input / unsupported gate / renderer error',
     'gpu-probe exit codes: 0 WebGPU ok, 1 WebGPU blank, 2 launch error, 3 silent WebGL fallback, 4 WebGL failed too',
@@ -127,7 +133,7 @@ function parseTimeout(flags: ReadonlyMap<string, string>): number {
   return Number(flags.get('--timeout') ?? DEFAULT_TIMEOUT_MS);
 }
 
-function parseCapture(flags: ReadonlyMap<string, string>): CaptureSettings {
+function parseCapture(flags: ReadonlyMap<string, string>, switches: ReadonlySet<string>): CaptureSettings {
   let { tileWidth, tileHeight, zoom, lighting } = DEFAULT_CAPTURE;
   const tile = flags.get('--tile-size');
   if (tile !== undefined) {
@@ -154,7 +160,7 @@ function parseCapture(flags: ReadonlyMap<string, string>): CaptureSettings {
     }
     lighting = lightingFlag as LightingPreset;
   }
-  return { tileWidth, tileHeight, zoom, lighting };
+  return { tileWidth, tileHeight, zoom, zoomOrtho: switches.has('--zoom-ortho'), lighting };
 }
 
 function validateRange(value: unknown, name: string): void {
@@ -241,6 +247,18 @@ function validateCard(parsed: unknown, cardPath: string): StyleCard {
   ) {
     throw new Error(`Invalid requirePaletteOnTextured: ${String(obj['requirePaletteOnTextured'])}`);
   }
+  const uniformNames = (key: string, min: number, max: number): void => {
+    const v = obj[key];
+    if (v === undefined) return;
+    if (
+      !Array.isArray(v) || v.length < min || v.length > max ||
+      !v.every((n) => typeof n === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(n))
+    ) {
+      throw new Error(`${key} must be an array of ${min === max ? min : `${min}-${max}`} GLSL uniform names`);
+    }
+  };
+  uniformNames('shaderColorUniforms', 1, 16);
+  uniformNames('shaderEmissiveUniforms', 2, 2);
   if (
     obj['separationMinDeltaE76'] !== undefined &&
     (!isFiniteNum(obj['separationMinDeltaE76']) || obj['separationMinDeltaE76'] < 0)
@@ -360,6 +378,7 @@ interface TurntableOptions {
   readonly timeoutMs: number;
   readonly capture: CaptureSettings;
   readonly saveViews: boolean;
+  readonly blackFill: boolean;
   readonly failOnConsoleError: boolean;
 }
 
@@ -374,8 +393,9 @@ function turntableOptions(parsed: ParsedArgs): TurntableOptions {
     card: loadCard(cardPath),
     cardPath,
     timeoutMs: parseTimeout(parsed.flags),
-    capture: parseCapture(parsed.flags),
+    capture: parseCapture(parsed.flags, parsed.switches),
     saveViews: parsed.switches.has('--save-views'),
+    blackFill: parsed.switches.has('--black-fill'),
     failOnConsoleError: !parsed.switches.has('--no-fail-on-console-error'),
   };
 }
@@ -384,8 +404,10 @@ async function turntableReport(job: TurntableJob): Promise<{ readonly report: Tu
   const outDir = path.resolve(job.outDir);
   const contactSheetPath = path.join(outDir, 'contact-sheet.png');
   const reportPath = path.join(outDir, 'report.json');
-  assertOutputDoesNotClobberInputs(contactSheetPath, [job.assetPath, job.cardPath]);
-  assertOutputDoesNotClobberInputs(reportPath, [job.assetPath, job.cardPath]);
+  const silhouetteSheetPath = job.blackFill ? path.join(outDir, 'silhouette-sheet.png') : null;
+  for (const out of [contactSheetPath, reportPath, silhouetteSheetPath]) {
+    if (out !== null) assertOutputDoesNotClobberInputs(out, [job.assetPath, job.cardPath]);
+  }
 
   const session = await runAssetSession({
     assetPath: job.assetPath,
@@ -395,6 +417,7 @@ async function turntableReport(job: TurntableJob): Promise<{ readonly report: Tu
     contactSheetPath,
     capture: job.capture,
     ...(job.saveViews ? { viewsDir: outDir } : {}),
+    ...(silhouetteSheetPath !== null ? { silhouetteSheetPath } : {}),
   });
   const evalResult = evaluateAssetGates(session.metrics, job.card, session.views, {
     consoleErrors: session.consoleErrors,
@@ -408,6 +431,7 @@ async function turntableReport(job: TurntableJob): Promise<{ readonly report: Tu
     asset: job.assetPath,
     cardId: job.card?.id ?? null,
     contactSheetPath,
+    silhouetteSheetPath,
     viewPaths: session.viewPaths,
     capture: job.capture,
     metrics: session.metrics,
@@ -421,7 +445,7 @@ async function turntableReport(job: TurntableJob): Promise<{ readonly report: Tu
 }
 
 const TURNTABLE_VALUE_FLAGS = ['--card', '--out', '--timeout', ...CAPTURE_VALUE_FLAGS];
-const TURNTABLE_SWITCHES = ['--save-views', ...CONSOLE_FLAGS];
+const TURNTABLE_SWITCHES = [...CAPTURE_SWITCHES, ...CONSOLE_FLAGS];
 
 async function runTurntable(args: readonly string[]): Promise<number> {
   const parsed = parseArgs(args, TURNTABLE_VALUE_FLAGS, TURNTABLE_SWITCHES);
@@ -463,12 +487,15 @@ function assetName(assetPath: string): string {
 }
 
 function formatBatchTable(batch: BatchReport): string {
-  const header = ['asset', 'tris', 'degen', 'palette', 'samples', 'maxΔE76', 'result'];
+  const header = ['asset', 'tris', 'degen', 'palette', 'scored', 'shader', 'unscored', 'samples', 'maxΔE76', 'result'];
   const rows = batch.assets.map((a) => [
     a.name,
     a.triangles?.toString() ?? '-',
     a.degenerateTriangles?.toString() ?? '-',
     a.paletteStatus ?? '-',
+    a.assessedMeshes?.toString() ?? '-',
+    a.shaderUniformMeshes?.toString() ?? '-',
+    a.unassessedMeshes?.toString() ?? '-',
     a.paletteSamples?.toString() ?? '-',
     a.paletteMaxDeltaE76?.toFixed(2) ?? '-',
     a.error !== null ? 'ERROR' : a.ok ? 'PASS' : 'FAIL',
@@ -514,6 +541,9 @@ async function runBatch(args: readonly string[]): Promise<number> {
         triangles: report.metrics.trianglesByOccurrence,
         degenerateTriangles: report.metrics.degenerateTriangles,
         paletteStatus: palette.status,
+        assessedMeshes: palette.assessedMeshes,
+        shaderUniformMeshes: palette.shaderUniformMeshes,
+        unassessedMeshes: palette.texturedMeshes + palette.shaderMeshes,
         paletteSamples: palette.sampledCorners,
         paletteMaxDeltaE76: palette.maxDeltaE76,
         failures: report.findings.filter((f) => f.severity === 'fail' || f.severity === 'unsupported').map((f) => f.id),
@@ -529,12 +559,27 @@ async function runBatch(args: readonly string[]): Promise<number> {
         triangles: null,
         degenerateTriangles: null,
         paletteStatus: null,
+        assessedMeshes: null,
+        shaderUniformMeshes: null,
+        unassessedMeshes: null,
         paletteSamples: null,
         paletteMaxDeltaE76: null,
         failures: [],
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  }
+
+  const sheets = !options.blackFill ? [] : rows.flatMap((r) => {
+    const sheet = r.reportPath === null ? null : path.join(path.dirname(r.reportPath), 'silhouette-sheet.png');
+    return sheet !== null && fs.existsSync(sheet) ? [{ label: r.name, png: fs.readFileSync(sheet) }] : [];
+  });
+  const blackFillMasksPath = sheets.length > 0
+    ? path.join(path.resolve(outDir), 'black-fill-masks.png')
+    : null;
+  if (blackFillMasksPath !== null) {
+    assertOutputDoesNotClobberInputs(blackFillMasksPath, [...assets, options.cardPath]);
+    await stackLabeledPngs(sheets, blackFillMasksPath, options.timeoutMs);
   }
 
   const passed = rows.filter((r) => r.ok).length;
@@ -545,6 +590,7 @@ async function runBatch(args: readonly string[]): Promise<number> {
     outDir: path.resolve(outDir),
     cardId: options.card?.id ?? null,
     capture: options.capture,
+    blackFillMasksPath,
     total: rows.length,
     passed,
     failed: rows.length - passed,

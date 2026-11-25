@@ -1,6 +1,9 @@
 import { deltaE76, hexSrgbToLinearRgb, linearRgbToLabD65 } from './color.js';
 import type { AssetMetrics, CaptureSettings, GateFinding, StyleCard, StyleCardGeometry, ViewMetrics } from './types.js';
 
+/** Uniforms the palette inspector reads, in order, for a ShaderMaterial's base color. */
+export const DEFAULT_SHADER_COLOR_UNIFORMS: readonly string[] = ['uAlbedo', 'uColor', 'color'];
+
 export interface GateContext {
   readonly consoleErrors?: readonly string[];
   /** Default true: any console error fails the gate. False reports them as warnings. */
@@ -233,7 +236,7 @@ export function evaluateAssetGates(
         findings.push({
           id: 'PALETTE_UNASSESSED_SHADER',
           severity: 'info',
-          message: `Palette check skipped on ${metrics.palette.shaderMeshes} mesh(es) drawn by a ShaderMaterial without a color; inspect contact sheet`,
+          message: `Palette check skipped on ${metrics.palette.shaderMeshes} mesh(es) drawn by a ShaderMaterial with no color uniform from shaderColorUniforms (${(card.shaderColorUniforms ?? DEFAULT_SHADER_COLOR_UNIFORMS).join(', ')}); inspect contact sheet`,
         });
       }
 
@@ -293,8 +296,8 @@ export function evaluateAssetGates(
   }
 
   if (views !== undefined) {
-    const croppedIn = (context.capture?.zoom ?? 1) > 1;
     for (const view of views) {
+      const croppedIn = view.zoom > 1;
       if (view.coverageRatio < 0.01) {
         findings.push({
           id: 'VIEW_SUBJECT_MISSING',
@@ -309,7 +312,7 @@ export function evaluateAssetGates(
           id: 'VIEW_EDGE_CLIPPED',
           severity: croppedIn ? 'info' : 'fail',
           message: croppedIn
-            ? `View '${view.id}' subject touches tile edge (expected with --zoom ${context.capture?.zoom})`
+            ? `View '${view.id}' subject touches tile edge (expected at zoom ${view.zoom})`
             : `View '${view.id}' subject touches tile edge (clipped)`,
           actual: true,
           limit: false,

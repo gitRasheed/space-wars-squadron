@@ -38,9 +38,11 @@ Capture options for `turntable` and `batch`:
 | Flag | Default | Effect |
 | --- | --- | --- |
 | `--tile-size <WxH>` | `420x315` | Pixel size of each view, 64 to 2048 per side. Use `840x630` to inspect seams and glints. |
-| `--zoom <factor>` | `1` | Camera zoom, 0.25 to 8. Above 1, edge clipping is reported as info, and so is a flat tile the subject fills completely. |
+| `--zoom <factor>` | `1` | Camera zoom for the perspective views, 0.25 to 8. Above 1, edge clipping in a zoomed view is reported as info, and so is a flat tile the subject fills completely. Ortho views stay at zoom 1, so their silhouettes are never clipped. |
+| `--zoom-ortho` | off | Apply `--zoom` to the ortho views as well. |
 | `--lighting <preset>` | `studio` | `studio`: soft key, rim and sky fill with ACES tone mapping. `cel`: hard warm key, cool rim and a violet sky fill with no tone mapping, close to how stylized toon games light their models. `dramatic`: low raking key, faint rim, deep shadows. Presets change lights and tone mapping only. |
 | `--save-views` | off | Also write `<view-id>.png` for each view next to the contact sheet. |
+| `--black-fill` | off | Also write `silhouette-sheet.png`: `ortho-top` and `ortho-front` as black silhouettes on white, taken from the same mask that measures coverage, so every visible mesh counts, glow and additive plume meshes included. `batch` stacks every asset's sheet into `<out>/black-fill-masks.png`. |
 | `--no-fail-on-console-error` | off | Report browser console errors as a warning instead of failing. |
 
 **Console errors.** Both `check` and `turntable` capture `console.error` output from the page, including Three.js shader compile and link errors. Any console error fails the run with a `CONSOLE_ERROR` finding that quotes the first message; all messages (up to 20, truncated) are in `consoleErrors`. `--fail-on-console-error` states the default explicitly. Shader errors only show up in `turntable`, because `check` never renders.
@@ -48,13 +50,15 @@ Capture options for `turntable` and `batch`:
 **batch** runs `turntable` on every `.glb`, `.ts`, `.mts`, `.js` and `.mjs` file in a directory (not recursive, `.d.ts` skipped, sorted by name) with one card and one set of capture options. Each asset gets `<out>/<name>/contact-sheet.png` and `report.json`. A crash or timeout on one asset becomes an error row and the batch continues. It prints one compact JSON summary to stdout, a table to stderr, and writes both to `<out>/summary.json` and `<out>/summary.txt`:
 
 ```text
-asset    tris  degen  palette           samples  maxΔE76  result
--------  ----  -----  ----------------  -------  -------  ------
-crate    12    0      assessed          1        0.00     PASS
-lantern  944   0      partial_textured  42       14.20    FAIL
+asset    tris  degen  palette           scored  shader  unscored  samples  maxΔE76  result
+-------  ----  -----  ----------------  ------  ------  --------  -------  -------  ------
+crate    12    0      assessed          1       0       0         1        0.00     PASS
+lantern  944   0      partial_textured  9       6       2         42       14.20    FAIL
 lantern: PALETTE_DELTA_E_EXCEEDED
 1/2 passed against card 'props'
 ```
+
+`scored` counts meshes whose color was checked, `shader` how many of those were read from `ShaderMaterial` uniforms, and `unscored` the textured or colorless-shader meshes left for visual review.
 
 The exit code is the worst per-asset code: 1 if any gate failed, 2 if any asset errored.
 
@@ -79,6 +83,8 @@ Do not add `--disable-vulkan-surface`; it blanks compositor screenshots. Exit co
   "palette": { "hull": "#dfd9cc", "accent": "#e88332", "ink": "#070712" },
   "paletteDeltaE76Max": 8,
   "requirePaletteOnTextured": false,
+  "shaderColorUniforms": ["uAlbedo", "uColor", "color"],
+  "shaderEmissiveUniforms": ["uEmissive", "uEmissiveIntensity"],
   "separationMinDeltaE76": 12,
   "separationRoles": [["hull", "accent"]],
   "budgets": {
@@ -104,7 +110,7 @@ Do not add `--disable-vulkan-surface`; it blanks compositor screenshots. Exit co
 Every key except `id` is optional, and unknown keys are rejected.
 
 - **Axes.** `frontAxis` is the direction the asset faces; it sets the front view and the length axis. `topUpAxis` is screen-up in the top view and cannot be ±Y.
-- **Palette.** For each untextured material the checker adds emissive color times intensity to the linear base color (after vertex and instance tinting), clamps to the sRGB gamut, and takes the CIE76 distance to the nearest role. The worst sample must stay within `paletteDeltaE76Max`. Meshes colored by a texture, or by a `ShaderMaterial` with no `color`, cannot be scored this way and are listed as info for visual review. `requirePaletteOnTextured: true` turns the textured case into an unsupported-gate exit 2. The report's `palette.colors` lists the 48 most-sampled colors with their nearest role, which is the quickest way to build or tune a palette.
+- **Palette.** For each untextured material the checker adds emissive color times intensity to the linear base color (after vertex and instance tinting), clamps to the sRGB gamut, and takes the CIE76 distance to the nearest role. The worst sample must stay within `paletteDeltaE76Max`. A `ShaderMaterial` is scored from its uniforms: the first of `shaderColorUniforms` (default `uAlbedo`, `uColor`, `color`) that holds a `Color` or `Vector3` is the base color, and `shaderEmissiveUniforms` (default `uEmissive`, `uEmissiveIntensity`) is added like emissive when present. Meshes colored by a texture, including a shader with a texture uniform, or by a shader with none of those uniforms, cannot be scored and are listed as info for visual review. `requirePaletteOnTextured: true` turns the textured case into an unsupported-gate exit 2. The report's `palette.colors` lists the 48 most-sampled colors with their nearest role, which is the quickest way to build or tune a palette.
 - **Geometry.** All shape values are always reported; these keys turn them into gates. Ground contact needs the lowest point on y=0. The footprint is the x/z box of vertices within tolerance of the lowest point, divided by the full x/z box; a small value means the asset balances on a point or edge. Mirror symmetry is the share of vertices whose reflection across the width-axis mid-plane lands within tolerance of another vertex. Aspect ranges are inclusive `[min, max]`, with length measured along `frontAxis`.
 - **Budgets.** `bytesMax` and `requireTriangleLists` apply only to GLB input and are listed as skipped for factories. Degenerate triangles fail at any count above `degenerateTrianglesMax` (default 0), with or without a card.
 

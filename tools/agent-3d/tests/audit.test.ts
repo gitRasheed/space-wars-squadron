@@ -131,7 +131,7 @@ it('packages the CLI, browser color module, and guides with Three.js as a peer',
   const pack = spawnSync('npm', ['pack', '--dry-run', '--ignore-scripts', '--json'], { cwd: root, encoding: 'utf8' });
   assert.equal(pack.status, 0, pack.stderr);
   const files = JSON.parse(pack.stdout)[0].files.map((file: { path: string }) => file.path);
-  for (const name of ['dist/cli.js', 'dist/color.js', 'dist/harness.js', 'dist/gpuProbe.js', 'dist/index.d.ts', 'README.md', 'SKILL.md', 'LICENSE']) {
+  for (const name of ['dist/cli.js', 'dist/color.js', 'dist/evaluate.js', 'dist/harness.js', 'dist/gpuProbe.js', 'dist/index.d.ts', 'README.md', 'SKILL.md', 'LICENSE']) {
     assert.ok(files.includes(name), `Missing ${name} from tarball`);
   }
 });

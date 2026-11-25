@@ -19,15 +19,15 @@ npm ci && npx playwright install chromium && npm run build
 
 1. **Gate the asset.** `node dist/cli.js turntable <asset> --card card.json --out out/<asset>`. Exit 0 passes, 1 is a gate failure (read `findings` in the JSON), 2 is bad input or a renderer problem (read stderr).
 2. **Gate the whole set** after a shared change such as a material, palette or lighting tweak: `node dist/cli.js batch <dir> --card card.json --out out/batch`. Read the table on stderr; open `out/batch/<name>/report.json` for any FAIL or ERROR row.
-3. **Look closer** when the critic or a finding points at a detail: `--tile-size 840x630 --zoom 1.4 --save-views` writes full-size single views such as `persp-three-quarter.png`. Use `--lighting cel` to see the asset under stylized game-style lighting, and `--lighting dramatic` to check that forms still read with deep shadows.
+3. **Look closer** when the critic or a finding points at a detail: `--tile-size 840x630 --zoom 1.4 --save-views` writes full-size single views such as `persp-three-quarter.png`. `--zoom` only crops the perspective views; the ortho views stay whole unless you add `--zoom-ortho`. Add `--black-fill` for `silhouette-sheet.png` (batch: `black-fill-masks.png`), the top and front views as black on white, to judge whether the silhouette reads without color or lighting. Use `--lighting cel` to see the asset under stylized game-style lighting, and `--lighting dramatic` to check that forms still read with deep shadows.
 4. **Run the blind critic** on `contact-sheet.png` (below).
 5. Fix **one issue class per iteration**, re-run with the same card, and re-check with a fresh critic context.
 
 Things that commonly trip agents:
 
 - `CONSOLE_ERROR` usually means a shader failed to compile or a factory logged an error. The finding quotes the first message and `consoleErrors` has the rest. Fix the cause; use `--no-fail-on-console-error` only for a known, harmless third-party message.
-- `PALETTE_DELTA_E_EXCEEDED` names the mesh, the sampled color and the nearest role. `metrics.palette.colors` lists every sampled color, so check whether the color is a mistake or the card is missing a role. Textured surfaces and colorless `ShaderMaterial`s are not scored; review them on the sheet.
-- `VIEW_EDGE_CLIPPED` at zoom 1 means the bounds include something far from the body, often a stray or hidden-by-material mesh.
+- `PALETTE_DELTA_E_EXCEEDED` names the mesh, the sampled color and the nearest role. `metrics.palette.colors` lists every sampled color, so check whether the color is a mistake or the card is missing a role. A `ShaderMaterial` is scored from its `uAlbedo` / `uColor` / `color` uniform plus `uEmissive` × `uEmissiveIntensity` (rename them with the card's `shaderColorUniforms` and `shaderEmissiveUniforms`). Textured surfaces and shaders with none of those uniforms are not scored; review them on the sheet.
+- `VIEW_EDGE_CLIPPED` as a fail (an unzoomed view) means the bounds include something far from the body, often a stray or hidden-by-material mesh.
 - `INVERTED_WINDING` means triangle order is reversed; flip the index order or the scale sign rather than switching the material to `DoubleSide`.
 - Shape values (`metrics.shape`) are always reported. Only gate on them (card `geometry`) after confirming every asset in the set meets the rule; a deliberately asymmetric design is not a defect.
 

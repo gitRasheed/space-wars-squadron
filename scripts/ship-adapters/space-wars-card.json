@@ -22,7 +22,14 @@
     "blush-glow": "#ffbed0",
     "coral-glow": "#ff81a6",
     "magenta-shield": "#ff67f0",
-    "orchid-flare": "#ffc9ff"
+    "orchid-flare": "#ffc9ff",
+    "warm-mid-plate": "#d9cfbc",
+    "fighter-slate": "#525c74",
+    "dark-slate": "#2b3246",
+    "carrier-amber": "#e59238",
+    "frigate-plate": "#4b4161",
+    "frigate-dark-armor": "#271e36",
+    "frigate-crimson": "#f04d5c"
   },
   "paletteDeltaE76Max": 12,
   "budgets": {

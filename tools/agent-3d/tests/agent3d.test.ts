@@ -497,7 +497,7 @@ export function buildAsset(THREE) {
         assert.ok(Math.abs(pixels - Math.round(pixels)) < 1e-6, `Expected unrounded ratio on ${v.id}, got ${v.coverageRatio}`);
       }
       const nearThresholdEval = evaluateAssetGates(sheetRes.metrics, null, [
-        { id: 'persp-front', ortho: false, coverageRatio: 1322 / (420 * 315), edgeClipped: false, beautyUniqueColors: 12 },
+        { id: 'persp-front', ortho: false, zoom: 1, coverageRatio: 1322 / (420 * 315), edgeClipped: false, beautyUniqueColors: 12 },
       ]);
       assert.equal(nearThresholdEval.ok, false);
       assert.ok(nearThresholdEval.findings.some((f) => f.id === 'VIEW_SUBJECT_MISSING'));

@@ -18,6 +18,7 @@ export const DEFAULT_CAPTURE: CaptureSettings = {
   tileWidth: 420,
   tileHeight: 315,
   zoom: 1,
+  zoomOrtho: false,
   lighting: 'studio',
 };
 
@@ -30,6 +31,8 @@ export interface BrowserSessionOptions {
   readonly capture?: CaptureSettings;
   /** Directory for one PNG per view (`<view-id>.png`); omit to skip. */
   readonly viewsDir?: string;
+  /** Black-on-white ortho-top and ortho-front mask sheet; omit to skip. */
+  readonly silhouetteSheetPath?: string;
 }
 
 export interface BrowserSessionResult {
@@ -49,6 +52,7 @@ function buildRuntimeEntrySource(factoryImportPath: string | null): string {
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { deltaE76, hexSrgbToLinearRgb, linearRgbToLabD65, linearRgbToHexSrgb } from './color.js';
+import { DEFAULT_SHADER_COLOR_UNIFORMS } from './evaluate.js';
 ${importLine}
 
 const MAX_REPORTED_COLORS = 48;
@@ -169,6 +173,31 @@ function materialHasUniformTexture(mat) {
     }
   }
   return false;
+}
+
+const DEFAULT_SHADER_EMISSIVE_UNIFORMS = ['uEmissive', 'uEmissiveIntensity'];
+
+// Uniform values are linear like Material.color; a Vector3 is read as linear rgb.
+function uniformRgb(mat, name) {
+  const v = mat.uniforms[name]?.value;
+  if (v?.isColor) return v.clone();
+  if (v?.isVector3) return new THREE.Color(v.x, v.y, v.z);
+  return null;
+}
+
+function shaderUniformColors(mat, card) {
+  if (!mat.uniforms || typeof mat.uniforms !== 'object') return null;
+  let base = null;
+  for (const name of (card && card.shaderColorUniforms) || DEFAULT_SHADER_COLOR_UNIFORMS) {
+    base = uniformRgb(mat, name);
+    if (base) break;
+  }
+  if (!base) return null;
+  const [colorName, intensityName] = (card && card.shaderEmissiveUniforms) || DEFAULT_SHADER_EMISSIVE_UNIFORMS;
+  const emission = uniformRgb(mat, colorName);
+  const intensity = mat.uniforms[intensityName]?.value;
+  if (emission && typeof intensity === 'number') emission.multiplyScalar(intensity);
+  return { base, emission };
 }
 
 function inspectRoot(root, inputKind, glbSource, card) {
@@ -322,6 +351,7 @@ function inspectRoot(root, inputKind, glbSource, card) {
   let assessedMeshes = 0;
   let texturedMeshes = 0;
   let shaderMeshes = 0;
+  let shaderUniformMeshes = 0;
   let sampledCorners = 0;
   let maxDelta = 0;
   let worst = null;
@@ -372,6 +402,7 @@ function inspectRoot(root, inputKind, glbSource, card) {
     const meshName = mesh.name || 'unnamed';
     let meshHadTextured = false;
     let meshHadShader = false;
+    let meshHadShaderUniform = false;
     let meshHadAssessed = false;
 
     for (const span of spans) {
@@ -386,19 +417,27 @@ function inspectRoot(root, inputKind, glbSource, card) {
         meshHadTextured = true;
         continue;
       }
-      // A custom shader without a color property computes its output in GLSL, so its authored color is unknowable here.
+      let baseColor = mat.color;
+      let addColor = emission;
       if (mat.isShaderMaterial && !mat.color) {
-        meshHadShader = true;
-        continue;
+        const shaded = shaderUniformColors(mat, card);
+        // A shader with no known color uniform computes its output in GLSL, so its authored color is unknowable here.
+        if (shaded === null) {
+          meshHadShader = true;
+          continue;
+        }
+        meshHadShaderUniform = true;
+        baseColor = shaded.base;
+        addColor = shaded.emission;
       }
       meshHadAssessed = true;
-      const matR = mat.color ? mat.color.r : 1;
-      const matG = mat.color ? mat.color.g : 1;
-      const matB = mat.color ? mat.color.b : 1;
+      const matR = baseColor ? baseColor.r : 1;
+      const matG = baseColor ? baseColor.g : 1;
+      const matB = baseColor ? baseColor.b : 1;
       const sample = (r, g, b) => evalLinearColor(meshName,
-        THREE.MathUtils.clamp(r + (emission?.r ?? 0), 0, 1),
-        THREE.MathUtils.clamp(g + (emission?.g ?? 0), 0, 1),
-        THREE.MathUtils.clamp(b + (emission?.b ?? 0), 0, 1),
+        THREE.MathUtils.clamp(r + (addColor?.r ?? 0), 0, 1),
+        THREE.MathUtils.clamp(g + (addColor?.g ?? 0), 0, 1),
+        THREE.MathUtils.clamp(b + (addColor?.b ?? 0), 0, 1),
       );
       const useVertexColors = Boolean(mat.vertexColors) && Boolean(colorAttr);
       const hasInstColor = Boolean(mesh.isInstancedMesh && mesh.instanceColor);
@@ -431,6 +470,7 @@ function inspectRoot(root, inputKind, glbSource, card) {
 
     if (meshHadTextured) texturedMeshes += 1;
     if (meshHadShader) shaderMeshes += 1;
+    if (meshHadShaderUniform) shaderUniformMeshes += 1;
     if (meshHadAssessed) assessedMeshes += 1;
   }
 
@@ -450,6 +490,7 @@ function inspectRoot(root, inputKind, glbSource, card) {
     assessedMeshes,
     texturedMeshes,
     shaderMeshes,
+    shaderUniformMeshes,
     sampledCorners,
     distinctColors: colorSamples.size,
     maxDeltaE76: hasPalette && sampledCorners > 0 ? maxDelta : null,
@@ -644,6 +685,25 @@ function addLightingRig(scene, preset, radius, renderer) {
   scene.add(new THREE.HemisphereLight(0xaab8e0, 0x242038, 0.85));
 }
 
+const SILHOUETTE_VIEWS = ['ortho-top', 'ortho-front'];
+
+function silhouetteSheet(silhouettes, tileW, tileH, labelH) {
+  const canvas = document.createElement('canvas');
+  canvas.width = SILHOUETTE_VIEWS.length * tileW;
+  canvas.height = labelH + tileH;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#d0d0d0';
+  ctx.fillRect(0, 0, canvas.width, labelH);
+  ctx.font = 'bold 13px monospace';
+  ctx.fillStyle = '#000000';
+  ctx.textAlign = 'left';
+  SILHOUETTE_VIEWS.forEach((id, i) => {
+    ctx.putImageData(silhouettes.get(id), i * tileW, labelH);
+    ctx.fillText(id, i * tileW + 10, 17);
+  });
+  return canvas.toDataURL('image/png');
+}
+
 function renderContactSheet(root, worldBox, center, radius, card, capture) {
   const tileW = capture.tileWidth;
   const tileH = capture.tileHeight;
@@ -728,6 +788,7 @@ function renderContactSheet(root, worldBox, center, radius, card, capture) {
 
   const views = [];
   const viewImages = [];
+  const silhouettes = new Map();
 
   for (let idx = 0; idx < viewDefs.length; idx += 1) {
     const def = viewDefs[idx];
@@ -778,7 +839,8 @@ function renderContactSheet(root, worldBox, center, radius, card, capture) {
       cam.position.copy(center).addScaledVector(camZ, dist);
     }
 
-    cam.zoom = capture.zoom;
+    const viewZoom = def.ortho && !capture.zoomOrtho ? 1 : capture.zoom;
+    cam.zoom = viewZoom;
     cam.updateProjectionMatrix();
     cam.up.copy(def.up);
     cam.lookAt(center);
@@ -851,9 +913,27 @@ function renderContactSheet(root, worldBox, center, radius, card, capture) {
       }
     }
 
+    if (capture.blackFill && SILHOUETTE_VIEWS.includes(def.id)) {
+      // readPixels rows run bottom-up.
+      const image = new ImageData(tileW, tileH);
+      for (let y = 0; y < tileH; y += 1) {
+        for (let x = 0; x < tileW; x += 1) {
+          const src = ((tileH - 1 - y) * tileW + x) * 4;
+          const dst = (y * tileW + x) * 4;
+          const v = pixelBuf[src] > 128 ? 0 : 255;
+          image.data[dst] = v;
+          image.data[dst + 1] = v;
+          image.data[dst + 2] = v;
+          image.data[dst + 3] = 255;
+        }
+      }
+      silhouettes.set(def.id, image);
+    }
+
     views.push({
       id: def.id,
       ortho: def.ortho,
+      zoom: viewZoom,
       coverageRatio: covered / (tileW * tileH),
       culledFrontSideRatio: frontSidePixels ? culledPixels / frontSidePixels : 0,
       edgeClipped,
@@ -869,6 +949,7 @@ function renderContactSheet(root, worldBox, center, radius, card, capture) {
     views,
     viewImages,
     sheetDataUrl: sheetCanvas.toDataURL('image/png'),
+    silhouetteDataUrl: capture.blackFill ? silhouetteSheet(silhouettes, tileW, tileH, labelH) : null,
   };
 }
 
@@ -897,17 +978,20 @@ export async function run({ inputKind, glbUrl, glbSource, card, renderSheet, cap
   let views = [];
   let viewImages = [];
   let sheetDataUrl = null;
+  let silhouetteDataUrl = null;
   if (renderSheet) {
     const out = renderContactSheet(root, inspected.worldBox, inspected.center, inspected.boundingRadius, card, capture);
     views = out.views;
     viewImages = out.viewImages;
     sheetDataUrl = out.sheetDataUrl;
+    silhouetteDataUrl = out.silhouetteDataUrl;
   }
   return {
     metrics: inspected.metrics,
     views,
     viewImages,
     sheetDataUrl,
+    silhouetteDataUrl,
   };
 }
 `;
@@ -949,6 +1033,7 @@ export async function runAssetSession(options: BrowserSessionOptions): Promise<B
         views: ViewMetrics[];
         viewImages: { id: string; dataUrl: string }[];
         sheetDataUrl: string | null;
+        silhouetteDataUrl: string | null;
       }>;
     }, {
       harnessUrl: `${h.baseUrl}/harness.js`,
@@ -957,7 +1042,11 @@ export async function runAssetSession(options: BrowserSessionOptions): Promise<B
       glbSource,
       card: options.card,
       renderSheet: options.renderSheet,
-      capture: { ...capture, saveViews: options.viewsDir !== undefined },
+      capture: {
+        ...capture,
+        saveViews: options.viewsDir !== undefined,
+        blackFill: options.silhouetteSheetPath !== undefined,
+      },
     });
     const payload = await withTimeout(execution, timeoutMs);
 
@@ -969,6 +1058,12 @@ export async function runAssetSession(options: BrowserSessionOptions): Promise<B
       const pngBytes = decodePng(payload.sheetDataUrl, 'contact sheet');
       fs.mkdirSync(path.dirname(path.resolve(options.contactSheetPath)), { recursive: true });
       fs.writeFileSync(options.contactSheetPath, pngBytes);
+    }
+
+    if (options.renderSheet && options.silhouetteSheetPath !== undefined) {
+      const pngBytes = decodePng(payload.silhouetteDataUrl, 'silhouette sheet');
+      fs.mkdirSync(path.dirname(path.resolve(options.silhouetteSheetPath)), { recursive: true });
+      fs.writeFileSync(options.silhouetteSheetPath, pngBytes);
     }
 
     const viewPaths: string[] = [];
@@ -988,4 +1083,45 @@ export async function runAssetSession(options: BrowserSessionOptions): Promise<B
       viewPaths,
     };
   });
+}
+
+export interface LabeledPng {
+  readonly label: string;
+  readonly png: Buffer;
+}
+
+/** Stacks PNGs of equal width into one image, each under a label bar. */
+export async function stackLabeledPngs(images: readonly LabeledPng[], outPath: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<void> {
+  const files = new Map(images.map((img, i) => [`/${i}.png`, { type: 'image/png', body: img.png }]));
+  const dataUrl = await withHarnessPage({ jsBundle: '', files, args: [], timeoutMs }, async (h) => {
+    const execution = h.page.evaluate(async ({ baseUrl, labels }) => {
+      const bitmaps = await Promise.all(labels.map(async (_, i) => {
+        const resp = await fetch(`${baseUrl}/${i}.png`);
+        return createImageBitmap(await resp.blob());
+      }));
+      const labelH = 26;
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(...bitmaps.map((b) => b.width));
+      canvas.height = bitmaps.reduce((sum, b) => sum + labelH + b.height, 0);
+      const ctx = canvas.getContext('2d');
+      if (ctx === null) throw new Error('2D canvas unavailable');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.font = 'bold 14px monospace';
+      ctx.textAlign = 'left';
+      let y = 0;
+      bitmaps.forEach((bitmap, i) => {
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, y, canvas.width, labelH);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(labels[i] ?? '', 10, y + 18);
+        ctx.drawImage(bitmap, 0, y + labelH);
+        y += labelH + bitmap.height;
+      });
+      return canvas.toDataURL('image/png');
+    }, { baseUrl: h.baseUrl, labels: images.map((img) => img.label) });
+    return withTimeout(execution, timeoutMs, 'Mask composition');
+  });
+  fs.mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true });
+  fs.writeFileSync(outPath, decodePng(dataUrl, 'black-fill masks'));
 }

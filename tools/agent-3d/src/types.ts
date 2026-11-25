@@ -34,6 +34,10 @@ export interface StyleCard {
   readonly palette?: Readonly<Record<string, string>>;
   readonly paletteDeltaE76Max?: number;
   readonly requirePaletteOnTextured?: boolean;
+  /** ShaderMaterial uniforms tried in order for the base color; the first Color or Vector3 found is scored. */
+  readonly shaderColorUniforms?: readonly string[];
+  /** [color, intensity] uniforms added to a scored shader color, like emissive on a built-in material. */
+  readonly shaderEmissiveUniforms?: readonly [string, string];
   readonly separationMinDeltaE76?: number;
   readonly separationRoles?: readonly (readonly [string, string])[];
   readonly budgets?: StyleCardBudgets;
@@ -47,6 +51,8 @@ export interface CaptureSettings {
   readonly tileHeight: number;
   /** Framing multiplier; above 1 crops in, so edge clipping becomes informational. */
   readonly zoom: number;
+  /** Ortho views stay at zoom 1 unless this is set, so silhouettes never clip. */
+  readonly zoomOrtho: boolean;
   readonly lighting: LightingPreset;
 }
 
@@ -120,8 +126,10 @@ export interface PaletteAssessment {
   readonly status: 'assessed' | 'partial_textured' | 'unassessed_textured' | 'skipped_no_palette';
   readonly assessedMeshes: number;
   readonly texturedMeshes: number;
-  /** Meshes drawn with a ShaderMaterial that has no `color`, so the authored color is unknown. */
+  /** Meshes drawn with a ShaderMaterial that has no recognized color uniform, so the authored color is unknown. */
   readonly shaderMeshes: number;
+  /** Meshes whose color was read from a ShaderMaterial uniform. */
+  readonly shaderUniformMeshes: number;
   readonly sampledCorners: number;
   readonly distinctColors: number;
   readonly maxDeltaE76: number | null;
@@ -159,6 +167,8 @@ export interface GateFinding {
 export interface ViewMetrics {
   readonly id: string;
   readonly ortho: boolean;
+  /** Camera zoom this view was rendered at. */
+  readonly zoom: number;
   readonly coverageRatio: number;
   readonly culledFrontSideRatio?: number;
   readonly edgeClipped: boolean;
@@ -183,6 +193,8 @@ export interface TurntableReport {
   readonly asset: string;
   readonly cardId: string | null;
   readonly contactSheetPath: string;
+  /** Black-on-white ortho-top and ortho-front masks, written with --black-fill. */
+  readonly silhouetteSheetPath: string | null;
   readonly viewPaths: readonly string[];
   readonly capture: CaptureSettings;
   readonly metrics: AssetMetrics;
@@ -200,6 +212,9 @@ export interface BatchAssetRow {
   readonly triangles: number | null;
   readonly degenerateTriangles: number | null;
   readonly paletteStatus: PaletteAssessment['status'] | null;
+  readonly assessedMeshes: number | null;
+  readonly shaderUniformMeshes: number | null;
+  readonly unassessedMeshes: number | null;
   readonly paletteSamples: number | null;
   readonly paletteMaxDeltaE76: number | null;
   /** Ids of findings with severity fail or unsupported. */
@@ -214,6 +229,8 @@ export interface BatchReport {
   readonly outDir: string;
   readonly cardId: string | null;
   readonly capture: CaptureSettings;
+  /** Every asset's ortho-top and ortho-front masks in one image, written with --black-fill. */
+  readonly blackFillMasksPath: string | null;
   readonly total: number;
   readonly passed: number;
   readonly failed: number;

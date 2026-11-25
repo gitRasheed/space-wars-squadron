@@ -1,0 +1,20 @@
+{
+  "id": "space-wars-ground-props",
+  "frontAxis": "-Z",
+  "topUpAxis": "-Z",
+  "pivot": "ground",
+  "pivotToleranceFraction": 0.02,
+  "budgets": {
+    "trisMax": 6000,
+    "materialsMax": 16,
+    "texturesMax": 8,
+    "degenerateTrianglesMax": 0
+  },
+  "geometry": {
+    "groundContact": true,
+    "groundToleranceFraction": 0.01,
+    "groundFootprintMin": 0.05,
+    "lengthToWidth": [0.25, 4],
+    "heightToLength": [0.2, 3]
+  }
+}
