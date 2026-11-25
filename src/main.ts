@@ -68,7 +68,10 @@ function summarize(samples: Float64Array, count: number): TimingSummary {
   return { mean: sorted.reduce((sum, v) => sum + v, 0) / count, p50: at(0.5), p95: at(0.95), p99: at(0.99) };
 }
 
-/** Opt-in via `?profile=1`; when absent, the frame loop never calls into it. */
+/**
+ * Opt-in via `?profile=1`; when absent, the frame loop never calls into it. `sim` covers the
+ * frame's fixed steps including input sampling and audio sync; `render` covers scene and HUD.
+ */
 function createProfiler(): ProfileHandle & { readonly record: (frameMs: number, simMs: number, renderMs: number) => void } {
   const frame = new Float64Array(PROFILE_WINDOW);
   const sim = new Float64Array(PROFILE_WINDOW);
@@ -189,7 +192,8 @@ function boot(): void {
   let accumulator = 0;
 
   function frame(nowMs: number): void {
-    const frameDelta = Math.min((nowMs - lastFrameMs) / 1000, 0.1);
+    const rawFrameMs = nowMs - lastFrameMs;
+    const frameDelta = Math.min(rawFrameMs / 1000, 0.1);
     lastFrameMs = nowMs;
     accumulator += frameDelta;
     const steps = Math.floor(accumulator / FIXED_DT);
@@ -216,7 +220,7 @@ function boot(): void {
     hud.render(frameWorld, renderer.projectWorldPoint, audio.isMuted(), audio.isMusicEnabled());
     if (profiler !== null) {
       const end = performance.now();
-      profiler.record(frameDelta * 1000, renderStart - simStart, end - renderStart);
+      profiler.record(rawFrameMs, renderStart - simStart, end - renderStart);
     }
     requestAnimationFrame(frame);
   }

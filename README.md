@@ -24,7 +24,7 @@ First-person stylized low-poly 3D space dogfighter built with Three.js, TypeScri
 - **Hitboxes.** Spheres sized to each ship's solid core (`SHIP_STATS` in `src/sim/ships.ts`: player 5.5 m, raider 5.8 m, striker 6.8 m). Shots are swept, so fast bolts cannot tunnel, and the frigate hull blocks shots aimed through it at its cores.
 - **Variable-ratio rewards.** Cannon hits roll a crit (14% base, more for dead-centre hits, plus a capped pity ramp) for 1.75x damage. A kill rolls a supply drop (35%, rising after each dry kill): heat flush, shield surge, or missile resupply. Skimming an enemy bolt or buzzing a rock, ship or fighter at speed vents 12 heat (or restores 6 shield).
 - **Missiles.** 4 per sortie, one rearm every 12 s; one missile breaks a fresh raider or striker shield.
-- **Enemy fire.** Nobody fires for the first 4.5 s, at most two raiders attack the player at once, and their aim error grows with your speed, crossing rate, turn rate and Overdrive.
+- **Enemy fire.** Nobody fires for the first 4.5 s, at most two raiders attack the player at once, and their aim error grows with your speed, crossing rate, turn rate and Overdrive. Strikers only shoot at Hearthstone.
 
 ## Development & Verification
 
@@ -36,7 +36,7 @@ npm run verify:formal  # Exhaustive TLA+ (TLC) energy & lock model, simulation a
 npm run verify:browser # Headless Playwright WebGL gameplay run + screenshots
 ```
 
-With `?profile=1`, `window.__SW_PROFILE__.snapshot()` returns rolling frame, sim and render times (mean, p50, p95, p99) over the last 600 frames, and a corner readout shows the same.
+With `?profile=1`, `window.__SW_PROFILE__.snapshot()` returns rolling frame, sim (fixed steps plus input and audio sync) and render times (mean, p50, p95, p99) over the last 600 frames, and a corner readout shows the same. `reset()` clears the window, for example after loading.
 
 ## Architecture & Engineering Notes
 

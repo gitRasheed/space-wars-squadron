@@ -231,3 +231,23 @@ export function cannonPilot(fireConeDeg: number, burstFloor = 22, burstResume = 
     };
   };
 }
+
+/** A pilot that never shoots and only weaves at full throttle, tapping into Overdrive when asked and shields allow. */
+export function evasivePilot(useOverdrive: boolean): Pilot {
+  return (world, memory) => {
+    const t = world.tick * FIXED_DT;
+    const player = world.player;
+    const atDetent = player.throttle >= 0.995;
+    const wantOverdrive = useOverdrive && atDetent && !player.energy.overdrive && player.energy.shieldCharge > 60;
+    return {
+      input: {
+        ...NEUTRAL_INPUT,
+        yaw: Math.sin(t * 1.3) * 0.8,
+        pitch: Math.sin(t * 0.9 + 1) * 0.6,
+        throttleDelta: 1,
+        throttlePushEdge: wantOverdrive && world.tick % 2 === 0,
+      },
+      memory,
+    };
+  };
+}

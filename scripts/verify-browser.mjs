@@ -233,12 +233,30 @@ async function run() {
     await page.screenshot({ path: path.join(OUT_DIR, '05-missile-combat.png') });
     await page.keyboard.up('KeyJ');
 
+    assertCondition(
+      await page.evaluate(() => globalThis.__SW_PROFILE__ === undefined),
+      'Profiler must stay off without ?profile=1',
+    );
+    const profileUrl = new URL(baseUrl);
+    profileUrl.searchParams.set('profile', '1');
+    await page.goto(profileUrl.href, { waitUntil: 'networkidle' });
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(() => (globalThis.__SW_PROFILE__?.snapshot().frames ?? 0) >= 60, null, {
+      timeout: WAIT_TIMEOUT_MS,
+    });
+    const profile = await page.evaluate(() => globalThis.__SW_PROFILE__.snapshot());
+    assertCondition(
+      profile.frame.p50 > 0 && profile.frame.p99 >= profile.frame.p50 && profile.render.p50 > 0,
+      `Profiler snapshot looks empty (${JSON.stringify(profile)})`,
+    );
+
     assertCondition(consoleErrors.length === 0, `Console errors: ${consoleErrors.join('; ')}`);
     assertCondition(pageErrors.length === 0, `Page errors: ${pageErrors.join('; ')}`);
 
     const report = {
       ok: true,
       url: baseUrl,
+      profile,
       glSignal: {
         cockpit: cockpitGlSignal,
         overdrive: overdriveGlSignal,

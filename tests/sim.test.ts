@@ -27,7 +27,7 @@ import {
   type WorldState,
 } from '../src/sim/types';
 import { createInitialWorld, DEFAULT_SORTIE_CONFIG, stepFrame, stepWorld } from '../src/sim/world';
-import { afkPilot, cannonPilot, flySortie } from './support/pilots';
+import { afkPilot, cannonPilot, evasivePilot, flySortie, type Pilot } from './support/pilots';
 
 describe('throttle overdrive and weapon overheat kernel', () => {
   it('stops throttle at 100% high-watermark while holding W, enters 120% Overdrive on second W press draining shields, and drops cleanly on S or 0 shields', () => {
@@ -538,7 +538,10 @@ describe('variable-ratio reinforcement', () => {
     expect(critChance(1, 100)).toBe(COMBAT_TUNING.critMaxChance);
   });
 
-  it('lands dead-centre crits at about the advertised rate for 1.75x shield damage', () => {
+  it.each([
+    ['already inside the hitbox', 4],
+    ['entering late in its tick, short of the centre', SHIP_STATS.enemies.raider.hitRadius + 8],
+  ])('lands dead-centre crits at about the advertised rate for 1.75x shield damage (bolt %s)', (_label, startOffset) => {
     const target = vec3(0, 0, -300);
     let crits = 0;
     const trials = 400;
@@ -546,7 +549,7 @@ describe('variable-ratio reinforcement', () => {
       const world = {
         ...emptyArena(seed),
         enemies: [parkedRaider(target)],
-        projectiles: [playerBolt('b', add(target, vec3(0, 0, 4)), vec3(0, 0, -560))],
+        projectiles: [playerBolt('b', add(target, vec3(0, 0, startOffset)), vec3(0, 0, -560))],
       };
       const after = combatTick(world);
       const shieldLoss = SHIP_STATS.enemies.raider.shields - (after.enemies[0]?.shields ?? 0);
@@ -701,6 +704,24 @@ describe('missile trigger and manual target pin', () => {
     expect(guided).toHaveLength(1);
   });
 
+  it.each(['raider-1', 'striker-1'])('lands a locked missile on a manoeuvring %s and breaks its shield', (id) => {
+    const base = createInitialWorld(DEFAULT_SORTIE_SEED, true);
+    let world: WorldState = { ...base, enemies: base.enemies.filter((e) => e.id === id), asteroids: [] };
+    for (let i = 0; i < 120 && world.player.lockState.kind !== 'locked'; i += 1) {
+      world = stepWorld(world, NEUTRAL_INPUT, FIXED_DT);
+    }
+    expect(world.player.lockState).toEqual({ kind: 'locked', targetId: id });
+
+    world = stepWorld(world, { ...NEUTRAL_INPUT, fireMissile: true }, FIXED_DT);
+    expect(world.projectiles.some((p) => p.kind === 'missile' && p.targetId === id)).toBe(true);
+    let shieldBroken = false;
+    for (let i = 0; i < COMBAT_TUNING.missileTtl / FIXED_DT && !shieldBroken; i += 1) {
+      world = stepWorld(world, NEUTRAL_INPUT, FIXED_DT);
+      shieldBroken = world.events.some((e) => e.kind === 'shield_broken');
+    }
+    expect(shieldBroken).toBe(true);
+  });
+
   const nose = vec3(0, 0, -1);
   const origin = vec3(0, 0, 0);
   const contact = (id: string, position: Vec3): TargetContact => ({ id, label: id, position, velocity: vec3(0, 0, 0), kind: 'enemy' });
@@ -759,6 +780,24 @@ describe('two-sided balance harness', () => {
   it.each(BALANCE_SEEDS)('lets a competent cannon-only pilot with a 2.5 deg fire cone win (seed %i)', (seed) => {
     const outcome = flySortie(seed, cannonPilot(2.5), 180);
     expect(outcome.result).toBe('victory');
+  });
+
+  it('makes hard, fast flying and Overdrive cut the share of enemy shots that land', () => {
+    const hitShare = (pilot: Pilot): number => {
+      let hits = 0;
+      let shots = 0;
+      for (const seed of BALANCE_SEEDS.slice(0, 3)) {
+        const outcome = flySortie(seed, pilot, 60);
+        hits += outcome.hitsTaken;
+        shots += outcome.incomingFire;
+      }
+      return hits / shots;
+    };
+    const afk = hitShare(afkPilot);
+    const weaving = hitShare(evasivePilot(false));
+    const overdrive = hitShare(evasivePilot(true));
+    expect(weaving).toBeLessThan(afk / 3);
+    expect(overdrive).toBeLessThan(weaving);
   });
 
   it('rewards disciplined bursts with more sustained cannon fire than riding the overheat lockout', () => {

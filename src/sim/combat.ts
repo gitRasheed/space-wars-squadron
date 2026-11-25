@@ -671,8 +671,10 @@ type FriendlyHit =
   | { readonly kind: 'subsystem'; readonly t: number; readonly index: number; readonly precision: number }
   | { readonly kind: 'asteroid'; readonly t: number; readonly id: string };
 
+/** Miss distance of the bolt's line of flight, so precision doesn't depend on where the tick boundary fell. */
 function precisionOf(a: Vec3, b: Vec3, center: Vec3, radius: number): number {
-  return clamp(1 - segmentClosestApproach(a, b, center).distance / radius, 0, 1);
+  const missDistance = len(cross(sub(center, a), normalize(sub(b, a))));
+  return clamp(1 - missDistance / radius, 0, 1);
 }
 
 /** Earliest entry along the swept segment wins, so the frigate hull shields cores behind it. */
