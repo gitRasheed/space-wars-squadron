@@ -7,8 +7,9 @@ import {
 } from '../sim/combat';
 import { add, clamp, distance, dot, forwardOf, len, rightOf, scale, sub, upOf } from '../sim/math';
 import { ENERGY_RULES, inHotZone } from '../sim/energy';
-import { HULL_ALARM_INTERVAL_SECONDS, HULL_CRITICAL_FRACTION, type GroundTargetState, type LevelId, type SupplyDrop, type Vec3, type WorldState } from '../sim/types';
+import { HULL_ALARM_INTERVAL_SECONDS, type GroundTargetState, type LevelId, type SupplyDrop, type Vec3, type WorldState } from '../sim/types';
 import { LEVEL_PRESENTATION } from '../levelPresentation';
+import { hullCritical, overdriveArmed } from './dashState';
 import { briefingLayout, briefingLevelAt, hudScaleFor } from './overlayLayout';
 import { HUD_PALETTE } from './palette';
 import type { ProjectedPoint } from './sceneRenderer';
@@ -247,13 +248,13 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
   }
 
   /** Own-system warning: amber plate with dark text, blinking at 2 Hz for its first second and then steady. */
-  function drawWarningPill(text: string, x: number, y: number, sinceTick: number, tick: number, align: CanvasTextAlign = 'center'): void {
+  function drawWarningPill(text: string, x: number, y: number, sinceTick: number, tick: number): void {
     const age = tick - sinceTick;
     const plate = age >= WARNING_BLINK_TICKS || Math.floor(age / 15) % 2 === 0;
-    const style: TextStyle = { size: 11, align };
+    const style: TextStyle = { size: 11, align: 'center' };
     const width = textWidth(text, style);
     const height = Math.round(11 * hudScale());
-    const left = align === 'center' ? x - width * 0.5 : align === 'right' ? x - width : x;
+    const left = x - width * 0.5;
     ctx.fillStyle = INK;
     ctx.fillRect(left - 6, y - height - 3, width + 12, height + 8);
     if (!plate) {
@@ -263,19 +264,19 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     ctx.fillStyle = AMBER;
     ctx.fillRect(left - 5, y - height - 2, width + 10, height + 6);
     setFont(style);
-    ctx.textAlign = align;
+    ctx.textAlign = 'center';
     ctx.fillStyle = INK;
     ctx.fillText(text, Math.round(x), Math.round(y));
   }
 
-  function drawBar(x: number, y: number, w: number, h: number, ratio: number, color: string, fillFromRight = false): void {
+  function drawBar(x: number, y: number, w: number, h: number, ratio: number, color: string): void {
     ctx.fillStyle = INK;
     ctx.fillRect(x - 1, y - 1, w + 2, h + 2);
     ctx.fillStyle = TRACK;
     ctx.fillRect(x, y, w, h);
     const fillW = w * clamp(ratio, 0, 1);
     ctx.fillStyle = color;
-    ctx.fillRect(fillFromRight ? x + w - fillW : x, y, fillW, h);
+    ctx.fillRect(x, y, fillW, h);
   }
 
   function drawEdgeChevron(projected: ProjectedPoint, color: string, label: string): void {
@@ -328,7 +329,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
 
   /** The one state word by the reticle: danger first, then reward, then state. */
   function currentStatus(world: WorldState): Status | null {
-    // Hull never regenerates, so the word holds the slot for one alarm beat and the dash pill carries it after.
+    // Hull never regenerates, so the word holds the slot for one alarm beat; the dash lamps, hull bar and canopy edge carry it after.
     if (hullLowSince !== null && world.tick - hullLowSince < HULL_ALARM_INTERVAL_SECONDS * 60) {
       return { kind: 'warning', text: 'HULL CRITICAL', sinceTick: hullLowSince };
     }
@@ -342,7 +343,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       return { kind: 'word', text: 'OVERDRIVE', color: GOLD };
     }
     if (world.player.energy.recharging) {
-      return { kind: 'word', text: 'RECHARGING', color: CYAN };
+      return { kind: 'word', text: 'SHIELD RECHARGE', color: CYAN };
     }
     if (inHotZone(world.player.energy)) {
       return { kind: 'word', text: 'HOT ZONE', color: GOLD };
@@ -448,6 +449,21 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     tracks.arc(cx, cy, radius, rightBottom - sweep, rightBottom);
     strokeInked(tracks, TRACK, 3);
 
+    // The Hot Zone is marked before the heat gets there: a tinted top fifth and a gold tick outside the arc.
+    const hotStart = ENERGY_RULES.hotZoneHeat / ENERGY_RULES.maxHeat;
+    const hotAngle = rightBottom - sweep * hotStart;
+    ctx.lineWidth = 3;
+    ctx.globalAlpha = 0.6;
+    ctx.strokeStyle = GOLD;
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, rightBottom - sweep, hotAngle);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    const hotTick = new Path2D();
+    hotTick.moveTo(cx + Math.cos(hotAngle) * (radius + 3.5), cy + Math.sin(hotAngle) * (radius + 3.5));
+    hotTick.lineTo(cx + Math.cos(hotAngle) * (radius + 13 * s), cy + Math.sin(hotAngle) * (radius + 13 * s));
+    strokeInked(hotTick, GOLD, 3);
+
     ctx.lineWidth = 3;
     const shield = clamp(p.energy.shieldCharge / 100, 0, 1);
     ctx.strokeStyle = CYAN;
@@ -455,17 +471,19 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     ctx.arc(cx, cy, radius, leftBottom, leftBottom + sweep * shield);
     ctx.stroke();
     const heat = clamp(p.energy.weaponHeat / ENERGY_RULES.maxHeat, 0, 1);
-    const hotStart = ENERGY_RULES.hotZoneHeat / ENERGY_RULES.maxHeat;
     ctx.strokeStyle = overheated ? CRIMSON : AMBER;
     ctx.beginPath();
     ctx.arc(cx, cy, radius, rightBottom - sweep * (overheated ? heat : Math.min(heat, hotStart)), rightBottom);
     ctx.stroke();
     if (!overheated && heat > hotStart) {
-      // The Hot Zone: the top fifth of the gauge, where crits hit twice as hard.
+      // Inside the Hot Zone, where crits hit twice as hard, the fill turns gold and glows.
       ctx.strokeStyle = GOLD;
+      ctx.shadowColor = GOLD;
+      ctx.shadowBlur = 9 * s;
       ctx.beginPath();
-      ctx.arc(cx, cy, radius, rightBottom - sweep * heat, rightBottom - sweep * hotStart);
+      ctx.arc(cx, cy, radius, rightBottom - sweep * heat, hotAngle);
       ctx.stroke();
+      ctx.shadowBlur = 0;
     }
 
     const pipW = 8 * s;
@@ -782,7 +800,6 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     const cx = cssWidth * 0.5;
     const radarY = cssHeight - radarRadius - 16;
     const p = world.player;
-    const overdrive = p.energy.overdrive;
 
     drawRadar(world, cx, radarY, radarRadius);
 
@@ -790,26 +807,29 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     const leftX = cx - radarRadius - barW - 18;
     const rightX = cx + radarRadius + 18;
 
-    const speed = `${Math.round(len(p.velocity))}`;
-    drawText('M/S', leftX + barW, radarY + 2 * s, overdrive ? GOLD : AMBER, { align: 'right' });
-    drawText(speed, leftX + barW - 30 * s, radarY + 2 * s, overdrive ? GOLD : AMBER, { size: 19, align: 'right' });
-
-    // Throttle spans 0..120% with a tick at the 100% detent.
-    const throttleY = radarY + 12 * s;
-    drawBar(leftX, throttleY, barW, 5, p.throttle / 1.2, overdrive ? GOLD : AMBER, true);
-    ctx.fillStyle = HUD_PALETTE.warmWhite;
-    ctx.fillRect(leftX + barW * (1 - 1 / 1.2) - 0.5, throttleY - 2, 1.5, 9);
-    if (!overdrive && p.throttle >= 0.995) {
-      drawText('TAP W · OVERDRIVE', leftX + barW, throttleY + 20 * s, GOLD, { align: 'right' });
+    // Throttle and heat live on the dash dials; the glass keeps only the numbers a dial cannot give.
+    const tone = p.energy.overdrive ? GOLD : AMBER;
+    drawText('M/S', leftX + barW, radarY + 7 * s, tone, { align: 'right' });
+    drawText(`${Math.round(len(p.velocity))}`, leftX + barW - 30 * s, radarY + 7 * s, tone, { size: 19, align: 'right' });
+    if (overdriveArmed(p)) {
+      drawText('TAP W · OVERDRIVE', leftX + barW, radarY + 23 * s, GOLD, { align: 'right' });
     }
 
+    const hullY = radarY + 4 * s;
     drawBar(rightX, radarY - 11 * s, barW, 6, p.energy.shieldCharge / 100, CYAN);
-    drawBar(rightX, radarY + 4 * s, barW, 6, p.hull / p.maxHull, hullLowSince === null ? CREAM : AMBER);
     drawText('SHD', rightX + barW + 9, radarY - 11 * s + 8, CYAN);
     if (hullLowSince === null) {
-      drawText('HUL', rightX + barW + 9, radarY + 4 * s + 9, CREAM);
+      drawBar(rightX, hullY, barW, 6, p.hull / p.maxHull, CREAM);
+      drawText('HUL', rightX + barW + 9, hullY + 9, CREAM);
     } else {
-      drawWarningPill('HUL', rightX + barW + 9, radarY + 4 * s + 9, hullLowSince, world.tick, 'left');
+      // Low hull breathes crimson to amber with the alarm, on the bar and its label only.
+      const breath = hullBreath(world.tick, hullLowSince);
+      drawBar(rightX, hullY, barW, 6, p.hull / p.maxHull, CRIMSON);
+      ctx.globalAlpha = breath;
+      ctx.fillStyle = AMBER;
+      ctx.fillRect(rightX, hullY, barW * clamp(p.hull / p.maxHull, 0, 1), 6);
+      ctx.globalAlpha = 1;
+      drawText('HUL', rightX + barW + 9, hullY + 9, breath > 0.5 ? AMBER : CRIMSON);
     }
 
     if (pullUpSince !== null) {
@@ -996,6 +1016,11 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     }
   }
 
+  /** 0..1, one swell per hull alarm beat. */
+  function hullBreath(tick: number, sinceTick: number): number {
+    return 0.5 - 0.5 * Math.cos(((tick - sinceTick) / (HULL_ALARM_INTERVAL_SECONDS * 60)) * Math.PI * 2);
+  }
+
   // Tints the canopy edge and leaves the middle of the view clear.
   function drawEdgeFlash(rgb: string, alpha: number): void {
     const glow = ctx.createRadialGradient(
@@ -1048,7 +1073,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
     }
     const p = world.player;
     overheatSince = p.energy.weaponState === 'overheated' ? (overheatSince ?? tick) : null;
-    hullLowSince = p.hull > 0 && p.hull <= p.maxHull * HULL_CRITICAL_FRACTION ? (hullLowSince ?? tick) : null;
+    hullLowSince = hullCritical(p) ? (hullLowSince ?? tick) : null;
     proximitySince = p.proximityWarning ? (proximitySince ?? tick) : null;
     pullUpSince = world.planetary?.terrainWarning === true ? (pullUpSince ?? tick) : null;
     lastHudTick = tick;
@@ -1063,8 +1088,7 @@ export function createCockpitHud(canvas: HTMLCanvasElement): CockpitHud {
       drawEdgeFlash('255, 65, 85', world.player.hitFlash * 0.6);
     } else if (hullLowSince !== null && world.phase.kind === 'active') {
       // A slow red breath at the canopy edge, in step with the alarm, so low hull reads without a glance at the dash.
-      const breath = 0.5 - 0.5 * Math.cos(((world.tick - hullLowSince) / (HULL_ALARM_INTERVAL_SECONDS * 60)) * Math.PI * 2);
-      drawEdgeFlash('255, 65, 85', 0.08 + breath * 0.16);
+      drawEdgeFlash('255, 65, 85', 0.12 + hullBreath(world.tick, hullLowSince) * 0.24);
     }
 
     const solution = playerFireSolution(world);

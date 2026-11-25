@@ -1,8 +1,11 @@
 import * as THREE from 'three';
 import { COMBAT_TUNING } from '../sim/combat';
+import { ENERGY_RULES, inHotZone } from '../sim/energy';
+import { FLIGHT_TUNING } from '../sim/flight';
 import { add, distance, dot, forwardOf, len, lenSq, rightOf, scale, sub, upOf } from '../sim/math';
 import {
   FIXED_DT,
+  HULL_ALARM_INTERVAL_SECONDS,
   type CapitalShipState,
   type ExplosionState,
   type Quat,
@@ -12,6 +15,7 @@ import {
 import { FRIGATE_SUBSYSTEM_LAYOUT } from '../sim/world';
 import { computeCameraPose } from './cameraPose';
 import { celMat } from './celMaterial';
+import { hullCritical, overdriveArmed } from './dashState';
 import {
   buildAsteroidMesh,
   buildCockpitRig,
@@ -22,6 +26,8 @@ import {
   buildOrbitalBackdrop,
   buildPlayerFighterMesh,
   createSoftDotTexture,
+  DIAL_ZONE_LIT,
+  DIAL_ZONE_REST,
   ENEMY_SHIELD_BUBBLE,
   enemyShieldRadius,
   gaugeNeedleAngle,
@@ -160,6 +166,15 @@ function grazedSide(world: WorldState, source: 'bolt' | 'buzz'): -1 | 0 | 1 {
   );
   if (nearest === null) return 0;
   return dot(nearest.offset, rightOf(orientation)) < 0 ? -1 : 1;
+}
+
+function glow(material: THREE.MeshBasicMaterial, color: number, boost: number): void {
+  material.color.setHex(color).multiplyScalar(boost);
+}
+
+/** A dash lens: lit in `color`, or dark when null. */
+function lightLamp(lamp: THREE.MeshBasicMaterial, color: number | null, boost = 2.4): void {
+  glow(lamp, color ?? SCENE_PALETTE.dashLampOff, color === null ? 1 : boost);
 }
 
 function setPose(obj: THREE.Object3D, pos: Vec3, quat: Quat): void {
@@ -725,7 +740,7 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
     cockpitRig.muzzleFlash.value = leftFlash || rightFlash ? 1 : 0;
 
     // Diegetic overheat feedback: gun tips glow cherry-hot as heat builds and vent curling plumes on lockout.
-    const heat = Math.min(1, Math.max(0, player.energy.weaponHeat / 100));
+    const heat = Math.min(1, Math.max(0, player.energy.weaponHeat / ENERGY_RULES.maxHeat));
     const overheated = player.energy.weaponState === 'overheated';
     const heatPulse = overheated ? 0.85 + 0.15 * Math.sin(world.tick * 0.35) : 1;
     // When the lockout clears, the same tips flash amber in two hard steps.
@@ -760,8 +775,26 @@ export function createSceneRenderer(canvas: HTMLCanvasElement): SceneRenderer {
       plume.visible = overheated;
     }
 
-    cockpitRig.throttleNeedle.rotation.z = gaugeNeedleAngle(player.throttle / 1.2);
-    cockpitRig.heatNeedle.rotation.z = gaugeNeedleAngle(heat);
+    const { throttleDial, heatDial } = cockpitRig;
+    throttleDial.needle.rotation.z = gaugeNeedleAngle(player.throttle / FLIGHT_TUNING.overdriveThrottle);
+    glow(throttleDial.zone, SCENE_PALETTE.rewardGold, player.energy.overdrive ? DIAL_ZONE_LIT : DIAL_ZONE_REST);
+    // Armed is the normal cruise state, so it glows low and steady; only the overheat lockout blinks.
+    if (player.energy.overdrive) {
+      lightLamp(throttleDial.lamp, SCENE_PALETTE.rewardGold);
+    } else {
+      lightLamp(throttleDial.lamp, overdriveArmed(player) ? SCENE_PALETTE.rewardGold : null, 0.8);
+    }
+    heatDial.needle.rotation.z = gaugeNeedleAngle(heat);
+    const hot = inHotZone(player.energy);
+    glow(heatDial.zone, SCENE_PALETTE.rewardGold, hot ? DIAL_ZONE_LIT : DIAL_ZONE_REST);
+    lightLamp(heatDial.lamp, overheated && Math.floor(world.tick / 10) % 2 === 0 ? SCENE_PALETTE.barrelHot : null);
+
+    // Hull caution wig-wags crimson and amber across the scope frame, twice per alarm beat.
+    const [cautionLeft, cautionRight] = cockpitRig.hullCautionLamps;
+    const critical = hullCritical(player);
+    const swap = Math.floor(world.tick / (HULL_ALARM_INTERVAL_SECONDS * 30)) % 2 === 0;
+    lightLamp(cautionLeft, critical && swap ? SCENE_PALETTE.cautionCrimson : null);
+    lightLamp(cautionRight, critical && !swap ? SCENE_PALETTE.ledAmber : null);
 
     // Underdamped pendulum driven by yaw, roll and recoil.
     const swingTargetZ = THREE.MathUtils.clamp(player.angularVelocity.y * 0.5 + player.angularVelocity.z * 0.35, -0.9, 0.9);

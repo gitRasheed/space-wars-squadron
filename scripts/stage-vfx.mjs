@@ -1,5 +1,5 @@
 // Stages feedback a scripted sortie cannot reach on demand: each combat signal and each biome card as one frozen frame.
-// Usage: node scripts/stage-vfx.mjs   (STAGE_OUT_DIR overrides artifacts/stage-vfx)
+// Usage: node scripts/stage-vfx.mjs   (STAGE_OUT_DIR overrides artifacts/stage-vfx; STAGE_ONLY=dash runs the stages whose name starts with it)
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
@@ -70,6 +70,15 @@ const STAGE_PAGE = `<!doctype html>
             draw({ ...scene, tick, events: [] });
           }
         },
+        /** Jumps the scene to \`tick\`, then redraws it in real time until the camera's FOV has eased in. */
+        async hold(scene, tick) {
+          draw({ ...scene, tick: 0, events: [] });
+          // The last draw stays synchronous with the caller, so the WebGL buffer is still readable.
+          for (let frame = 0; frame < 12; frame += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            draw({ ...scene, tick, events: [] });
+          }
+        },
         reticle: (scene) => computeHudReticlePoint(scene, renderer.projectWorldPoint, window.innerWidth, window.innerHeight),
         hudPixels: () => pixels(hudCanvas),
         glPixels: () => pixels(glCanvas),
@@ -83,6 +92,16 @@ const STAGE_PAGE = `<!doctype html>
             if (radius <= within) reach = Math.max(reach, radius);
           }
           return reach;
+        },
+        /** How many pixels of a HUD colour lie within \`within\` pixels of \`centre\`. */
+        count(data, [r, g, b], centre, within) {
+          const width = window.innerWidth;
+          let total = 0;
+          for (let i = 0; i < data.length; i += 4) {
+            if (Math.abs(data[i] - r) + Math.abs(data[i + 1] - g) + Math.abs(data[i + 2] - b) > 24 || data[i + 3] < 250) continue;
+            if (Math.hypot(((i / 4) % width) - centre.x, Math.floor(i / 4 / width) - centre.y) <= within) total += 1;
+          }
+          return total;
         },
         /** Where two frames differ: pixel count, column split and distance range from \`centre\`. */
         diff(a, b, centre) {
@@ -137,6 +156,37 @@ function buildScenes() {
 }
 
 const HIT = { kind: 'hit_confirmed', isKill: false, shieldHit: false };
+
+const GOLD = [255, 217, 102];
+
+/**
+ * Dash and reticle states as [name, player patch, tick held, check]. Each is measured for gold on the reticle
+ * (\`reach\`, \`reticleGold\`), gold in the dash band (\`hint\`) and what low hull lights on the 3D dash (\`lamps\`).
+ * Overdrive runs last because it leaves the camera at its wide FOV.
+ */
+const DASH_STATES = [
+  ['cruise', { throttle: 0.6 }, 4, ({ reach, hint }) => {
+    assertCondition(reach > 50, `the Hot Zone tick should stand outside the heat arc at rest, gold reached ${reach}`);
+    assertCondition(hint === 0, `no Overdrive hint below the detent, saw ${hint} gold pixels`);
+  }],
+  ['full-throttle', { throttle: 1 }, 4, ({ hint }) => {
+    assertCondition(hint > 0, 'the Overdrive hint should show at the detent');
+  }],
+  ['hot-zone', { energy: { weaponHeat: 90 } }, 4, ({ reticleGold }) => {
+    assertCondition(reticleGold > 60, `the Hot Zone should light the reticle gold, saw ${reticleGold} pixels`);
+  }],
+  ['overheat', { energy: { weaponHeat: 70, weaponState: 'overheated' } }, 64],
+  ['recharge', { throttle: 1, energy: { recharging: true, shieldCharge: 40 } }, 4, ({ hint }) => {
+    assertCondition(hint === 0, `the Overdrive hint must hide while recharging, saw ${hint} gold pixels`);
+  }],
+  ['low-hull', { hullFraction: 0.2 }, 100, ({ lamps }) => {
+    assertCondition(
+      lamps.count > 200 && lamps.minRadius > 120 && lamps.maxRadius < 240,
+      `low hull should light only the scope-frame caution lamps (${JSON.stringify(lamps)})`,
+    );
+  }],
+  ['overdrive', { throttle: 1.2, energy: { overdrive: true } }, 4],
+];
 
 /** Each `run` executes in the page, leaves its frame on the canvases and returns what `check` should judge. */
 const STAGES = [
@@ -276,6 +326,31 @@ const STAGES = [
       globalThis.document.body.style.background = '';
     },
   },
+  ...DASH_STATES.map(([name, patch, tick, check]) => ({
+    name: `dash-${name}`,
+    arg: { patch, tick, gold: GOLD },
+    run: async (build, { patch: { hullFraction, ...change }, tick: heldTick, gold }) => {
+      const stage = globalThis.__STAGE__;
+      const { duel } = build();
+      const player = { ...duel.player, ...change, energy: { ...duel.player.energy, ...change.energy } };
+      const scene = { ...duel, player };
+      const bottomCentre = { x: globalThis.innerWidth * 0.5, y: globalThis.innerHeight };
+      await stage.hold(scene, heldTick);
+      const healthy = stage.glPixels();
+      if (hullFraction !== undefined) {
+        await stage.hold({ ...scene, player: { ...player, hull: player.maxHull * hullFraction } }, heldTick);
+      }
+      const hud = stage.hudPixels();
+      const reticle = stage.reticle(scene);
+      return {
+        reach: stage.extent(hud, gold, reticle, 70),
+        reticleGold: stage.count(hud, gold, reticle, 70),
+        hint: stage.count(hud, gold, bottomCentre, 110),
+        lamps: stage.diff(healthy, stage.glPixels(), bottomCentre),
+      };
+    },
+    check,
+  })),
 ];
 
 async function run() {
@@ -332,7 +407,8 @@ async function run() {
     }
 
     const measurements = {};
-    for (const stage of STAGES) {
+    const only = process.env.STAGE_ONLY;
+    for (const stage of STAGES.filter((s) => only === undefined || s.name.startsWith(only))) {
       const measured = await page.evaluate(
         `(${stage.run.toString()})(globalThis.__BUILD_SCENES__, ${JSON.stringify(stage.arg ?? null)})`,
       );

@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { COCKPIT_GUN_LOCAL, FIGHTER_WEAPON_LAYOUT } from '../sim/combat';
+import { ENERGY_RULES } from '../sim/energy';
+import { FLIGHT_TUNING } from '../sim/flight';
 import { SHIP_STATS } from '../sim/ships';
 import type { AsteroidState, EnemyKind } from '../sim/types';
 import { FRIGATE_HULL_SECTIONS } from '../sim/frigateLayout';
@@ -610,13 +612,23 @@ export interface CockpitRig {
   readonly heatVents: HeatVents;
   /** 0..1 stepped flash light on every cockpit surface while a barrel fires. */
   readonly muzzleFlash: THREE.IUniform<number>;
-  readonly throttleNeedle: THREE.Group;
-  readonly heatNeedle: THREE.Group;
+  readonly throttleDial: DashDial;
+  readonly heatDial: DashDial;
+  /** Left and right hull caution lenses on the scope frame. */
+  readonly hullCautionLamps: readonly [THREE.MeshBasicMaterial, THREE.MeshBasicMaterial];
   readonly charm: THREE.Group;
   /** Each LED owns its material so the renderer can recolour it; `rung` counts up the strut from 0. */
   readonly strutLeds: readonly StrutLed[];
   /** One hidden light streak per canopy strut, for whatever grazes that side. */
   readonly strutGlints: { readonly left: StrutGlint; readonly right: StrutGlint };
+}
+
+export interface DashDial {
+  readonly needle: THREE.Group;
+  /** The gold band at the top of the scale; the renderer brightens it while the reading is inside. */
+  readonly zone: THREE.MeshBasicMaterial;
+  /** Status lens under the hub. */
+  readonly lamp: THREE.MeshBasicMaterial;
 }
 
 export type StrutGlint = THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
@@ -661,41 +673,101 @@ function buildMuzzleBurst(scale = 1): THREE.Group {
 }
 
 const GAUGE_SWEEP = 2.2;
-
-function buildDashGauge(needleColor: number, bezelMat: THREE.Material): {
-  readonly gauge: THREE.Group;
-  readonly needle: THREE.Group;
-} {
-  const gauge = new THREE.Group();
-  const bezel = new THREE.CylinderGeometry(0.078, 0.088, 0.034, 12);
-  bezel.rotateX(Math.PI / 2);
-  addStyledPart(gauge, bezel, bezelMat);
-  addStyledPart(gauge, new THREE.CircleGeometry(0.066, 12), new THREE.MeshBasicMaterial({ color: 0x0b1524 }), {
-    position: [0, 0, 0.018],
-  });
-  const tickMat = glowMat(0xcfd8ee, 1, { hdrBoost: 0.55 });
-  const redlineMat = glowMat(0xff5a48, 1, { hdrBoost: 1.1 });
-  const tickGeo = new THREE.BoxGeometry(0.006, 0.016, 0.002);
-  for (let i = 0; i < 7; i += 1) {
-    const angle = GAUGE_SWEEP * (1 - i / 3);
-    addStyledPart(gauge, tickGeo, i >= 5 ? redlineMat : tickMat, {
-      position: [-Math.sin(angle) * 0.052, Math.cos(angle) * 0.052, 0.02],
-      rotation: [0, 0, angle],
-    });
-  }
-  const needle = new THREE.Group();
-  needle.position.z = 0.024;
-  addStyledPart(needle, new THREE.BoxGeometry(0.007, 0.056, 0.003), glowMat(needleColor, 1, { hdrBoost: 1.5 }), {
-    position: [0, 0.02, 0],
-  });
-  addStyledPart(needle, new THREE.CircleGeometry(0.011, 8), bezelMat, { position: [0, 0, 0.002] });
-  gauge.add(needle);
-  return { gauge, needle };
-}
+const DIAL_FACE_RADIUS = 0.106;
+/** Throttle readings run 0..1 across 0..Overdrive; the detent is the last cruise reading. */
+export const THROTTLE_DIAL_DETENT = FLIGHT_TUNING.maxCruiseThrottle / FLIGHT_TUNING.overdriveThrottle;
+export const DIAL_ZONE_REST = 0.68;
+export const DIAL_ZONE_LIT = 1.25;
 
 /** Needle rotation for a 0..1 reading; the dial sweeps clockwise from lower left to lower right. */
 export function gaugeNeedleAngle(reading: number): number {
   return GAUGE_SWEEP * (1 - 2 * Math.min(1, Math.max(0, reading)));
+}
+
+interface DashDialSpec {
+  readonly needleColor: number;
+  /** Readings that carry a tick. */
+  readonly ticks: readonly number[];
+  /** Reading where the gold band starts; it runs to the end of the scale. */
+  readonly zoneFrom: number;
+  /** Inner radius of the gold band as a fraction of the face. */
+  readonly zoneInner: number;
+  readonly housingMat: THREE.Material;
+  readonly bevelMat: THREE.Material;
+  /** Which local X points away from the scope: -1 for the left pod, 1 for the right. */
+  readonly outboard: -1 | 1;
+}
+
+/** A dial sunk in its own housing, +Z toward the pilot: the face sits below the bezel lip so the rim shades it. */
+function buildDashPod(spec: DashDialSpec): { readonly pod: THREE.Group; readonly dial: DashDial } {
+  const pod = new THREE.Group();
+  const face = DIAL_FACE_RADIUS;
+  const bezel = new THREE.LatheGeometry([
+    new THREE.Vector2(face + 0.04, -0.05),
+    new THREE.Vector2(face + 0.04, 0.014),
+    new THREE.Vector2(face + 0.022, 0.034),
+    new THREE.Vector2(face + 0.005, 0.034),
+    new THREE.Vector2(face, 0.026),
+    new THREE.Vector2(face, -0.002),
+  ], 20);
+  bezel.rotateX(Math.PI / 2);
+  addStyledPart(pod, bezel, spec.bevelMat);
+  // The fascia ties the dial into the console wall; its outboard shoulder is cut low to stay under the gun line.
+  const out = spec.outboard;
+  const fascia = new THREE.Shape();
+  fascia.moveTo(out * 0.25, -0.22);
+  fascia.lineTo(out * 0.25, -0.1);
+  fascia.lineTo(out * 0.07, face + 0.052);
+  fascia.lineTo(out * -0.12, face + 0.052);
+  fascia.lineTo(out * -0.27, 0.03);
+  fascia.lineTo(out * -0.27, -0.22);
+  fascia.closePath();
+  const fasciaGeo = new THREE.ExtrudeGeometry(fascia, {
+    depth: 0.08, bevelEnabled: true, bevelThickness: 0.012, bevelSize: 0.012, bevelSegments: 1,
+  });
+  addStyledPart(pod, fasciaGeo, spec.housingMat, { position: [0, 0, -0.105] });
+  addStyledPart(pod, new THREE.BoxGeometry(0.2, 0.014, 0.1), spec.bevelMat, {
+    position: [out * -0.025, face + 0.058, -0.055],
+  });
+  const can = new THREE.CylinderGeometry(face + 0.04, face - 0.03, 0.14, 20);
+  can.rotateX(Math.PI / 2);
+  addStyledPart(pod, can, spec.housingMat, { position: [0, 0, -0.12] });
+  addStyledPart(pod, new THREE.CircleGeometry(face, 20), new THREE.MeshBasicMaterial({ color: SCENE_PALETTE.dialFace }));
+
+  const zone = glowMat(SCENE_PALETTE.rewardGold, 1, { hdrBoost: DIAL_ZONE_REST });
+  const zoneEnd = gaugeNeedleAngle(1) + Math.PI / 2;
+  addStyledPart(
+    pod,
+    new THREE.RingGeometry(face * spec.zoneInner, face * 0.93, 12, 1, zoneEnd, gaugeNeedleAngle(spec.zoneFrom) - gaugeNeedleAngle(1)),
+    zone,
+    { position: [0, 0, 0.003] },
+  );
+
+  const tickMat = glowMat(SCENE_PALETTE.dialTick, 1, { hdrBoost: 0.75 });
+  const tickGeo = new THREE.BoxGeometry(0.012, 0.03, 0.002);
+  for (const reading of spec.ticks) {
+    const angle = gaugeNeedleAngle(reading);
+    addStyledPart(pod, tickGeo, tickMat, {
+      position: [-Math.sin(angle) * face * 0.82, Math.cos(angle) * face * 0.82, 0.005],
+      rotation: [0, 0, angle],
+    });
+  }
+
+  const lamp = new THREE.MeshBasicMaterial({ color: SCENE_PALETTE.dashLampOff });
+  addStyledPart(pod, new THREE.CircleGeometry(face * 0.15, 10), lamp, { position: [0, -face * 0.6, 0.004] });
+
+  const needle = new THREE.Group();
+  needle.position.z = 0.012;
+  addStyledPart(needle, new THREE.BoxGeometry(0.022, face * 0.9 + 0.012, 0.002), new THREE.MeshBasicMaterial({ color: SCENE_PALETTE.dialInk }), {
+    position: [0, face * 0.33, -0.002],
+  });
+  addStyledPart(needle, new THREE.BoxGeometry(0.01, face * 0.9, 0.003), glowMat(spec.needleColor, 1, { hdrBoost: 1.5 }), {
+    position: [0, face * 0.33, 0],
+  });
+  addStyledPart(needle, new THREE.CircleGeometry(face * 0.14, 10), spec.bevelMat, { position: [0, 0, 0.002] });
+  pod.add(needle);
+
+  return { pod, dial: { needle, zone, lamp } };
 }
 
 export function buildCockpitRig(): CockpitRig {
@@ -708,8 +780,6 @@ export function buildCockpitRig(): CockpitRig {
   const bevelMat = celMat(0x7683a6, { ...interior, gloss: 0.2 });
   const barrelMat = celMat(0x4d5672, { ...interior, gloss: 0.26 });
   const accentMat = celMat(0xd98332, { emissive: 0x4f2304, emissiveIntensity: 0.3, muzzleFlash });
-  const ledAmber = glowMat(SCENE_PALETTE.ledAmber, 1, { hdrBoost: STRUT_LED_BOOST });
-  const ledCyan = glowMat(SCENE_PALETTE.ledCyan, 1, { hdrBoost: STRUT_LED_BOOST });
   const strutLeds: StrutLed[] = [];
   const glintGeo = new THREE.BoxGeometry(0.016, 0.34, 0.022);
   const strutGlints = {
@@ -803,10 +873,15 @@ export function buildCockpitRig(): CockpitRig {
   });
 
   const hoodShape = new THREE.Shape();
-  hoodShape.moveTo(-1.14, -0.16);
-  hoodShape.lineTo(-0.76, 0.09);
-  hoodShape.lineTo(0.76, 0.09);
-  hoodShape.lineTo(1.14, -0.16);
+  // A raised scope block between two lower shelves; each shelf seats one dial pod below the gun line.
+  hoodShape.moveTo(-1.16, -0.16);
+  hoodShape.lineTo(-1.1, -0.04);
+  hoodShape.lineTo(-0.58, -0.04);
+  hoodShape.lineTo(-0.54, 0.09);
+  hoodShape.lineTo(0.54, 0.09);
+  hoodShape.lineTo(0.58, -0.04);
+  hoodShape.lineTo(1.1, -0.04);
+  hoodShape.lineTo(1.16, -0.16);
   hoodShape.closePath();
   const hoodGeo = new THREE.ExtrudeGeometry(hoodShape, {
     depth: 0.72,
@@ -833,33 +908,41 @@ export function buildCockpitRig(): CockpitRig {
     });
   }
 
-  const throttleGauge = buildDashGauge(0xffb04a, bevelMat);
-  throttleGauge.gauge.position.set(-0.9, -0.6, -1.36);
-  throttleGauge.gauge.rotation.set(-0.3, 0.42, 0);
-  root.add(throttleGauge.gauge);
-  const heatGauge = buildDashGauge(0x7deaff, bevelMat);
-  heatGauge.gauge.position.set(0.9, -0.6, -1.36);
-  heatGauge.gauge.rotation.set(-0.3, -0.42, 0);
-  root.add(heatGauge.gauge);
-
-  const annunciator = createTaperedBoxGeometry({
-    frontWidth: 0.32, backWidth: 0.42, frontHeight: 0.034, backHeight: 0.08, length: 0.24,
-  });
-  const knobGeo = new THREE.CylinderGeometry(0.014, 0.018, 0.03, 6);
-  for (const side of [-1, 1]) {
-    const bank = addStyledPart(root, annunciator, bevelMat, {
-      position: [side * 0.65, -0.7, -1.12], rotation: [-0.16, side * -0.09, 0],
-    });
-    addStyledPart(bank, new THREE.BoxGeometry(0.32, 0.014, 0.18), frameMat, {
-      position: [0, 0.037, 0],
-    });
-    for (const x of [-0.09, 0, 0.09]) {
-      addStyledPart(bank, new THREE.BoxGeometry(0.064, 0.014, 0.052), side < 0 ? ledAmber : ledCyan, {
-        position: [x, 0.048, 0.022],
-      });
-      addStyledPart(bank, knobGeo, x === 0 ? accentMat : barrelMat, { position: [x, 0.05, -0.07] });
-    }
+  function addCautionLamp(side: -1 | 1): THREE.MeshBasicMaterial {
+    const lens = new THREE.MeshBasicMaterial({ color: SCENE_PALETTE.dashLampOff });
+    addStyledPart(hood, new THREE.BoxGeometry(0.09, 0.02, 0.05), barrelMat, { position: [side * 0.38, 0.126, 0.03] });
+    addStyledPart(hood, new THREE.BoxGeometry(0.07, 0.022, 0.034), lens, { position: [side * 0.38, 0.138, 0.03] });
+    return lens;
   }
+  const hullCautionLamps = [addCautionLamp(-1), addCautionLamp(1)] as const;
+
+  // Pod faces look back at the pilot, away from the key light, so they carry their own floor of glow.
+  const housingMat = celMat(SCENE_PALETTE.dashHousing, { ...interior, emissive: SCENE_PALETTE.dashHousingGlow, panel: 0.17 });
+  const cruiseTicks = [0, 0.25, 0.5, 0.75, 1].map((throttle) => throttle * THROTTLE_DIAL_DETENT);
+  const throttlePod = buildDashPod({
+    needleColor: SCENE_PALETTE.throttleNeedle,
+    ticks: cruiseTicks,
+    zoneFrom: THROTTLE_DIAL_DETENT,
+    zoneInner: 0.72,
+    housingMat,
+    bevelMat,
+    outboard: -1,
+  });
+  const heatPod = buildDashPod({
+    needleColor: SCENE_PALETTE.heatNeedle,
+    ticks: [0, 0.2, 0.4, 0.6, 0.8, 1],
+    zoneFrom: ENERGY_RULES.hotZoneHeat / ENERGY_RULES.maxHeat,
+    zoneInner: 0.4,
+    housingMat,
+    bevelMat,
+    outboard: 1,
+  });
+  // Inboard of and below the gun line, so the barrels clear both pods through their whole recoil.
+  throttlePod.pod.position.set(-0.715, -0.672, -1.3);
+  throttlePod.pod.rotation.set(-0.3, 0.36, 0);
+  heatPod.pod.position.set(0.715, -0.672, -1.3);
+  heatPod.pod.rotation.set(-0.3, -0.36, 0);
+  root.add(throttlePod.pod, heatPod.pod);
 
   const throttleHandle = new THREE.Group();
   throttleHandle.position.set(-1.04, -0.68, -0.84);
@@ -927,8 +1010,9 @@ export function buildCockpitRig(): CockpitRig {
     barrelHeatMat,
     heatVents,
     muzzleFlash,
-    throttleNeedle: throttleGauge.needle,
-    heatNeedle: heatGauge.needle,
+    throttleDial: throttlePod.dial,
+    heatDial: heatPod.dial,
+    hullCautionLamps,
     charm,
     strutLeds,
     strutGlints,
