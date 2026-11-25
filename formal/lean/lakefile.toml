@@ -1,0 +1,5 @@
+name = "spacewars"
+defaultTargets = ["SpaceWars"]
+
+[[lean_lib]]
+name = "SpaceWars"
