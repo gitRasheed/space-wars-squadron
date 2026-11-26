@@ -21,6 +21,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - run: npm run verify:audio
 
   formal:
     runs-on: ubuntu-latest
@@ -100,55 +101,3 @@ jobs:
         with:
           name: verify-screenshots-${{ matrix.suite }}
           path: artifacts/verify/
-
-  tools-audio:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: tools/agent-audio/package-lock.json
-      - run: npm --prefix tools/agent-audio ci
-      - run: npm --prefix tools/agent-audio test
-
-  tools-3d:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: tools/agent-3d/package-lock.json
-      - run: npm --prefix tools/agent-3d ci
-      - name: Cache Playwright browsers
-        id: pw-cache-3d
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-3d-${{ runner.os }}-${{ hashFiles('tools/agent-3d/package-lock.json') }}
-      - name: Install Playwright Chromium
-        run: |
-          if [ "${{ steps.pw-cache-3d.outputs.cache-hit }}" != "true" ]; then
-            npm --prefix tools/agent-3d exec -- playwright install chromium --with-deps
-          else
-            npm --prefix tools/agent-3d exec -- playwright install-deps chromium
-          fi
-      - run: npm --prefix tools/agent-3d test
-
-  tools-daw:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: tools/agent-daw/package-lock.json
-      - run: npm --prefix tools/agent-daw ci
-      - run: npm --prefix tools/agent-daw test

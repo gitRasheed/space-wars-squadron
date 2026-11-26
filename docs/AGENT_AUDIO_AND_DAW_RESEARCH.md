@@ -2,6 +2,8 @@
 
 Date: 2026-11-25. Machine: `sisyphus` (Ryzen 9 9950X, 32 threads, no GPU).
 
+This report records the original in-repo tools and measurements. The game now uses Kleos and agent-threejs-turntable. Current verification commands are in [AGENTS.md](../AGENTS.md).
+
 Every number carries a provenance tag:
 
 - **[measured]**: run on sisyphus for this report. Scripts and outputs are in the session scratchpad (`probe/probe.py`, `probe/out/`).

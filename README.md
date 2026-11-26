@@ -36,6 +36,7 @@ First-person stylized low-poly 3D space dogfighter built with Three.js, TypeScri
 npm install
 npm run dev            # Start local dev server (append ?profile=1 for the frame profiler)
 npm run check          # Typecheck, strict ESLint, Vitest sim suite (incl. bot balance harness), Vite build
+npm run verify:audio   # Render and check the combat cues and loop with Kleos
 npm run verify:formal  # Exhaustive TLA+ (TLC) energy & lock model, simulation agreement, mutant kill gates
 npm run verify:browser # Headless Playwright WebGL gameplay run + screenshots
 ```

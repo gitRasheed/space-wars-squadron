@@ -316,7 +316,7 @@ Avoid single-wave monotony with a sawtooth intensity curve:
 **Graze whoosh.** Bandpassed noise, centre 1.2 kHz sweeping to 3 kHz over 120 ms, panned to the side the bolt passed. Escalate centre frequency by +20% per graze in the 2 s window.
 
 **Rules:**
-- All new cues route through `effects` → master bus (AGENTS audio rule). New cues are `agent-audio` recipes in `combat-cues.json`, verified with `npm --prefix tools/agent-audio test`.
+- All new cues route through `effects` → master bus (AGENTS audio rule). New cues are `agent-audio` recipes in `combat-cues.json`, verified with `npm run verify:audio`.
 - **Do not edit the pinned soundtrack recipe** (`combat-loop.recipe.json`); parity tests pin it. Ducking is a gain change on the music bus, not a recipe change.
 - Voice-limit reward cues to **4 concurrent**; drop the oldest. Stacked crits must not clip.
 - Rare cues stay rare: target no more than one crit cue per ≈1.5 s in expert play (a target, not yet measured). If a seeded expert-bot probe shows more, lower `chain`, not the cue's loudness.
@@ -361,8 +361,8 @@ Avoid single-wave monotony with a sawtooth intensity curve:
 | Any `src/` change | `npm run check` |
 | `energy.ts`, lock, graze, drops touching `EnergyState` | `npm run verify:formal` (model + mutant gate) |
 | HUD, renderer, arenas | `npm run verify:browser` with `VERIFY_OUT_DIR=artifacts/verify-<worker>`; inspect screenshots |
-| New arena meshes / structures | `agent-3d` turntable, 0 degenerate triangles, inspect contact sheet |
-| New cues | `npm --prefix tools/agent-audio test`; audio parity tests stay green |
+| New arena meshes / structures | `npm run turntable`, 0 degenerate triangles, inspect contact sheet |
+| New cues | `npm run verify:audio`; audio parity tests stay green |
 
 ### 5.4 Suggested agent split
 

@@ -408,10 +408,4 @@ describe('combat audio', () => {
       expect(rms(right, bar)).toBeCloseTo(r, 5);
     }
   });
-
-  it.each([COMBAT_LOOP_SCORE, ...Object.values(cues)])('matches the standalone reference recipe for $id', async recipe => {
-    const { readFileSync } = await vi.importActual<{ readFileSync: (path: URL, encoding: 'utf8') => string }>('node:fs');
-    const reference = new URL(`../tools/agent-audio/recipes/${recipe.id}.recipe.json`, import.meta.url);
-    expect(recipe).toEqual(JSON.parse(readFileSync(reference, 'utf8')));
-  });
 });

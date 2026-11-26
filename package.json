@@ -13,7 +13,9 @@
     "verify:formal": "node scripts/run-formal-check.mjs",
     "verify:lean": "node scripts/verify-lean.mjs",
     "verify:browser": "node scripts/verify-browser.mjs",
-    "check": "npm run typecheck && npm run lint && npm run test && vite build"
+    "check": "npm run typecheck && npm run lint && npm run test && vite build",
+    "turntable": "node scripts/asset-qa/node_modules/.bin/agent-threejs-turntable",
+    "verify:audio": "node scripts/verify-audio.mjs"
   },
   "dependencies": {
     "three": "^0.175.0"
@@ -23,6 +25,7 @@
     "@types/three": "^0.175.0",
     "eslint": "^9.24.0",
     "globals": "^16.0.0",
+    "kleos": "github:gitRasheed/kleos#fde65b7b7ff99f3771ffb62f50dfd1f0e9ded142",
     "playwright": "^1.52.0",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.29.0",

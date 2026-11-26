@@ -1,4 +1,0 @@
-BoxVertexColors.glb
-Source: https://github.com/KhronosGroup/glTF-Sample-Assets/tree/e124e8d8d7330a5372bc2b4d00d39a4a9d7997ea/Models/BoxVertexColors
-Commit: e124e8d8d7330a5372bc2b4d00d39a4a9d7997ea
-License: CC0 1.0 Universal (Public Domain Dedication) — Khronos Group glTF-Sample-Assets

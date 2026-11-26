@@ -1,0 +1,8 @@
+{
+  "name": "space-wars-asset-qa",
+  "private": true,
+  "dependencies": {
+    "agent-threejs-turntable": "github:gitRasheed/agent-threejs-turntable#b958d7d61037b74597ba9609f23ac37868cf186c",
+    "three": "0.187.0"
+  }
+}

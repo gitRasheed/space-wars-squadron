@@ -7,8 +7,8 @@ const THREE_ONLY_IN_RENDER = {
   message: 'Three.js belongs only in src/render/. Keep simulation and input pure.',
 };
 const NO_TOOLS_FROM_APP = {
-  group: ['**/tools/*', '../tools/*', '../../tools/*'],
-  message: 'Keep src/ and tests/ decoupled from standalone MIT packages in tools/.',
+  group: ['kleos', 'kleos/**', 'agent-threejs-turntable', 'agent-threejs-turntable/**', 'tools/**', '**/tools/**'],
+  message: 'Use asset authoring tools from scripts/ only.',
 };
 
 // typescript-eslint disables no-undef for .ts, so browser globals are banned by name instead.
@@ -38,12 +38,10 @@ export default tseslint.config(
       'node_modules/**',
       'formal/states/**',
       'scratch/**',
-      'tools/*/node_modules/**',
-      'tools/*/dist/**',
-      'tools/*/dist-test/**',
+      'scripts/asset-qa/node_modules/**',
     ],
   },
-  { ...js.configs.recommended, ignores: ['tools/**'] },
+  js.configs.recommended,
   {
     files: ['src/**/*.ts', 'tests/**/*.ts'],
     extends: [...tseslint.configs.strictTypeChecked],
@@ -71,24 +69,6 @@ export default tseslint.config(
     files: ['src/sim/**/*.ts'],
     rules: {
       'no-restricted-globals': ['error', ...BROWSER_GLOBALS_BANNED_IN_SIM],
-    },
-  },
-  {
-    // tools/ packages are standalone: only this boundary rule applies to them from the root.
-    files: ['tools/*/src/**/*.ts', 'tools/*/tests/**/*.ts'],
-    languageOptions: { parser: tseslint.parser },
-    rules: {
-      'no-restricted-imports': [
-        'error',
-        {
-          patterns: [
-            {
-              group: ['**/src/sim/*', '**/src/render/*', '**/src/audio/*', '**/src/input/*', '../../../src/*', '../../../../src/*'],
-              message: 'tools/ packages are standalone MIT tools and must not import the game in src/.',
-            },
-          ],
-        },
-      ],
     },
   },
   {
